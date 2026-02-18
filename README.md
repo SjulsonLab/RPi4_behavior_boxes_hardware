@@ -7,6 +7,8 @@ Included directories:
 - `essential/` (device interfaces, camera, treadmill, pump, acquisition)
 - `debug/` (hardware test/debug scripts)
 - `environment/` (environment specification files)
+- `mock-gpiozero/` (off-Pi GPIO mock for development/testing)
+- `irig_decoding/` (IRIG decode tooling from `charlie-irig`)
 
 Excluded from this split:
 - `task_protocol/` (task-specific experiment logic)
@@ -18,3 +20,7 @@ This repository was split from:
 `original/RPi4_behavior_boxes`
 
 to support independent versioning of hardware code and task code.
+
+## Integration Notes
+
+- `hardware_refactor_plan.md` was imported from `luke_agent_test` as branch-analysis context for unification work.
