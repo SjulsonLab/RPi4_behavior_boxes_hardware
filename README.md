@@ -25,5 +25,4 @@ to support independent versioning of hardware code and task code.
 
 ## Integration Notes
 
-- `hardware_refactor_plan.md` was imported from `luke_agent_test` as branch-analysis context for unification work.
 - Camera stack additions were imported from `matt-behavior` in Phase 2 (`video_acquisition/`, `HQ_camera/`, and related `essential/video_acquisition/` updates).
