@@ -1,8 +1,3 @@
-try:
-    import mock_gpiozero
-    mock_gpiozero.patch()
-except ImportError:
-    pass
 # calibrate.py
 """
 author: tian qiu

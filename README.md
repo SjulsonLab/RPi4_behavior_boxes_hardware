@@ -7,7 +7,6 @@ Included directories:
 - `essential/` (device interfaces, camera, treadmill, pump, acquisition)
 - `debug/` (hardware test/debug scripts)
 - `environment/` (environment specification files)
-- `mock-gpiozero/` (off-Pi GPIO mock for development/testing)
 - `irig_decoding/` (IRIG decode tooling from `charlie-irig`)
 - `video_acquisition/` (newer camera acquisition scripts from `matt-behavior`)
 - `HQ_camera/` (HQ camera support scripts from `matt-behavior`)
