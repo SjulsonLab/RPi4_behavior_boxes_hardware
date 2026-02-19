@@ -1,0 +1,100 @@
+:root {
+  --bg: #f5f6f8;
+  --card: #ffffff;
+  --text: #1f2a44;
+  --muted: #667085;
+  --ok: #1f9d55;
+  --off: #d0d5dd;
+  --warn: #b54708;
+  --accent: #0b7285;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+  color: var(--text);
+  background: linear-gradient(145deg, #eef2f7, #ffffff);
+}
+
+header {
+  padding: 16px 20px;
+  border-bottom: 1px solid #e4e7ec;
+  background: #fff;
+}
+
+h1 { margin: 0 0 6px 0; font-size: 1.3rem; }
+h2 { margin: 0 0 10px 0; font-size: 1.1rem; }
+
+#status-line { margin: 0; color: var(--muted); }
+main { padding: 16px 20px; display: grid; gap: 16px; }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.pin-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 8px;
+}
+
+.pin-label { font-weight: 600; }
+.pin-meta { color: var(--muted); font-size: 0.9rem; }
+
+.state-pill {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.state-on { background: #ecfdf3; color: var(--ok); border: 1px solid #abefc6; }
+.state-off { background: #f2f4f7; color: #475467; border: 1px solid #d0d5dd; }
+
+.controls { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+button {
+  border: 1px solid #cdd5df;
+  background: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); color: var(--accent); }
+
+input[type="number"] {
+  width: 90px;
+  border: 1px solid #cdd5df;
+  border-radius: 8px;
+  padding: 5px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #fff;
+  border: 1px solid #e4e7ec;
+}
+th, td {
+  padding: 8px;
+  border-bottom: 1px solid #eaecf0;
+  text-align: left;
+  font-size: 0.9rem;
+}
+th { background: #f9fafb; color: #475467; }
+
+@media (max-width: 640px) {
+  main { padding: 12px; }
+  .grid { grid-template-columns: 1fr; }
+}

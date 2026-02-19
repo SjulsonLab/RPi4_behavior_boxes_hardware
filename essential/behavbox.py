@@ -12,31 +12,98 @@ description:
 # contains the behavior box class, which includes pin numbers and whether DIO pins are
 # configured as input or output
 
-from gpiozero import PWMLED, LED, Button
 import os
+import platform
 import socket
 import time
 from collections import deque
-import pygame
-import pygame.display
 
 import numpy as np
-import matplotlib
-matplotlib.use('module://pygame_matplotlib.backend_pygame')
-import matplotlib.pyplot as plt
-import matplotlib.figure as fg
+import scipy.io, pickle
 
 import logging
 from colorama import Fore, Style
-from visualstim import VisualStim
-
-import scipy.io, pickle
-
-import Treadmill
-import ADS1x15
 
 # for the flipper
-from FlipperOutput import FlipperOutput
+try:
+    from essential.gpio_backend import (
+        PWMLED,
+        LED,
+        Button,
+        is_raspberry_pi,
+        register_pin_label,
+        set_visual_stim_state,
+    )
+except ImportError:
+    from gpio_backend import (
+        PWMLED,
+        LED,
+        Button,
+        is_raspberry_pi,
+        register_pin_label,
+        set_visual_stim_state,
+    )
+
+try:
+    from essential.FlipperOutput import FlipperOutput
+except ImportError:
+    from FlipperOutput import FlipperOutput
+
+try:
+    import Treadmill
+except Exception:
+    Treadmill = None
+
+try:
+    import ADS1x15
+except Exception:
+    ADS1x15 = None
+
+PLOTTING_AVAILABLE = False
+try:
+    import pygame
+    import pygame.display
+    import matplotlib
+    matplotlib.use('module://pygame_matplotlib.backend_pygame')
+    import matplotlib.pyplot as plt
+    import matplotlib.figure as fg
+    PLOTTING_AVAILABLE = True
+except Exception:
+    pygame = None
+    plt = None
+    fg = None
+
+
+HEAD_FIXED_GPIO = {
+    "flipper": 4,
+    "unused": [5, 6, 12],
+    "inputs": {
+        "treadmill_1_input": 13,
+        "treadmill_2_input": 16,
+        "lick_1": 26,
+        "lick_2": 27,
+        "lick_3": 15,
+    },
+    "outputs": {
+        "cue_led_1": 22,
+        "cue_led_2": 18,
+        "cue_led_3": 17,
+        "cue_led_4": 14,
+        "user_output": 11,
+        "sound_1": 23,
+        "sound_2": 24,
+        "sound_3": 9,
+        "sound_4": 10,
+    },
+    "pumps": {
+        "reward_left": 19,
+        "reward_right": 20,
+        "reward_center": 21,
+        "pump4": 7,
+        "airpuff": 8,
+        "vacuum": 25,
+    },
+}
 
 
 class BehavBox(object):
@@ -70,13 +137,25 @@ class BehavBox(object):
             print("Logging error")
             print(str(error_message))
 
-        from subprocess import check_output
-        IP_address = check_output(['hostname', '-I']).decode('ascii')[:-2]
-        self.IP_address = IP_address
-        IP_address_video_list = list(IP_address)
-        # IP_address_video_list[-3] = "2"
-        IP_address_video_list[-1] = "2"
-        self.IP_address_video = "".join(IP_address_video_list)
+        try:
+            if platform.system() == "Linux":
+                from subprocess import check_output
+                ip_output = check_output(['hostname', '-I']).decode('ascii').strip()
+                self.IP_address = ip_output.split()[0] if ip_output else socket.gethostbyname(socket.gethostname())
+            else:
+                self.IP_address = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            try:
+                self.IP_address = socket.gethostbyname(socket.gethostname())
+            except Exception:
+                self.IP_address = "127.0.0.1"
+
+        # Keep legacy behavior: use the "video Pi" as same subnet with last octet set to 2.
+        self.IP_address_video = self.IP_address
+        ip_parts = self.IP_address.split(".")
+        if len(ip_parts) == 4:
+            ip_parts[-1] = "2"
+            self.IP_address_video = ".".join(ip_parts)
 
         ###############################################################################################
         # event list trigger by the interaction between the RPi and the animal for visualization
@@ -84,80 +163,73 @@ class BehavBox(object):
         ###############################################################################################
         self.interact_list = []
 
-        ###############################################################################################
-        # below are all the pin numbers for Yi's breakout board
-        # cue LEDs - setting PWM frequency of 200 Hz
-        ###############################################################################################
-        self.cueLED1 = BoxLED(22, frequency=200)
-        self.cueLED2 = BoxLED(18, frequency=200)
-        self.cueLED3 = BoxLED(17, frequency=200)
-        self.cueLED4 = BoxLED(14, frequency=200)
+        pins = HEAD_FIXED_GPIO
+        output_pins = pins["outputs"]
+        input_pins = pins["inputs"]
 
         ###############################################################################################
-        # digital I/O's - used for cue LED
-        # cue for animals
-        # DIO 1 and 2 are reserved for the audio board
+        # Head-fixed GPIO map (strict CSV semantics)
         ###############################################################################################
-        # self.DIO3 = LED(9)  # reserved for vacuum function
-        self.DIO4 = LED(10)
-        self.DIO5 = LED(11)
-        # there is a DIO6, but that is the same pin as the camera strobe
+        self.cueLED1 = BoxLED(output_pins["cue_led_1"], frequency=200)
+        self.cueLED2 = BoxLED(output_pins["cue_led_2"], frequency=200)
+        self.cueLED3 = BoxLED(output_pins["cue_led_3"], frequency=200)
+        self.cueLED4 = BoxLED(output_pins["cue_led_4"], frequency=200)
+        register_pin_label(output_pins["cue_led_1"], "cue_led_1", direction="output")
+        register_pin_label(output_pins["cue_led_2"], "cue_led_2", direction="output")
+        register_pin_label(output_pins["cue_led_3"], "cue_led_3", direction="output")
+        register_pin_label(output_pins["cue_led_4"], "cue_led_4", direction="output")
+
+        # CSV maps GPIO11 to generic user output.
+        self.user_output = LED(output_pins["user_output"])
+        register_pin_label(output_pins["user_output"], "user_output", direction="output")
+        self.DIO5 = self.user_output  # backward-compatible alias
+
+        # Head-fixed sounds are explicit output pins 23/24/9/10.
+        self.sound1 = LED(output_pins["sound_1"])
+        self.sound2 = LED(output_pins["sound_2"])
+        self.sound3 = LED(output_pins["sound_3"])
+        self.sound4 = LED(output_pins["sound_4"])
+        register_pin_label(output_pins["sound_1"], "sound_1", direction="output")
+        register_pin_label(output_pins["sound_2"], "sound_2", direction="output")
+        register_pin_label(output_pins["sound_3"], "sound_3", direction="output")
+        register_pin_label(output_pins["sound_4"], "sound_4", direction="output")
+        self.DIO4 = self.sound4  # backward-compatible alias
+
+        # CSV reserves GPIO5/6/12 as unused for head-fixed; do not initialize them.
+        self.IR_rx1 = None
+        self.IR_rx2 = None
+        self.IR_rx3 = None
+
+        # CSV maps GPIO13/16 to treadmill inputs.
+        self.treadmill_input_1 = Button(input_pins["treadmill_1_input"], None, True)
+        self.treadmill_input_2 = Button(input_pins["treadmill_2_input"], None, True)
+        register_pin_label(input_pins["treadmill_1_input"], "treadmill_1_input", direction="input")
+        register_pin_label(input_pins["treadmill_2_input"], "treadmill_2_input", direction="input")
+        self.treadmill_input_1.when_pressed = self.treadmill_1_entry
+        self.treadmill_input_1.when_released = self.treadmill_1_exit
+        self.treadmill_input_2.when_pressed = self.treadmill_2_entry
+        self.treadmill_input_2.when_released = self.treadmill_2_exit
+
+        # Legacy aliases retained for tasks expecting these attributes.
+        self.IR_rx4 = self.treadmill_input_1
+        self.IR_rx5 = self.treadmill_input_2
 
         ###############################################################################################
-        # IR detection - for nosepoke
+        # Lick inputs
         ###############################################################################################
-        self.IR_rx1 = Button(5, None, True)  # None, True inverts the signal so poke=True, no-poke=False
-        self.IR_rx2 = Button(6, None, True)
-        self.IR_rx3 = Button(12, None, True)
-        self.IR_rx4 = Button(13, None, True)  # (optional, reserved for future use
-        self.IR_rx5 = Button(16, None, True)  # (optional, reserved for future use
+        self.lick1 = Button(input_pins["lick_1"], None, True)
+        self.lick2 = Button(input_pins["lick_2"], None, True)
+        self.lick3 = Button(input_pins["lick_3"], None, True)
+        register_pin_label(input_pins["lick_1"], "lick_1", direction="input")
+        register_pin_label(input_pins["lick_2"], "lick_2", direction="input")
+        register_pin_label(input_pins["lick_3"], "lick_3", direction="input")
 
-        # link nosepoke event detections to callbacks
-        self.IR_rx1.when_pressed = self.IR_1_entry
-        self.IR_rx2.when_pressed = self.IR_2_entry
-        self.IR_rx3.when_pressed = self.IR_3_entry
-        self.IR_rx4.when_pressed = self.IR_4_entry
-        self.IR_rx5.when_pressed = self.IR_5_entry
-        self.IR_rx1.when_released = self.IR_1_exit
-        self.IR_rx2.when_released = self.IR_2_exit
-        self.IR_rx3.when_released = self.IR_3_exit
-        self.IR_rx4.when_released = self.IR_4_exit
-        self.IR_rx5.when_released = self.IR_5_exit
-        ###############################################################################################
-        # close circuit detection - for ground pin circuit lick detection
-        ###############################################################################################
-        self.lick1 = Button(26, None, True)
-        self.lick2 = Button(27, None, True)
-        self.lick3 = Button(15, None, True)
-        #self.reserved_rx1 = Button(13, None, True)  # for mitch
-        #self.reserved_rx2 = Button(16, None, True)  # for mitch
-        #
-        # # link nosepoke event detections to callbacks
         self.lick1.when_pressed = self.left_exit
         self.lick2.when_pressed = self.right_exit
         self.lick3.when_pressed = self.center_exit
-
         self.lick1.when_released = self.left_entry
         self.lick2.when_released = self.right_entry
         self.lick3.when_released = self.center_entry
-
-        # self.reserved_rx1.when_pressed = self.reserved_rx1_pressed
-        # self.reserved_rx2.when_pressed = self.reserved_rx2_pressed
-        # self.reserved_rx1.when_released = self.reserved_rx1_released
-        # self.reserved_rx2.when_released = self.reserved_rx2_released
-
-        ###############################################################################################
-        # sound: audio board DIO - pins sending TTL to the Tsunami soundboard via SMA connectors
-        ###############################################################################################
-        # pins originally reserved for the lick detection is now used for audio board TTL input signal
-        # NEW EDIT: switch sound to lick
-        """
-        self.sound1 = LED(26)  # originally lick1
-        self.sound2 = LED(27)  # originally lick2
-        self.sound3 = LED(15)  # originally lick3
-        """
-        self.sound1 = LED(23) # branch new_lick modification
-        self.sound2 = LED(24) # branch new_lick modification
 
         ###############################################################################################
         # pump: trigger signal output to a driver board induce the solenoid valve to deliver reward
@@ -171,7 +243,7 @@ class BehavBox(object):
         # previously: rising and falling edges are detected and logged in a separate video file
         # initiating flipper object
         try:
-            self.flipper = FlipperOutput(self.session_info, pin=4)
+            self.flipper = FlipperOutput(self.session_info, pin=pins["flipper"])
         except Exception as error_message:
             print("flipper issue\n")
             print(str(error_message))
@@ -179,75 +251,100 @@ class BehavBox(object):
         ###############################################################################################
         # visual stimuli initiation
         ###############################################################################################
-        if self.session_info["visual_stimulus"]:
+        self.visualstim = None
+        visual_enabled = bool(self.session_info.get("visual_stimulus", False))
+        set_visual_stim_state(
+            visual_stim_enabled=visual_enabled,
+            visual_stim_active=False,
+            current_grating=None,
+        )
+        if visual_enabled:
             try:
-                self.visualstim = VisualStim(self.session_info)
+                if is_raspberry_pi():
+                    try:
+                        from essential.visualstim import VisualStim
+                    except ImportError:
+                        from visualstim import VisualStim
+                    self.visualstim = VisualStim(self.session_info)
+                else:
+                    try:
+                        from essential.mock_hw.visual_stim import MockVisualStim
+                    except ImportError:
+                        from mock_hw.visual_stim import MockVisualStim
+                    self.visualstim = MockVisualStim(self.session_info)
             except Exception as error_message:
                 print("visualstim issue\n")
                 print(str(error_message))
-        else:
-            pass
+
         ###############################################################################################
         # ADC(Adafruit_ADS1x15) setup
         ###############################################################################################
-        try:
-            self.ADC = ADS1x15.ADS1015
-        except Exception as error_message:
-            print("ADC issue\n")
-            print(str(error_message))
+        self.ADC = None
+        if ADS1x15 is not None:
+            try:
+                self.ADC = ADS1x15.ADS1015
+            except Exception as error_message:
+                print("ADC issue\n")
+                print(str(error_message))
+        else:
+            print("ADC module unavailable; continuing without ADC support.")
 
         # ###############################################################################################
         # # treadmill setup
         # ###############################################################################################
-        if session_info['treadmill'] == True:
-            try:
-                self.treadmill = Treadmill.Treadmill(self.session_info)
-            except Exception as error_message:
-                print("treadmill issue\n")
-                # print("Ignore following erro if no treadmill is connected: ")
-                print(str(error_message))
-        else:
-            self.treadmill = False
-            print("No treadmill I2C connection detected!")
+        self.treadmill = False
+        if session_info.get('treadmill') is True:
+            if Treadmill is None:
+                print("Treadmill module unavailable; continuing without treadmill support.")
+            else:
+                try:
+                    self.treadmill = Treadmill.Treadmill(self.session_info)
+                except Exception as error_message:
+                    print("treadmill issue\n")
+                    print(str(error_message))
         ###############################################################################################
         # pygame window setup and keystroke handler
         ###############################################################################################
-        try:
-            pygame.init()
-            self.main_display = pygame.display.set_mode((800, 600))
-            pygame.display.set_caption(session_info["box_name"])
-            fig, axes = plt.subplots(1, 1, )
-            axes.plot()
-            self.check_plot(fig)
-            print(
-                "\nKeystroke handler initiated. In order for keystrokes to register, the pygame window"
-            )
-            print("must be in the foreground. Keys are as follows:\n")
-            print(
-                Fore.YELLOW
-                + "         1: left poke            2: center poke            3: right poke"
-            )
-            print(
-                "         Q: pump_1            W: pump_2            E: pump_3            R: pump_4"
-            )
-            print(
-                Fore.CYAN
-                + "                       Esc: close key capture window\n"
-                + Style.RESET_ALL
-            )
-            print(
-                Fore.GREEN
-                + Style.BRIGHT
-                + "         TO EXIT, CLICK THE MAIN TEXT WINDOW AND PRESS CTRL-C "
-                + Fore.RED
-                + "ONCE\n"
-                + Style.RESET_ALL
-            )
+        self.keyboard_active = False
+        if PLOTTING_AVAILABLE:
+            try:
+                pygame.init()
+                self.main_display = pygame.display.set_mode((800, 600))
+                pygame.display.set_caption(session_info["box_name"])
+                fig, axes = plt.subplots(1, 1, )
+                axes.plot()
+                self.check_plot(fig)
+                print(
+                    "\nKeystroke handler initiated. In order for keystrokes to register, the pygame window"
+                )
+                print("must be in the foreground. Keys are as follows:\n")
+                print(
+                    Fore.YELLOW
+                    + "         1: left poke            2: center poke            3: right poke"
+                )
+                print(
+                    "         Q: pump_1            W: pump_2            E: pump_3            R: pump_4"
+                )
+                print(
+                    Fore.CYAN
+                    + "                       Esc: close key capture window\n"
+                    + Style.RESET_ALL
+                )
+                print(
+                    Fore.GREEN
+                    + Style.BRIGHT
+                    + "         TO EXIT, CLICK THE MAIN TEXT WINDOW AND PRESS CTRL-C "
+                    + Fore.RED
+                    + "ONCE\n"
+                    + Style.RESET_ALL
+                )
 
-            self.keyboard_active = True
-        except Exception as error_message:
-            print("pygame issue\n")
-            print(str(error_message))
+                self.keyboard_active = True
+            except Exception as error_message:
+                print("pygame issue\n")
+                print(str(error_message))
+        else:
+            print("Pygame/matplotlib plotting unavailable; keyboard simulation disabled.")
     ###############################################################################################
     # check for data visualization - uses pygame window to show behavior progress
     ###############################################################################################
@@ -256,7 +353,7 @@ class BehavBox(object):
     2. show a x,y axis with a count of trial
     """
     def check_plot(self, figure=None, FPS=144):
-        if figure:
+        if figure and PLOTTING_AVAILABLE:
             FramePerSec = pygame.time.Clock()
             figure.canvas.draw()
             self.main_display.blit(figure, (0, 0))
@@ -270,9 +367,7 @@ class BehavBox(object):
     ###############################################################################################
 
     def check_keybd(self):
-        reward_size = self.session_info['reward_size']
-        # pump = Pump()
-        if self.keyboard_active:
+        if self.keyboard_active and PLOTTING_AVAILABLE:
             # event = pygame.event.get()
             for event in pygame.event.get():
                 if event.type == pygame.KEYDOWN:
@@ -280,15 +375,12 @@ class BehavBox(object):
                         self.keyboard_active = False
                     elif event.key == pygame.K_1:
                         self.left_entry()
-                        self.left_IR_entry()
                         logging.info(";" + str(time.time()) + ";[action];key_pressed_left_entry()")
                     elif event.key == pygame.K_2:
                         self.center_entry()
-                        self.center_IR_entry()
                         logging.info(";" + str(time.time()) + ";[action];key_pressed_center_entry()")
                     elif event.key == pygame.K_3:
                         self.right_entry()
-                        self.right_IR_entry()
                         logging.info(";" + str(time.time()) + ";[action];key_pressed_right_entry()")
                     # elif event.key == pygame.K_4:
                     #     self.reserved_rx1_pressed()
@@ -478,6 +570,26 @@ class BehavBox(object):
         self.interact_list.append((time.time(), "right_exit"))
         logging.info(";" + str(time.time()) + ";[action];right_exit")
 
+    def treadmill_1_entry(self):
+        self.event_list.append("treadmill_1_entry")
+        self.interact_list.append((time.time(), "treadmill_1_entry"))
+        logging.info(";" + str(time.time()) + ";[action];treadmill_1_entry")
+
+    def treadmill_1_exit(self):
+        self.event_list.append("treadmill_1_exit")
+        self.interact_list.append((time.time(), "treadmill_1_exit"))
+        logging.info(";" + str(time.time()) + ";[action];treadmill_1_exit")
+
+    def treadmill_2_entry(self):
+        self.event_list.append("treadmill_2_entry")
+        self.interact_list.append((time.time(), "treadmill_2_entry"))
+        logging.info(";" + str(time.time()) + ";[action];treadmill_2_entry")
+
+    def treadmill_2_exit(self):
+        self.event_list.append("treadmill_2_exit")
+        self.interact_list.append((time.time(), "treadmill_2_exit"))
+        logging.info(";" + str(time.time()) + ";[action];treadmill_2_exit")
+
     # def reserved_rx1_pressed(self):
     #     self.event_list.append("reserved_rx1_pressed")
     #     self.interact_list.append((time.time(), "reserved_rx1_pressed"))
@@ -554,12 +666,19 @@ class BoxLED(PWMLED):
 class Pump(object):
     def __init__(self, session_info):
         self.session_info = session_info
-        self.pump1 = LED(19)
-        self.pump2 = LED(20)
-        self.pump3 = LED(21)
-        self.pump4 = LED(7)
-        self.pump_air = LED(8)
-        self.pump_vacuum = LED(25)
+        pump_pins = HEAD_FIXED_GPIO["pumps"]
+        self.pump1 = LED(pump_pins["reward_left"])
+        self.pump2 = LED(pump_pins["reward_right"])
+        self.pump3 = LED(pump_pins["reward_center"])
+        self.pump4 = LED(pump_pins["pump4"])
+        self.pump_air = LED(pump_pins["airpuff"])
+        self.pump_vacuum = LED(pump_pins["vacuum"])
+        register_pin_label(pump_pins["reward_left"], "reward_left", direction="output")
+        register_pin_label(pump_pins["reward_right"], "reward_right", direction="output")
+        register_pin_label(pump_pins["reward_center"], "reward_center", direction="output")
+        register_pin_label(pump_pins["pump4"], "pump4", direction="output")
+        register_pin_label(pump_pins["airpuff"], "airpuff", direction="output")
+        register_pin_label(pump_pins["vacuum"], "vacuum", direction="output")
         self.reward_list = [] # a list of tuple (pump_x, reward_amount) with information of reward history for data
         # visualization
 
