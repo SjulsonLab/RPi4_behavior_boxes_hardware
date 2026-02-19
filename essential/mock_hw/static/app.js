@@ -4,6 +4,53 @@ const outputsEl = document.getElementById('outputs');
 const eventsEl = document.getElementById('event-log');
 const visualEl = document.getElementById('visual-stim');
 
+// Head-fixed, function-first ordering for UI display.
+const INPUT_FUNCTION_ORDER = [
+  'lick_1',
+  'lick_2',
+  'lick_3',
+  'treadmill_1_input',
+  'treadmill_2_input',
+];
+
+const OUTPUT_FUNCTION_ORDER = [
+  'reward_left',
+  'reward_center',
+  'reward_right',
+  'pump4',
+  'airpuff',
+  'vacuum',
+  'cue_led_1',
+  'cue_led_2',
+  'cue_led_3',
+  'cue_led_4',
+  'sound_1',
+  'sound_2',
+  'sound_3',
+  'sound_4',
+  'user_output',
+  'flipper',
+];
+
+function buildOrderIndex(labels) {
+  return new Map(labels.map((label, idx) => [label, idx]));
+}
+
+const inputOrderIndex = buildOrderIndex(INPUT_FUNCTION_ORDER);
+const outputOrderIndex = buildOrderIndex(OUTPUT_FUNCTION_ORDER);
+
+function sortByFunctionOrder(pins, orderIndex) {
+  return [...pins].sort((a, b) => {
+    const labelA = a.label || '';
+    const labelB = b.label || '';
+    const rankA = orderIndex.has(labelA) ? orderIndex.get(labelA) : Number.MAX_SAFE_INTEGER;
+    const rankB = orderIndex.has(labelB) ? orderIndex.get(labelB) : Number.MAX_SAFE_INTEGER;
+    if (rankA !== rankB) return rankA - rankB;
+    if (labelA !== labelB) return labelA.localeCompare(labelB);
+    return (a.pin ?? Number.MAX_SAFE_INTEGER) - (b.pin ?? Number.MAX_SAFE_INTEGER);
+  });
+}
+
 function fmtTs(ts) {
   if (!ts) return '-';
   const d = new Date(ts * 1000);
@@ -44,8 +91,14 @@ function renderVisual(visual) {
 
 function renderPins(state) {
   const pins = state.pins || [];
-  const inputs = pins.filter(p => p.direction === 'input');
-  const outputs = pins.filter(p => p.direction === 'output');
+  const inputs = sortByFunctionOrder(
+    pins.filter(p => p.direction === 'input'),
+    inputOrderIndex
+  );
+  const outputs = sortByFunctionOrder(
+    pins.filter(p => p.direction === 'output'),
+    outputOrderIndex
+  );
 
   inputsEl.innerHTML = '';
   outputsEl.innerHTML = '';
