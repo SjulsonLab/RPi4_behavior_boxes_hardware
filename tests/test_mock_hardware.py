@@ -1,0 +1,201 @@
+import importlib
+import json
+import os
+import tempfile
+import time
+import unittest
+from urllib.request import Request, urlopen
+
+os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
+os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
+
+from essential.behavbox import BehavBox, HEAD_FIXED_GPIO, Pump
+from essential.FlipperOutput import FlipperOutput
+from essential.mock_hw.devices import Button, LED
+from essential.mock_hw.registry import REGISTRY, register_pin_label
+from essential.mock_hw.server import ensure_server_running
+from essential.mock_hw.visual_stim import MockVisualStim
+
+
+def _session_info(base_dir: str):
+    return {
+        "external_storage": base_dir,
+        "basename": "test_session",
+        "dir_name": os.path.join(base_dir, "run"),
+        "mouse_name": "mouseA",
+        "datetime": "2026-02-18_120000",
+        "box_name": "test_box",
+        "reward_size": 50,
+        "key_reward_amount": 50,
+        "calibration_coefficient": {
+            "1": [0.0, 0.01],
+            "2": [0.0, 0.01],
+            "3": [0.0, 0.01],
+            "4": [0.0, 0.01],
+        },
+        "air_duration": 0.01,
+        "vacuum_duration": 0.01,
+        "visual_stimulus": False,
+        "treadmill": False,
+    }
+
+
+def _json_request(url: str, method: str = "GET", payload=None):
+    data = None
+    headers = {}
+    if payload is not None:
+        data = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = Request(url, method=method, data=data, headers=headers)
+    with urlopen(req, timeout=3) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+class TestHeadFixedMapping(unittest.TestCase):
+    def setUp(self):
+        REGISTRY.reset()
+        self._cwd = os.getcwd()
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+
+    def test_head_fixed_gpio_constants_present(self):
+        self.assertEqual(HEAD_FIXED_GPIO["flipper"], 4)
+        self.assertEqual(HEAD_FIXED_GPIO["inputs"]["treadmill_1_input"], 13)
+        self.assertEqual(HEAD_FIXED_GPIO["outputs"]["sound_4"], 10)
+        self.assertEqual(HEAD_FIXED_GPIO["unused"], [5, 6, 12])
+
+    def test_behavbox_uses_head_fixed_mapping(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = _session_info(tmp)
+            box = BehavBox(info)
+
+            self.assertEqual(box.cueLED1.pin, 22)
+            self.assertEqual(box.cueLED2.pin, 18)
+            self.assertEqual(box.cueLED3.pin, 17)
+            self.assertEqual(box.cueLED4.pin, 14)
+
+            self.assertEqual(box.user_output.pin, 11)
+            self.assertEqual(box.sound1.pin, 23)
+            self.assertEqual(box.sound2.pin, 24)
+            self.assertEqual(box.sound3.pin, 9)
+            self.assertEqual(box.sound4.pin, 10)
+
+            self.assertEqual(box.treadmill_input_1.pin, 13)
+            self.assertEqual(box.treadmill_input_2.pin, 16)
+            self.assertEqual(box.lick1.pin, 26)
+            self.assertEqual(box.lick2.pin, 27)
+            self.assertEqual(box.lick3.pin, 15)
+
+            self.assertIsNone(box.IR_rx1)
+            self.assertIsNone(box.IR_rx2)
+            self.assertIsNone(box.IR_rx3)
+            self.assertIs(box.IR_rx4, box.treadmill_input_1)
+            self.assertIs(box.IR_rx5, box.treadmill_input_2)
+
+            box.flipper.close()
+
+
+class TestMockDevices(unittest.TestCase):
+    def setUp(self):
+        REGISTRY.reset()
+
+    def test_button_callbacks_once_per_edge(self):
+        btn = Button(900)
+        counts = {"pressed": 0, "released": 0}
+
+        btn.when_pressed = lambda: counts.__setitem__("pressed", counts["pressed"] + 1)
+        btn.when_released = lambda: counts.__setitem__("released", counts["released"] + 1)
+
+        btn.press(source="test")
+        btn.release(source="test")
+
+        self.assertEqual(counts["pressed"], 1)
+        self.assertEqual(counts["released"], 1)
+
+    def test_led_blink_records_transitions(self):
+        led = LED(901)
+        register_pin_label(901, "test_led", direction="output")
+        led.blink(on_time=0.01, off_time=0.01, n=2, background=False)
+
+        events = REGISTRY.get_events(limit=50)["events"]
+        pin_events = [e for e in events if e.get("kind") == "pin" and e.get("pin") == 901]
+        self.assertGreaterEqual(len(pin_events), 4)
+
+    def test_flipper_write_uses_mock_backend(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            session_info = {"flipper_filename": os.path.join(tmp, "flipper")}
+            flipper = FlipperOutput(session_info=session_info, pin=4)
+            flipper._write(True)
+            state = REGISTRY.get_state()
+            pin4 = [p for p in state["pins"] if p["pin"] == 4][0]
+            self.assertTrue(pin4["active"])
+            flipper.close()
+
+    def test_visual_stim_proxy_updates_state(self):
+        vis = MockVisualStim({"mock_visual_stim_duration_s": 0.05})
+        vis.show_grating("g_test")
+
+        state_now = REGISTRY.get_state()["visual"]
+        self.assertTrue(state_now["visual_stim_active"])
+        self.assertEqual(state_now["current_grating"], "g_test")
+
+        time.sleep(0.1)
+        state_after = REGISTRY.get_state()["visual"]
+        self.assertFalse(state_after["visual_stim_active"])
+
+
+class TestIntegration(unittest.TestCase):
+    def setUp(self):
+        REGISTRY.reset()
+        self._cwd = os.getcwd()
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+
+    def test_behavbox_import_and_instantiation_non_pi(self):
+        module = importlib.import_module("essential.behavbox")
+        with tempfile.TemporaryDirectory() as tmp:
+            info = _session_info(tmp)
+            box = module.BehavBox(info)
+            self.assertIsInstance(box, module.BehavBox)
+            box.flipper.close()
+
+    def test_web_api_press_release_and_pulse(self):
+        btn = Button(902)
+        register_pin_label(902, "test_input", direction="input")
+        url = ensure_server_running(host="127.0.0.1", port=0)
+
+        _json_request(f"{url}/api/input/test_input/press", method="POST")
+        self.assertTrue(btn.is_active)
+
+        _json_request(f"{url}/api/input/test_input/release", method="POST")
+        self.assertFalse(btn.is_active)
+
+        _json_request(
+            f"{url}/api/input/test_input/pulse",
+            method="POST",
+            payload={"duration_ms": 30},
+        )
+        time.sleep(0.06)
+        self.assertFalse(btn.is_active)
+
+        state = _json_request(f"{url}/api/state")
+        self.assertIn("pins", state)
+
+    def test_pump_reward_records_output_activity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = _session_info(tmp)
+            pump = Pump(info)
+            pump.reward("1", 100)
+            time.sleep(0.08)
+            events = REGISTRY.get_events(limit=200)["events"]
+            reward_events = [
+                e for e in events
+                if e.get("kind") == "pin" and e.get("label") == "reward_left"
+            ]
+            self.assertGreaterEqual(len(reward_events), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()

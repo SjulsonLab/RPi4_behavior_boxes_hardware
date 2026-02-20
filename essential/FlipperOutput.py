@@ -1,8 +1,12 @@
-from gpiozero import DigitalOutputDevice
 from threading import Thread, Event
 import io
 import time
 import random
+
+try:
+    from essential.gpio_backend import DigitalOutputDevice, register_pin_label
+except ImportError:
+    from gpio_backend import DigitalOutputDevice, register_pin_label
 
 
 class FlipperOutput(DigitalOutputDevice):
@@ -19,6 +23,7 @@ class FlipperOutput(DigitalOutputDevice):
 
         self._flipper_file = self.session_info['flipper_filename'] + '.csv'
         self._flipper_timestamp = []
+        register_pin_label(pin, "flipper", direction="output")
 
     def flip(self, time_min=0.5, time_max=2, n=None, background=True):
         self._stop_flip()
@@ -75,6 +80,6 @@ class FlipperOutput(DigitalOutputDevice):
     def flipper_flush(self):
         print("Flushing: " + self._flipper_file)
         with io.open(self._flipper_file, 'w') as f:
-            f.write('pin_tate, time.time()\n')
+            f.write('pin_state,time.time()\n')
             for entry in self._flipper_timestamp:
                 f.write('%f,%f\n' % entry)

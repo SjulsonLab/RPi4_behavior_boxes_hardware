@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BehavBox Mock Hardware</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header>
+    <h1>BehavBox Mock Hardware (Head-Fixed)</h1>
+    <p id="status-line">Connecting...</p>
+  </header>
+
+  <main>
+    <section>
+      <h2>Visual Stimulus</h2>
+      <div id="visual-stim" class="card"></div>
+    </section>
+
+    <section>
+      <h2>Inputs</h2>
+      <div id="inputs" class="grid"></div>
+    </section>
+
+    <section>
+      <h2>Outputs</h2>
+      <div id="outputs" class="grid"></div>
+    </section>
+
+    <section>
+      <h2>Event Log</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Kind</th>
+            <th>Label</th>
+            <th>Pin</th>
+            <th>Value</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody id="event-log"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
