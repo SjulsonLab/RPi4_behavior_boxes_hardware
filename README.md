@@ -1,4 +1,4 @@
-# RPi4 Behavior Boxes Hardware
+# RPi4 Behavior Boxes Hardware (still in development)
 
 This repository contains only the hardware and low-level support components
 from the original `RPi4_behavior_boxes` codebase.
