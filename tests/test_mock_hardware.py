@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
 os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
 
-from essential.behavbox import BehavBox, HEAD_FIXED_GPIO, Pump
+from essential.behavbox import BehavBox, BehaviorEvent, HEAD_FIXED_GPIO, Pump
 from essential.FlipperOutput import FlipperOutput
 from essential.mock_hw.devices import Button, LED
 from essential.mock_hw.registry import REGISTRY, register_pin_label
@@ -159,6 +159,28 @@ class TestIntegration(unittest.TestCase):
             info = _session_info(tmp)
             box = module.BehavBox(info)
             self.assertIsInstance(box, module.BehavBox)
+            box.flipper.close()
+
+    def test_event_queue_entries_include_detection_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = _session_info(tmp)
+            box = BehavBox(info)
+            box.event_list.clear()
+
+            before = time.time()
+            box.left_entry()
+            after = time.time()
+
+            self.assertEqual(len(box.event_list), 1)
+            queued_event = box.event_list.popleft()
+            self.assertIsInstance(queued_event, BehaviorEvent)
+            self.assertEqual(queued_event.name, "left_entry")
+            self.assertGreaterEqual(queued_event.timestamp, before)
+            self.assertLessEqual(queued_event.timestamp, after)
+
+            interact_timestamp, interact_name = box.interact_list[-1]
+            self.assertEqual(interact_name, "left_entry")
+            self.assertEqual(interact_timestamp, queued_event.timestamp)
             box.flipper.close()
 
     def test_web_api_press_release_and_pulse(self):
