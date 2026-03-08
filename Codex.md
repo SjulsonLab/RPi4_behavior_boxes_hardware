@@ -9,6 +9,11 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 
 ## Current Architecture
 - Core behavior logic: `essential/behavbox.py`
+- Camera HTTP control:
+- `video_acquisition/http_camera_service.py`
+- `video_acquisition/picamera2_recorder.py`
+- `video_acquisition/camera_client.py`
+- `video_acquisition/camera_session.py`
 - Backend selection: `essential/gpio_backend.py`
 - Visual stimulus runtime:
 - `essential/visualstim.py`
@@ -24,6 +29,47 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - Tests:
 - `tests/test_mock_hardware.py`
 - `tests/test_visualstim_runtime.py`
+- `tests/test_camera_service.py`
+
+## Camera Service Contract
+- Camera Pi now owns recording via an always-on HTTP service instead of SSH-launched scripts.
+- Browser endpoints:
+- `/manual` for manual start/stop + preview
+- `/monitor` for preview/status + emergency stop during automated runs
+- API endpoints:
+- `/api/status`
+- `/api/config`
+- `/api/configure`
+- `/api/start`
+- `/api/stop`
+- `/api/sessions`
+- `/api/sessions/<session_id>/ack_transfer`
+- Recording ownership modes:
+- `manual`
+- `automated`
+- Automated sessions block manual start/config changes, but monitor mode still exposes emergency stop.
+
+## Camera Session Data Contract
+- One uninterrupted attempt writes:
+- `attempt_NNN.h264`
+- `attempt_NNN_raw_frames.tsv`
+- Raw TSV columns:
+- `frame_index`
+- `sensor_timestamp_ns`
+- `arrival_utc_ns`
+- Final UTC is derived offline from the full attempt using smoothed offset fitting, not a single POSIX start anchor.
+- Finalization outputs:
+- clean single-attempt session: `session.mp4`, `session.tsv`, `session_manifest.json`
+- crash-visible multi-attempt session: `attempt_NNN.mp4`, `attempt_NNN.tsv`, `session_manifest.json`
+- `session_manifest.json` includes attempt boundaries, gap intervals, hashes, and timestamp-fit diagnostics.
+
+## Camera Offload Contract
+- The BehavBox Pi now uses `CameraClient` instead of SSH for start/stop/status.
+- Session transfer is two-phase:
+- BehavBox pulls the finalized session directory with `rsync`
+- local manifest hashes are verified
+- camera-side deletion happens only after HTTP transfer acknowledgement
+- This is deliberately safer than direct `rsync --remove-source-files` on the camera Pi.
 
 ## Event Queue Contract (Current)
 - Hardware callbacks now enqueue structured `BehaviorEvent` objects, not plain strings.
@@ -89,6 +135,7 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 
 ## Commands
 - `cd /Users/lukesjulson/codex/RPi4_refactor/targets/RPi4_behavior_boxes_hardware`
+- `uv run --with numpy --with scipy --with colorama --with flask --with pytest pytest tests/test_camera_service.py`
 - `uv run --with numpy --with scipy --with colorama --with pytest pytest tests/test_mock_hardware.py tests/test_visualstim_runtime.py`
 - `python debug/run_mock_behavbox.py`
 
@@ -97,6 +144,11 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - Updated callback logging/interaction timestamps to use detection-time event timestamps.
 - Added test coverage for event queue timestamp behavior.
 - Maintained compatibility helpers for task consumers during migration.
+- Added an HTTP camera service with manual/automated ownership modes and browser preview/control pages.
+- Added drift-aware frame UTC derivation and session finalization utilities for raw H.264 + TSV attempts.
+- Replaced BehavBox camera SSH control with `CameraClient` HTTP control and verified offload.
+- Migrated standalone `essential/video_acquisition/VideoCapture.py` away from SSH-based camera start/stop/offload.
+- Added camera-service tests covering timestamp fitting, finalization, ownership blocking, preview/control UI, and offload paths.
 - Replaced the RPG visual stimulus wrapper with a persistent worker runtime.
 - Added YAML grating spec validation and NumPy precomputation.
 - Added fake-backend timing tests and a hardware-gated DRM smoke test.

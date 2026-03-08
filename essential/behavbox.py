@@ -52,6 +52,15 @@ except ImportError:
     from FlipperOutput import FlipperOutput
 
 try:
+    from video_acquisition.camera_client import CameraClient, CameraClientError
+except ImportError:
+    try:
+        from essential.video_acquisition.camera_client import CameraClient, CameraClientError
+    except ImportError:
+        CameraClient = None
+        CameraClientError = RuntimeError
+
+try:
     import Treadmill
 except Exception:
     Treadmill = None
@@ -460,41 +469,18 @@ class BehavBox(object):
     # These work with fake video files but haven't been tested with real ones
     ###############################################################################################
     def video_start(self):
+        if CameraClient is None:
+            raise RuntimeError("CameraClient is unavailable; camera HTTP control cannot start")
         IP_address_video = self.IP_address_video
-        dir_name = self.session_info['dir_name']
         basename = self.session_info['basename']
-        file_name = dir_name + "/" + basename
-        # print(Fore.RED + '\nTEST - RED' + Style.RESET_ALL)
-
-        # create directory on the external storage
         base_dir = self.session_info['external_storage'] + '/'
         hd_dir = base_dir + basename
         os.mkdir(hd_dir)
 
-        # Preview check per Kelly request
-        print(Fore.YELLOW + "Killing any python process prior to this session!\n" + Style.RESET_ALL)
+        print(Fore.YELLOW + "Starting camera session via HTTP service.\n" + Style.RESET_ALL)
         try:
-            os.system("ssh pi@" + IP_address_video + " pkill python")
-            print(Fore.CYAN + "\nStart Previewing ..." + Style.RESET_ALL)
-            print(Fore.RED + "\n CRTL + C to quit previewing and start recording" + Style.RESET_ALL)
-
-            os.system("ssh pi@" + IP_address_video + " '/home/pi/RPi4_behavior_boxes/start_preview.py'")
-            # Kill any python process before start recording
-            print(Fore.GREEN + "\nKilling any python process before start recording!" + Style.RESET_ALL)
-
-            os.system("ssh pi@" + IP_address_video + " pkill python")
-            time.sleep(2)
-
-            # Prepare the path for recording
-            os.system("ssh pi@" + IP_address_video + " mkdir " + dir_name)
-            os.system("ssh pi@" + IP_address_video + " 'date >> ~/video/videolog.log' ")  # I/O redirection
-            tempstr = (
-                    "ssh pi@" + IP_address_video + " 'nohup /home/pi/RPi4_behavior_boxes/video_acquisition/start_acquisition.py "
-                    + file_name
-                    + " >> ~/video/videolog.log 2>&1 & ' "  # file descriptors
-            )
+            client = CameraClient(IP_address_video)
             # start the flipper before the recording start
-            # initiate the flipper
             try:
                 self.flipper.flip()
             except Exception as error_message:
@@ -509,32 +495,34 @@ class BehavBox(object):
                     print("treadmill can't run\n")
                     print(str(error_message))
 
-            # start recording
             print(Fore.GREEN + "\nStart Recording!" + Style.RESET_ALL)
-            os.system(tempstr)
-
-            print(
-                Fore.RED + Style.BRIGHT + "Please check if the preview screen is on! Cancel the session if it's not!" + Style.RESET_ALL)
+            client.start_recording(
+                session_id=basename,
+                owner="automated",
+                duration_s=0,
+            )
+            self._camera_client = client
 
             # start initiating the dumping of the session information when available
             scipy.io.savemat(hd_dir + "/" + basename + '_session_info.mat', {'session_info': self.session_info})
             print("dumping session_info")
             pickle.dump(self.session_info, open(hd_dir + "/" + basename + '_session_info.pkl', "wb"))
 
+        except CameraClientError as e:
+            print(e)
+            raise
         except Exception as e:
             print(e)
 
     def video_stop(self):
         # Get the basename from the session information
         basename = self.session_info['basename']
-        dir_name = self.session_info['dir_name']
         # Get the ip address for the box video:
         IP_address_video = self.IP_address_video
         try:
-            # Run the stop_video script in the box video
-            os.system(
-                "ssh pi@" + IP_address_video + " /home/pi/RPi4_behavior_boxes/video_acquisition/stop_acquisition.sh")
-            time.sleep(2)
+            client = getattr(self, "_camera_client", CameraClient(IP_address_video))
+            client.stop_recording(owner="automated")
+            time.sleep(1)
             # now stop the flipper after the video stopped recording
             try:  # try to stop the flipper
                 self.flipper.close()
@@ -557,22 +545,11 @@ class BehavBox(object):
             print("dumping session_info")
             pickle.dump(self.session_info, open(hd_dir + "/" + basename + '_session_info.pkl', "wb"))
 
-            # Move the video + log from the box_video SD card to the box_behavior external hard drive
-            os.system(
-                "rsync -av --progress --remove-source-files pi@" + IP_address_video + ":" + dir_name + "/ "
-                + hd_dir
-            )
-            os.system(
-                "rsync -av --progress --remove-source-files pi@" + IP_address_video + ":~/video/*.log "
-                + hd_dir
-            )
-
-            os.system(
-                "rsync -arvz --progress --remove-source-files " + self.session_info['dir_name'] + "/ "
-                + hd_dir
-            )
-            print("rsync finished!")
-            # print("Control-C to quit (ignore the error for now)")
+            client.offload_session(basename, base_dir)
+            print("camera session offload finished!")
+        except CameraClientError as e:
+            print(e)
+            raise
         except Exception as e:
             print(e)
 
