@@ -14,7 +14,6 @@ import sys
 import RPi.GPIO as GPIO
 import os
 import signal
-# import irig_h_gpio as irig
 from pathlib import Path
 
 
@@ -29,7 +28,9 @@ def signal_handler(signum, frame):
     sys.exit(0)
 
 signal.signal(signal.SIGINT, signal_handler)
-base_path = sys.argv[1]
+
+video_dt = str(dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
+base_path = Path.home() / 'buffer' / video_dt
 
 # set high thread priority - may require sudo access
 try:
@@ -37,14 +38,14 @@ try:
 except:
     print("set nice level failed. \nsudo nano /etc/security/limits.conf \npi	-       nice    -20")
 
-#camera parameter setting
-WIDTH  = 640
-HEIGHT = 480
-FRAMERATE = 30
-BRIGHTNESS = 0  # 0:100 in Picam1, -1:1 in Picam2
-CONTRAST = 1  # 50 / 100
-SHARPNESS = 1  # 50
-SATURATION = 1  # 30
+# camera parameter setting
+# WIDTH  = 640
+# HEIGHT = 480
+# FRAMERATE = 30
+# BRIGHTNESS = 0  # 0:100 in Picam1, -1:1 in Picam2
+# CONTRAST = 1  # 50 / 100
+# SHARPNESS = 1  # 50
+# SATURATION = 1  # 30
 # AWB_MODE = 'off'
 # AWB_GAINS = 1.4
 
@@ -60,35 +61,28 @@ scale = 1
 thickness = 2
 
 # video, timestamps and ttl file name
-video_dt = str(dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 # VIDEO_FILE_NAME = base_path + "_cam" + camId + "_output_" + video_dt + ".h264"
 # TIMESTAMP_FILE_NAME = base_path + "_cam" + camId + "_timestamp_" + video_dt + ".csv"
 # FLIPPER_FILE_NAME = base_path + "_cam"+ camId + "_flipper_" + video_dt + ".csv"
-# IRIG_FILE_NAME = base_path + "_cam" + camId + "_irig_" + video_dt + ".csv"
 
 # don't need to add new timestamps to file names, the base_path already includes a timestamp
-VIDEO_FILE_NAME = base_path + "_cam" + camId + "_output.h264"
-TIMESTAMP_FILE_NAME = base_path + "_cam" + camId + "_timestamp.csv"
-FLIPPER_FILE_NAME = base_path + "_cam"+ camId + "_flipper.csv"
-# IRIG_FILE_NAME = base_path + "_cam" + camId + "_irig.csv"
+VIDEO_FILE_NAME = str(base_path.resolve()) + "_cam" + camId + "_output.h264"
+TIMESTAMP_FILE_NAME = str(base_path.resolve()) + "_cam" + camId + "_timestamp.csv"
+FLIPPER_FILE_NAME = str(base_path.resolve()) + "_cam"+ camId + "_flipper.csv"
 
 # set raspberry pi board layout to BCM
 pin_flipper = 4
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(pin_flipper, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# pin_irig = 6
-
 # timestamp output object to save timestamps according to pi and TTL inputs received and write to file
 class TimestampOutput(object):
 
-    def __init__(self, timestamp_filename, flipper_filename, irig_filename=None):
+    def __init__(self, timestamp_filename, flipper_filename):
         self._timestampFile = timestamp_filename
         self._flipper_file = flipper_filename
         self._timestamps = []
         self._flipper_timestamps = []
-        # self._irig_file = irig_filename
-        # self._irig_timestamps = []
 
         self.flip_state = GPIO.input(pin_flipper)
         self.flip_thread = None
@@ -128,8 +122,6 @@ class TimestampOutput(object):
             for entry in self._flipper_timestamps:
                 f.write('%f,%f\n' % entry)
 
-        # irig.finish()
-
     def GPIO_loop(self, bouncetime=BOUNCETIME):
         while True:
             cur_state = GPIO.input(pin_flipper)
@@ -149,17 +141,6 @@ class TimestampOutput(object):
         self.flip_state = GPIO.input(pin)
         self._flipper_timestamps.append((self.flip_state,
                                          time.time()))
-
-    def flipper_callback(self):
-        self._flipper_timestamps.append((self.flip_state,
-                                         time.time()))
-
-    # def irig_callback(self, irig_data):
-    #     self._irig_timestamps.append((
-    #         irig_data,
-    #         time.time(),
-    #         time.perf_counter_ns()
-    #     ))
 
     def event_loop(self):
         while True:
@@ -231,10 +212,8 @@ print("Camera configuration aligned to {}".format(camera.video_configuration.siz
 timestamps = TimestampOutput(TIMESTAMP_FILE_NAME, FLIPPER_FILE_NAME)
 camera.pre_callback = timestamps.append_timestamps
 camera.start_preview(Preview.DRM, x=100, y=0, width=1067, height=800)
-# camera.start_preview(Preview.DRM, x=100, y=0, width=1320, height=990)
 # timestamps.start_flipper_thread()
 GPIO.add_event_detect(pin_flipper, GPIO.BOTH, callback=timestamps.flipper_callback_GPIO, bouncetime=100)
-# irig_sender = irig.IrigHSender(sending_gpio_pin=pin_irig, filename=IRIG_FILE_NAME)
 
 with io.open(VIDEO_FILE_NAME, 'wb') as buffer:
     encoder = H264Encoder()
@@ -243,7 +222,6 @@ with io.open(VIDEO_FILE_NAME, 'wb') as buffer:
         print('Starting Recording')
         camera.start_recording(encoder, output, quality=Quality.VERY_HIGH)
         # camera.set_controls({"AfMode": controls.AfModeEnum.Manual, "LensPosition": 10.0})  # for V3 camera; comment this out for HQ camera, which uses manual focus
-        # irig_sender.start()
         time.sleep(2)
         camera.set_controls({
             'AeEnable': False,
@@ -252,7 +230,7 @@ with io.open(VIDEO_FILE_NAME, 'wb') as buffer:
         time.sleep(2)
         print('Started Recording')
         while True:
-            # time.sleep(.0001)
+            # time.sleep(.001)
             continue
 
     except Exception as e:
@@ -263,7 +241,5 @@ with io.open(VIDEO_FILE_NAME, 'wb') as buffer:
         print(e)
 
     finally:
-        # irig_sender.finish()
         timestamps.close()
         sys.exit(0)
-
