@@ -1,6 +1,6 @@
 # Codex.md
 
-Last updated: 2026-02-22
+Last updated: 2026-03-08
 Repo: `RPi4_behavior_boxes_hardware`
 Primary branch in progress: `codex/hardware-integration-phase1`
 
@@ -10,13 +10,20 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 ## Current Architecture
 - Core behavior logic: `essential/behavbox.py`
 - Backend selection: `essential/gpio_backend.py`
+- Visual stimulus runtime:
+- `essential/visualstim.py`
+- `essential/visual_runtime/grating_specs.py`
+- `essential/visual_runtime/grating_compiler.py`
+- `essential/visual_runtime/drm_runtime.py`
 - Mock hardware stack:
 - `essential/mock_hw/devices.py`
 - `essential/mock_hw/registry.py`
 - `essential/mock_hw/server.py`
 - `essential/mock_hw/web.py`
 - `essential/mock_hw/visual_stim.py`
-- Tests: `tests/test_mock_hardware.py`
+- Tests:
+- `tests/test_mock_hardware.py`
+- `tests/test_visualstim_runtime.py`
 
 ## Event Queue Contract (Current)
 - Hardware callbacks now enqueue structured `BehaviorEvent` objects, not plain strings.
@@ -63,9 +70,26 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `BEHAVBOX_MOCK_UI_AUTOSTART`
 - `BEHAVBOX_FORCE_MOCK`
 
+## Visual Stimulus Runtime
+- Replaced RPG-based `essential/visualstim.py` with a JSON-spec + precompute pipeline.
+- Stimuli are described by JSON files listed in `session_info["vis_gratings"]`.
+- `VisualStim` preserves task-facing compatibility for:
+- `show_grating(name)`
+- `process_function(name)`
+- `gratings`
+- `myscreen.close()`
+- Runtime backends:
+- `visual_backend="drm"` for Raspberry Pi DRM/KMS via `python3-kms++`
+- `visual_backend="fake"` for tests and non-Pi development
+- Default display calibration:
+- `visual_display_degrees_subtended = 80.0`
+- DRM bring-up target: Pi 4B, 64-bit Bookworm, 60 Hz, console-only
+- Final validation target: fresh 64-bit Trixie on Pi 4B
+- Pi 5 is follow-up validation, not guaranteed by the first pass
+
 ## Commands
 - `cd /Users/lukesjulson/codex/RPi4_refactor/targets/RPi4_behavior_boxes_hardware`
-- `pytest -q tests/test_mock_hardware.py`
+- `uv run --with numpy --with scipy --with colorama --with pytest pytest tests/test_mock_hardware.py tests/test_visualstim_runtime.py`
 - `python debug/run_mock_behavbox.py`
 
 ## Recent Changes
@@ -73,6 +97,9 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - Updated callback logging/interaction timestamps to use detection-time event timestamps.
 - Added test coverage for event queue timestamp behavior.
 - Maintained compatibility helpers for task consumers during migration.
+- Replaced the RPG visual stimulus wrapper with a persistent worker runtime.
+- Added JSON grating spec validation and NumPy precomputation.
+- Added fake-backend timing tests and a hardware-gated DRM smoke test.
 
 ## Notes
 - `sample_tasks/` exists locally but is currently untracked in this branch.

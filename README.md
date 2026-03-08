@@ -25,6 +25,10 @@ to support independent versioning of hardware code and task code.
 ## Integration Notes
 
 - Camera stack additions were imported from `matt-behavior` in Phase 2 (`video_acquisition/`, `HQ_camera/`, and related `essential/video_acquisition/` updates).
+- Visual stimulus delivery now uses precomputed JSON grating specs plus a persistent
+  DRM/KMS worker instead of the legacy RPG/framebuffer path.
+- Pi runtime prerequisite for real visual stimulus output: `python3-kms++`.
+- Example specs live in `essential/visual_stimuli/`.
 
 ## Head-Fixed GPIO + Mock UI
 
