@@ -17,6 +17,8 @@ dependencies:
     - Adafruit-PlatformDetect
     - Adafruit-PureIO
     - gpiozero
-    - icecream    - picamera
+    - icecream
+    - picamera
+    - PyYAML
     - pyserial
     - pysistence

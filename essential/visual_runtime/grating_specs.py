@@ -1,20 +1,20 @@
-"""Validation helpers for JSON visual stimulus specifications."""
+"""Validation helpers for YAML visual stimulus specifications."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import math
 from pathlib import Path
 from typing import Any, Mapping
+import yaml
 
 
 @dataclass(frozen=True)
 class GratingSpec:
-    """Validated drifting grating parameters loaded from JSON.
+    """Validated drifting grating parameters loaded from YAML.
 
     Attributes:
-        path: Source JSON file path.
+        path: Source YAML file path.
         name: User-facing stimulus identifier.
         duration_s: Stimulus duration in seconds.
         angle_deg: Drift orientation in degrees.
@@ -41,10 +41,10 @@ class GratingSpec:
 
 
 def load_grating_spec(path: str | Path) -> GratingSpec:
-    """Load and validate a drifting grating specification from JSON.
+    """Load and validate a drifting grating specification from YAML.
 
     Args:
-        path: Filesystem path to a JSON document describing one stimulus.
+        path: Filesystem path to a YAML document describing one stimulus.
 
     Returns:
         GratingSpec: Parsed stimulus parameters with validated units and ranges.
@@ -55,9 +55,20 @@ def load_grating_spec(path: str | Path) -> GratingSpec:
     """
 
     spec_path = Path(path).expanduser().resolve()
-    payload = json.loads(spec_path.read_text(encoding="utf-8"))
+    if spec_path.suffix.lower() == ".json":
+        raise ValueError(
+            "JSON grating specs are no longer supported; convert this file to YAML (.yaml or .yml)"
+        )
+    if spec_path.suffix.lower() not in {".yaml", ".yml"}:
+        raise ValueError("grating spec path must end with .yaml or .yml")
+
+    try:
+        payload = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"invalid YAML grating spec: {exc}") from exc
+
     if not isinstance(payload, Mapping):
-        raise ValueError(f"grating spec must be a JSON object, got {type(payload).__name__}")
+        raise ValueError(f"grating spec must be a YAML mapping, got {type(payload).__name__}")
 
     name = _require_nonempty_string(payload, "name")
     duration_s = _require_positive_float(payload, "duration_s")
@@ -92,7 +103,7 @@ def _require_nonempty_string(payload: Mapping[str, Any], key: str) -> str:
     """Validate a required non-empty string field.
 
     Args:
-        payload: JSON object as a Python mapping.
+        payload: YAML mapping parsed into Python objects.
         key: Required mapping key.
 
     Returns:
@@ -109,7 +120,7 @@ def _require_positive_float(payload: Mapping[str, Any], key: str) -> float:
     """Validate a required strictly positive float field.
 
     Args:
-        payload: JSON object as a Python mapping.
+        payload: YAML mapping parsed into Python objects.
         key: Required mapping key.
 
     Returns:
@@ -126,7 +137,7 @@ def _require_nonnegative_float(payload: Mapping[str, Any], key: str) -> float:
     """Validate a required non-negative float field.
 
     Args:
-        payload: JSON object as a Python mapping.
+        payload: YAML mapping parsed into Python objects.
         key: Required mapping key.
 
     Returns:
@@ -143,7 +154,7 @@ def _require_finite_float(payload: Mapping[str, Any], key: str) -> float:
     """Validate a required finite numeric field.
 
     Args:
-        payload: JSON object as a Python mapping.
+        payload: YAML mapping parsed into Python objects.
         key: Required mapping key.
 
     Returns:
@@ -168,7 +179,7 @@ def _require_float_in_range(
     """Validate a required float constrained to an inclusive range.
 
     Args:
-        payload: JSON object as a Python mapping.
+        payload: YAML mapping parsed into Python objects.
         key: Required mapping key.
         min_value: Inclusive lower bound.
         max_value: Inclusive upper bound.
@@ -187,7 +198,7 @@ def _require_int_in_range(payload: Mapping[str, Any], key: str, min_value: int, 
     """Validate a required integer constrained to an inclusive range.
 
     Args:
-        payload: JSON object as a Python mapping.
+        payload: YAML mapping parsed into Python objects.
         key: Required mapping key.
         min_value: Inclusive lower bound.
         max_value: Inclusive upper bound.
@@ -205,10 +216,10 @@ def _require_int_in_range(payload: Mapping[str, Any], key: str, min_value: int, 
 
 
 def _optional_resolution(value: Any) -> tuple[int, int] | None:
-    """Validate an optional ``[width_px, height_px]`` JSON resolution field.
+    """Validate an optional ``[width_px, height_px]`` YAML resolution field.
 
     Args:
-        value: Raw JSON value for ``resolution_px``.
+        value: Raw YAML value for ``resolution_px``.
 
     Returns:
         tuple[int, int] | None: Validated resolution in pixels.
@@ -230,7 +241,7 @@ def _optional_positive_float(value: Any, key: str) -> float | None:
     """Validate an optional strictly positive float field.
 
     Args:
-        value: Raw JSON value.
+        value: Raw YAML value.
         key: Field name used in validation errors.
 
     Returns:

@@ -13,3 +13,4 @@ dependencies:
     - colorama
     - pyserial
     - pysistence
+    - PyYAML

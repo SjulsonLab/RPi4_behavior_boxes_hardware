@@ -66,12 +66,12 @@ def compile_grating(
     if resolution_px is None:
         resolution_px = spec.resolution_px
     if resolution_px is None:
-        raise ValueError("resolution_px must be provided either in the session or the JSON spec")
+        raise ValueError("resolution_px must be provided either in the session or the YAML spec")
 
     if degrees_subtended is None:
         degrees_subtended = spec.degrees_subtended
     if degrees_subtended is None:
-        raise ValueError("degrees_subtended must be provided either in the session or the JSON spec")
+        raise ValueError("degrees_subtended must be provided either in the session or the YAML spec")
     if degrees_subtended <= 0:
         raise ValueError("degrees_subtended must be > 0")
 

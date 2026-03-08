@@ -71,8 +71,8 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `BEHAVBOX_FORCE_MOCK`
 
 ## Visual Stimulus Runtime
-- Replaced RPG-based `essential/visualstim.py` with a JSON-spec + precompute pipeline.
-- Stimuli are described by JSON files listed in `session_info["vis_gratings"]`.
+- Replaced RPG-based `essential/visualstim.py` with a YAML-spec + precompute pipeline.
+- Stimuli are described by YAML files listed in `session_info["vis_gratings"]`.
 - `VisualStim` preserves task-facing compatibility for:
 - `show_grating(name)`
 - `process_function(name)`
@@ -98,7 +98,7 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - Added test coverage for event queue timestamp behavior.
 - Maintained compatibility helpers for task consumers during migration.
 - Replaced the RPG visual stimulus wrapper with a persistent worker runtime.
-- Added JSON grating spec validation and NumPy precomputation.
+- Added YAML grating spec validation and NumPy precomputation.
 - Added fake-backend timing tests and a hardware-gated DRM smoke test.
 
 ## Notes

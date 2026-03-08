@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
 import pytest
+import yaml
 
 from essential.visualstim import VisualStim
 from essential.visual_runtime.grating_compiler import compile_grating
@@ -14,14 +14,14 @@ from essential.visual_runtime.grating_specs import load_grating_spec
 
 
 def _write_spec(path: Path, **overrides: object) -> Path:
-    """Write a JSON grating specification file and return its path.
+    """Write a YAML grating specification file and return its path.
 
     Args:
-        path: Output path for the JSON file.
+        path: Output path for the YAML file.
         **overrides: Values that replace the default specification fields.
 
     Returns:
-        Path: Absolute path to the written JSON spec file.
+        Path: Absolute path to the written YAML spec file.
     """
 
     payload = {
@@ -35,7 +35,7 @@ def _write_spec(path: Path, **overrides: object) -> Path:
         "waveform": "sine",
     }
     payload.update(overrides)
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
     return path
 
 
@@ -43,7 +43,7 @@ def _session_info(spec_paths: list[Path]) -> dict[str, object]:
     """Build the minimum VisualStim session info needed by tests.
 
     Args:
-        spec_paths: Ordered list of JSON spec paths to preload.
+        spec_paths: Ordered list of YAML spec paths to preload.
 
     Returns:
         dict[str, object]: Session configuration compatible with VisualStim.
@@ -63,18 +63,18 @@ def test_visualstim_public_api_compatibility(tmp_path: Path) -> None:
     """VisualStim should preserve the legacy public surface while using the new backend.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
-    spec_path = _write_spec(tmp_path / "go_grating.json")
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
     visual = VisualStim(_session_info([spec_path]))
 
     try:
         assert "go_grating" in visual.gratings
-        assert "go_grating.json" in visual.gratings
+        assert "go_grating.yaml" in visual.gratings
         assert hasattr(visual, "show_grating")
         assert hasattr(visual, "process_function")
         assert hasattr(visual, "load_grating_file")
@@ -85,22 +85,107 @@ def test_visualstim_public_api_compatibility(tmp_path: Path) -> None:
         visual.myscreen.close()
 
 
-def test_json_grating_spec_validation_missing_fields_raises(tmp_path: Path) -> None:
+def test_yaml_grating_spec_validation_missing_fields_raises(tmp_path: Path) -> None:
     """Loading a spec missing required fields should fail with a clear validation error.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
-    spec_path = _write_spec(tmp_path / "missing_waveform.json")
-    payload = json.loads(spec_path.read_text(encoding="utf-8"))
+    spec_path = _write_spec(tmp_path / "missing_waveform.yaml")
+    payload = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
     payload.pop("waveform")
-    spec_path.write_text(json.dumps(payload), encoding="utf-8")
+    spec_path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
 
     with pytest.raises(ValueError, match="waveform"):
+        load_grating_spec(spec_path)
+
+
+def test_loader_accepts_yaml_comments(tmp_path: Path) -> None:
+    """YAML comments should be accepted without affecting parsed stimulus values.
+
+    Inputs:
+        tmp_path: pytest temporary directory used for YAML spec storage.
+
+    Returns:
+        None.
+    """
+
+    spec_path = tmp_path / "commented_grating.yaml"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "# user-facing comment",
+                'name: "commented_grating"',
+                "duration_s: 0.1",
+                "angle_deg: 45.0  # orientation in degrees",
+                "spatial_freq_cpd: 0.08",
+                "temporal_freq_hz: 1.5",
+                "contrast: 0.9",
+                "background_gray_u8: 96",
+                'waveform: "sine"',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    spec = load_grating_spec(spec_path)
+
+    assert spec.name == "commented_grating"
+    assert spec.angle_deg == pytest.approx(45.0)
+
+
+def test_loader_accepts_yml_extension(tmp_path: Path) -> None:
+    """The spec loader should accept the .yml extension in addition to .yaml.
+
+    Inputs:
+        tmp_path: pytest temporary directory used for YAML spec storage.
+
+    Returns:
+        None.
+    """
+
+    spec_path = _write_spec(tmp_path / "go_grating.yml")
+    spec = load_grating_spec(spec_path)
+
+    assert spec.name == "go_grating"
+
+
+def test_loader_rejects_json_specs_with_migration_error(tmp_path: Path) -> None:
+    """JSON-authored spec files should fail with a clear migration message.
+
+    Inputs:
+        tmp_path: pytest temporary directory used for YAML spec storage.
+
+    Returns:
+        None.
+    """
+
+    spec_path = tmp_path / "legacy_grating.json"
+    spec_path.write_text(
+        "\n".join(
+            [
+                "{",
+                '  "name": "legacy_grating",',
+                '  "duration_s": 0.1,',
+                '  "angle_deg": 45.0,',
+                '  "spatial_freq_cpd": 0.08,',
+                '  "temporal_freq_hz": 1.5,',
+                '  "contrast": 0.9,',
+                '  "background_gray_u8": 96,',
+                '  "waveform": "sine"',
+                "}",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="YAML"):
         load_grating_spec(spec_path)
 
 
@@ -108,14 +193,14 @@ def test_grating_compiler_output_contract(tmp_path: Path) -> None:
     """Compiled gratings should expose the documented frame dtype, shape, and gray range.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
     spec_path = _write_spec(
-        tmp_path / "static_gray.json",
+        tmp_path / "static_gray.yaml",
         name="static_gray",
         duration_s=0.1,
         contrast=0.0,
@@ -139,13 +224,13 @@ def test_show_grating_uses_persistent_worker(tmp_path: Path) -> None:
     """Repeated play requests should reuse a single worker process.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
-    spec_path = _write_spec(tmp_path / "go_grating.json")
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
     visual = VisualStim(_session_info([spec_path]))
 
     try:
@@ -165,15 +250,15 @@ def test_load_grating_file_after_init_updates_runtime(tmp_path: Path) -> None:
     """Loading a new spec after init should rebuild the worker and make it playable.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
-    first_spec = _write_spec(tmp_path / "go_grating.json")
+    first_spec = _write_spec(tmp_path / "go_grating.yaml")
     second_spec = _write_spec(
-        tmp_path / "nogo_grating.json",
+        tmp_path / "nogo_grating.yml",
         name="nogo_grating",
         angle_deg=135.0,
         waveform="square",
@@ -192,17 +277,47 @@ def test_load_grating_file_after_init_updates_runtime(tmp_path: Path) -> None:
         visual.myscreen.close()
 
 
-def test_myscreen_close_shuts_worker_cleanly(tmp_path: Path) -> None:
-    """The compatibility myscreen.close shim should stop the display worker.
+def test_load_grating_dir_finds_yaml_and_yml(tmp_path: Path) -> None:
+    """Directory loading should scan both .yaml and .yml stimulus spec files.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
-    spec_path = _write_spec(tmp_path / "go_grating.json")
+    yaml_path = _write_spec(tmp_path / "go_grating.yaml")
+    yml_path = _write_spec(
+        tmp_path / "nogo_grating.yml",
+        name="nogo_grating",
+        angle_deg=135.0,
+        waveform="square",
+    )
+    visual = VisualStim(_session_info([]))
+
+    try:
+        visual.load_grating_dir(tmp_path)
+
+        assert yaml_path.name in visual.gratings
+        assert yml_path.name in visual.gratings
+        assert "go_grating" in visual.gratings
+        assert "nogo_grating" in visual.gratings
+    finally:
+        visual.myscreen.close()
+
+
+def test_myscreen_close_shuts_worker_cleanly(tmp_path: Path) -> None:
+    """The compatibility myscreen.close shim should stop the display worker.
+
+    Inputs:
+        tmp_path: pytest temporary directory used for YAML spec storage.
+
+    Returns:
+        None.
+    """
+
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
     visual = VisualStim(_session_info([spec_path]))
 
     visual.myscreen.close()
@@ -214,13 +329,13 @@ def test_unknown_grating_name_raises_clear_error(tmp_path: Path) -> None:
     """Unknown grating names should fail with a clear lookup error.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
-    spec_path = _write_spec(tmp_path / "go_grating.json")
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
     visual = VisualStim(_session_info([spec_path]))
 
     try:
@@ -234,13 +349,13 @@ def test_fake_backend_records_timing_and_restores_gray(tmp_path: Path) -> None:
     """The fake backend should log timing metadata and restore gray after playback.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
-    spec_path = _write_spec(tmp_path / "go_grating.json")
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
     visual = VisualStim(_session_info([spec_path]))
 
     try:
@@ -268,13 +383,13 @@ def test_hardware_smoke_preloads_and_logs_timings(tmp_path: Path) -> None:
     """Hardware smoke test for an explicitly enabled Raspberry Pi DRM environment.
 
     Inputs:
-        tmp_path: pytest temporary directory used for JSON spec storage.
+        tmp_path: pytest temporary directory used for YAML spec storage.
 
     Returns:
         None.
     """
 
-    spec_path = _write_spec(tmp_path / "go_grating.json", duration_s=0.05)
+    spec_path = _write_spec(tmp_path / "go_grating.yaml", duration_s=0.05)
     session_info = _session_info([spec_path])
     session_info["visual_backend"] = "drm"
     visual = VisualStim(session_info)

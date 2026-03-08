@@ -3,7 +3,7 @@
 The visual stimulus stack no longer depends on RPG, `wiringPi`, or the legacy
 framebuffer/mailbox path.
 
-Stimuli are now described by JSON files and precomputed before playback.
+Stimuli are now described by YAML files and precomputed before playback.
 
 ## Runtime target
 
@@ -12,9 +12,9 @@ Stimuli are now described by JSON files and precomputed before playback.
 - Runtime mode: console DRM/KMS only
 - Pi package requirement: `python3-kms++`
 
-## JSON spec format
+## YAML spec format
 
-Each file in `session_info["vis_gratings"]` must contain one JSON object with:
+Each file in `session_info["vis_gratings"]` must contain one YAML mapping with:
 
 - `name`: stimulus lookup name used by `show_grating(name)`
 - `duration_s`: duration in seconds
@@ -29,8 +29,8 @@ Each file in `session_info["vis_gratings"]` must contain one JSON object with:
 
 Example files:
 
-- `go_grating.json`
-- `nogo_grating.json`
+- `go_grating.yaml`
+- `nogo_grating.yaml`
 
-The compatibility wrapper accepts the JSON `name`, the filename stem, or the
+The compatibility wrapper accepts the YAML `name`, the filename stem, or the
 full filename as the `show_grating(...)` argument.

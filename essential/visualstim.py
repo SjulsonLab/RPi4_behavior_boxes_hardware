@@ -50,7 +50,7 @@ class VisualStim:
 
     Args:
         session_info: Mapping containing at least ``vis_gratings`` and
-            ``gray_level``. ``vis_gratings`` is a list of JSON spec file paths.
+            ``gray_level``. ``vis_gratings`` is a list of YAML spec file paths.
             Optional keys are ``visual_backend``, ``visual_display_resolution_px``,
             ``visual_display_refresh_hz``, and ``visual_display_degrees_subtended``.
 
@@ -92,10 +92,10 @@ class VisualStim:
         logging.info(";%s;[initialization];screen_opened", time.time())
 
     def load_grating_file(self, grating_file: str | os.PathLike[str]) -> None:
-        """Load, validate, and compile one JSON grating specification file.
+        """Load, validate, and compile one YAML grating specification file.
 
         Args:
-            grating_file: Path to a JSON specification file.
+            grating_file: Path to a YAML specification file.
 
         Returns:
             None.
@@ -122,17 +122,21 @@ class VisualStim:
             self._restart_runtime()
 
     def load_grating_dir(self, grating_directory: str | os.PathLike[str]) -> None:
-        """Load all JSON grating specs from one directory.
+        """Load all YAML grating specs from one directory.
 
         Args:
-            grating_directory: Directory containing ``*.json`` spec files.
+            grating_directory: Directory containing ``*.yaml`` or ``*.yml`` spec files.
 
         Returns:
             None.
         """
 
         logging.info(";%s;[initialization];loading all gratings in directory", time.time())
-        for spec_path in sorted(Path(grating_directory).expanduser().resolve().glob("*.json")):
+        grating_dir = Path(grating_directory).expanduser().resolve()
+        spec_paths = sorted(
+            list(grating_dir.glob("*.yaml")) + list(grating_dir.glob("*.yml"))
+        )
+        for spec_path in spec_paths:
             self.load_grating_file(spec_path)
 
     def load_session_gratings(self) -> None:
@@ -167,8 +171,8 @@ class VisualStim:
         """Queue a precomputed stimulus for playback on the persistent worker.
 
         Args:
-            grating_name: Stimulus alias, filename, filename stem, or JSON
-                ``name`` field.
+            grating_name: Stimulus alias, filename, filename stem, or
+                ``name`` field from the YAML spec.
 
         Returns:
             None.
@@ -219,7 +223,7 @@ def _stimulus_aliases(grating_path: Path, stimulus_name: str) -> tuple[str, ...]
     """Return all accepted lookup aliases for one stimulus file.
 
     Args:
-        grating_path: JSON spec file path.
+        grating_path: YAML spec file path.
         stimulus_name: Explicit stimulus name from the spec.
 
     Returns:

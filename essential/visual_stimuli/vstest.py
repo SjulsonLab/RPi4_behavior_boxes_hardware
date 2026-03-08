@@ -1,11 +1,11 @@
-"""Small local check for the JSON visual stimulus toolchain."""
+"""Small local check for the YAML visual stimulus toolchain."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 import sys
 import tempfile
+import yaml
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -18,9 +18,9 @@ def main() -> None:
     """Compile one temporary grating spec and print the resulting frame shape."""
 
     with tempfile.TemporaryDirectory() as tmp_dir:
-        spec_path = Path(tmp_dir) / "demo_grating.json"
+        spec_path = Path(tmp_dir) / "demo_grating.yaml"
         spec_path.write_text(
-            json.dumps(
+            yaml.safe_dump(
                 {
                     "name": "demo_grating",
                     "duration_s": 0.1,
@@ -30,7 +30,8 @@ def main() -> None:
                     "contrast": 0.9,
                     "background_gray_u8": 96,
                     "waveform": "sine",
-                }
+                },
+                sort_keys=False,
             ),
             encoding="utf-8",
         )
