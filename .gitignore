@@ -213,6 +213,8 @@ irig_decoding/data/
 # Project-specific
 .idea
 temp/
+tmp_task_runs/
+sample_tasks/
 *.asv
 *.m~
 *.mex*
