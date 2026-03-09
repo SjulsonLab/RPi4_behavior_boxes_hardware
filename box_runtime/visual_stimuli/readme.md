@@ -11,6 +11,8 @@ Stimuli are now described by YAML files and precomputed before playback.
 - Final validation target: fresh 64-bit Raspberry Pi OS Trixie
 - Runtime mode: console DRM/KMS only
 - Pi package requirement: `python3-kms++`
+- Default stimulus connector: `HDMI-A-1`
+- Override connector with `session_info["visual_display_connector"]` or `VISUAL_STIM_CONNECTOR`
 
 ## YAML spec format
 

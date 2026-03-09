@@ -19,6 +19,7 @@ from box_runtime.video_recording.camera_session import (
     CameraSessionError,
     estimate_required_bytes,
 )
+from box_runtime.video_recording.drm_preview_viewer import start_preview_viewer_from_env
 from box_runtime.video_recording.picamera2_recorder import Picamera2Recorder
 
 
@@ -309,6 +310,7 @@ def main() -> None:  # pragma: no cover - exercised on the Pi
     host = os.environ.get("CAMERA_SERVICE_HOST", "0.0.0.0")
     port = int(os.environ.get("CAMERA_SERVICE_PORT", "8000"))
     app = create_app(storage_root=storage_root, recorder_factory=Picamera2Recorder)
+    app.config["drm_preview_viewer"] = start_preview_viewer_from_env(port=port, logger=app.logger)
     app.run(host=host, port=port, threaded=True)
 
 

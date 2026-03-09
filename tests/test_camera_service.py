@@ -20,6 +20,7 @@ from box_runtime.video_recording.camera_session import (
     write_manifest,
 )
 from box_runtime.video_recording.http_camera_service import create_app
+import box_runtime.video_recording.http_camera_service as http_camera_service
 
 
 def _session_info(base_dir: str):
@@ -214,6 +215,50 @@ def test_http_service_blocks_manual_start_during_automated_run():
     assert manual_after.status_code == 200
 
 
+def test_http_service_main_starts_local_preview_viewer(monkeypatch, tmp_path: Path):
+    """Service boot should start the local DRM preview helper before Flask runs.
+
+    Inputs:
+        monkeypatch: pytest fixture used to override side-effectful service startup.
+        tmp_path: Temporary storage root passed through the environment.
+
+    Returns:
+        None.
+    """
+
+    observed: list[tuple[str, object]] = []
+
+    class _FakeApp:
+        logger = object()
+        config: dict[str, object] = {}
+
+        def run(self, host: str, port: int, threaded: bool) -> None:
+            observed.append(("run", host, port, threaded))
+
+    monkeypatch.setenv("CAMERA_STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setenv("CAMERA_SERVICE_HOST", "127.0.0.1")
+    monkeypatch.setenv("CAMERA_SERVICE_PORT", "8123")
+    monkeypatch.setattr(http_camera_service, "Picamera2Recorder", object())
+    monkeypatch.setattr(
+        http_camera_service,
+        "create_app",
+        lambda storage_root, recorder_factory=None: observed.append(
+            ("create_app", Path(storage_root), recorder_factory)
+        )
+        or _FakeApp(),
+    )
+    monkeypatch.setattr(
+        http_camera_service,
+        "start_preview_viewer_from_env",
+        lambda port, logger=None: observed.append(("preview", port)),
+    )
+
+    http_camera_service.main()
+
+    assert ("preview", 8123) in observed
+    assert ("run", "127.0.0.1", 8123, True) in observed
+
+
 def test_http_service_reports_low_space_blocking_state():
     app = create_app(
         storage_root=Path(tempfile.mkdtemp()),
@@ -283,8 +328,41 @@ def test_behavbox_video_methods_use_camera_client(monkeypatch):
         finally:
             os.chdir(original_cwd)
 
+    assert ("init", "127.0.0.1", 8000, "behvideos") in calls
     assert any(item[0] == "start" for item in calls)
     assert ("offload", "test_session", f"{tmp}/") in calls
+
+
+def test_behavbox_respects_camera_host_override(monkeypatch):
+    calls = []
+    original_cwd = os.getcwd()
+
+    class FakeCameraClient:
+        def __init__(self, host, port=8000, remote_storage_subdir="behvideos"):
+            calls.append(("init", host, port, remote_storage_subdir))
+
+        def start_recording(self, **payload):
+            calls.append(("start", payload))
+
+        def stop_recording(self, owner="automated"):
+            calls.append(("stop", owner))
+
+        def offload_session(self, session_id, destination_root):
+            calls.append(("offload", session_id, destination_root))
+
+    monkeypatch.setattr("box_runtime.behavior.behavbox.CameraClient", FakeCameraClient)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            info = _session_info(tmp)
+            info["camera_host"] = "10.0.0.99"
+            box = BehavBox(info)
+            box.video_start()
+            box.video_stop()
+        finally:
+            os.chdir(original_cwd)
+
+    assert ("init", "10.0.0.99", 8000, "behvideos") in calls
 
 
 def test_camera_client_offload_session_creates_single_session_directory(monkeypatch):
@@ -364,7 +442,47 @@ def test_video_capture_uses_camera_client_for_start_stop(monkeypatch):
         capture.video_start()
         capture.video_stop()
 
+    assert ("init", "10.0.0.2", 8000, "behvideos") in calls
     assert any(item[0] == "start" for item in calls)
     assert ("offload", "videoA", tmp) in calls
     assert any(item[0] == "stop" for item in calls)
     assert any(item[0] == "offload" for item in calls)
+
+
+def test_video_capture_defaults_camera_host_to_localhost(monkeypatch):
+    calls = []
+
+    class FakeCameraClient:
+        def __init__(self, host, port=8000, remote_storage_subdir="behvideos"):
+            calls.append(("init", host, port, remote_storage_subdir))
+
+        def start_recording(self, **payload):
+            calls.append(("start", payload))
+
+        def stop_recording(self, owner="automated"):
+            calls.append(("stop", owner))
+
+        def offload_session(self, session_id, destination_root):
+            calls.append(("offload", session_id, destination_root))
+            target = Path(destination_root) / session_id
+            target.mkdir(parents=True, exist_ok=True)
+            return target
+
+    monkeypatch.setattr(
+        "box_runtime.video_recording.VideoCapture.CameraClient",
+        FakeCameraClient,
+        raising=False,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        capture = VideoCapture(
+            IP_address_video=None,
+            video_name="videoB",
+            base_pi_dir="/remote/ignored",
+            local_storage_dir=tmp,
+            frame_rate=30,
+        )
+        capture.video_start()
+        capture.video_stop()
+
+    assert ("init", "127.0.0.1", 8000, "behvideos") in calls

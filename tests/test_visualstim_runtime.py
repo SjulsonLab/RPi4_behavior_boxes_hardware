@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -10,6 +12,7 @@ import yaml
 
 from box_runtime.visual_stimuli.visualstim import VisualStim
 from box_runtime.visual_stimuli.visual_runtime.grating_compiler import compile_grating
+from box_runtime.visual_stimuli.visual_runtime.drm_runtime import query_display_config
 from box_runtime.visual_stimuli.visual_runtime.grating_specs import load_grating_spec
 
 
@@ -218,6 +221,80 @@ def test_grating_compiler_output_contract(tmp_path: Path) -> None:
     assert compiled.frames.shape == (6, 24, 32)
     assert int(compiled.frames.min()) == 111
     assert int(compiled.frames.max()) == 111
+
+
+def test_visualstim_passes_configured_display_connector(monkeypatch, tmp_path: Path) -> None:
+    """VisualStim should pass the configured DRM connector into display discovery.
+
+    Inputs:
+        monkeypatch: pytest fixture used to patch display-config discovery.
+        tmp_path: pytest temporary directory used for YAML spec storage.
+
+    Returns:
+        None.
+    """
+
+    observed: dict[str, object] = {}
+
+    def fake_query_display_config(
+        backend: str,
+        requested_resolution_px: tuple[int, int] | None = None,
+        requested_refresh_hz: float | None = None,
+        requested_connector: str | None = None,
+    ):
+        observed["backend"] = backend
+        observed["requested_connector"] = requested_connector
+        observed["requested_resolution_px"] = requested_resolution_px
+        observed["requested_refresh_hz"] = requested_refresh_hz
+        return SimpleNamespace(backend="fake", resolution_px=(32, 24), refresh_hz=60.0)
+
+    monkeypatch.setattr(
+        "box_runtime.visual_stimuli.visualstim.query_display_config",
+        fake_query_display_config,
+    )
+
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
+    session_info = _session_info([spec_path])
+    session_info["visual_display_connector"] = "HDMI-A-9"
+    visual = VisualStim(session_info)
+
+    try:
+        assert observed["backend"] == "fake"
+        assert observed["requested_connector"] == "HDMI-A-9"
+    finally:
+        visual.myscreen.close()
+
+
+def test_query_display_config_missing_connector_raises_clear_error(monkeypatch) -> None:
+    """DRM connector lookup should fail clearly when the requested output is absent.
+
+    Inputs:
+        monkeypatch: pytest fixture used to install a fake pykms module.
+
+    Returns:
+        None.
+    """
+
+    class FakeResourceManager:
+        def __init__(self, card) -> None:
+            self.card = card
+
+        def reserve_connector(self, name: str):
+            raise RuntimeError(f"connector {name} is unavailable")
+
+    fake_pykms = SimpleNamespace(
+        Card=lambda: object(),
+        ResourceManager=FakeResourceManager,
+    )
+    monkeypatch.setitem(sys.modules, "pykms", fake_pykms)
+
+    with pytest.raises(ValueError, match="HDMI-A-9"):
+        query_display_config(
+            backend="drm",
+            requested_resolution_px=None,
+            requested_refresh_hz=None,
+            requested_connector="HDMI-A-9",
+        )
 
 
 def test_show_grating_uses_persistent_worker(tmp_path: Path) -> None:

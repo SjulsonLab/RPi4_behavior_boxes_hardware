@@ -20,5 +20,6 @@ dependencies:
     - icecream
     - picamera
     - PyYAML
+    - Pillow
     - pyserial
     - pysistence

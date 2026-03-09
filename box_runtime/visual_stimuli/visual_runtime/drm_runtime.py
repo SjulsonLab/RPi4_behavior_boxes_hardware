@@ -22,11 +22,14 @@ class DisplayConfig:
 
     Attributes:
         backend: Runtime backend name, either ``"fake"`` or ``"drm"``.
+        connector: DRM connector name such as ``"HDMI-A-1"`` for real displays,
+            or ``None`` for the fake backend.
         resolution_px: Display resolution as ``(width_px, height_px)``.
         refresh_hz: Display refresh rate in Hz.
     """
 
     backend: str
+    connector: str | None
     resolution_px: tuple[int, int]
     refresh_hz: float
 
@@ -35,6 +38,7 @@ def query_display_config(
     backend: str,
     requested_resolution_px: tuple[int, int] | None = None,
     requested_refresh_hz: float | None = None,
+    requested_connector: str | None = None,
 ) -> DisplayConfig:
     """Resolve the display geometry and refresh rate for a runtime backend.
 
@@ -42,6 +46,7 @@ def query_display_config(
         backend: Backend name, ``"fake"`` or ``"drm"``.
         requested_resolution_px: Optional ``(width_px, height_px)`` override.
         requested_refresh_hz: Optional target refresh rate in Hz.
+        requested_connector: Optional DRM connector name such as ``"HDMI-A-1"``.
 
     Returns:
         DisplayConfig: Resolved display configuration.
@@ -51,7 +56,12 @@ def query_display_config(
     if backend_name == "fake":
         resolution_px = requested_resolution_px or (640, 480)
         refresh_hz = float(requested_refresh_hz or 60.0)
-        return DisplayConfig(backend=backend_name, resolution_px=resolution_px, refresh_hz=refresh_hz)
+        return DisplayConfig(
+            backend=backend_name,
+            connector=requested_connector,
+            resolution_px=resolution_px,
+            refresh_hz=refresh_hz,
+        )
 
     if backend_name != "drm":
         raise ValueError(f"unsupported visual backend {backend!r}")
@@ -65,7 +75,12 @@ def query_display_config(
 
     card = pykms.Card()
     res = pykms.ResourceManager(card)
-    conn = res.reserve_connector("")
+    connector_name = (requested_connector or "").strip()
+    try:
+        conn = res.reserve_connector(connector_name)
+    except Exception as exc:
+        label = connector_name or "<default>"
+        raise ValueError(f"DRM connector {label} is unavailable") from exc
     mode = _select_mode(conn, requested_refresh_hz)
     resolution_px = (int(mode.hdisplay), int(mode.vdisplay))
     if requested_resolution_px is not None and tuple(requested_resolution_px) != resolution_px:
@@ -75,6 +90,7 @@ def query_display_config(
         )
     return DisplayConfig(
         backend=backend_name,
+        connector=connector_name or getattr(conn, "fullname", None) or None,
         resolution_px=resolution_px,
         refresh_hz=float(getattr(mode, "vrefresh", requested_refresh_hz or 60.0)),
     )
@@ -431,7 +447,12 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
         self.gray_level_u8 = gray_level_u8
         self.card = pykms.Card()
         self.res = pykms.ResourceManager(self.card)
-        self.conn = self.res.reserve_connector("")
+        connector_name = (display_config.connector or "").strip()
+        try:
+            self.conn = self.res.reserve_connector(connector_name)
+        except Exception as exc:
+            label = connector_name or "<default>"
+            raise RuntimeError(f"DRM connector {label} is unavailable") from exc
         self.crtc = self.res.reserve_crtc(self.conn)
         self.mode = _select_mode(self.conn, display_config.refresh_hz)
         self.frame_period_ns = int(round(1_000_000_000.0 / float(display_config.refresh_hz)))
