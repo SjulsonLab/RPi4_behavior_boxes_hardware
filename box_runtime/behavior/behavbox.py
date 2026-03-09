@@ -140,12 +140,10 @@ class BehavBox(object):
             except Exception:
                 self.IP_address = "127.0.0.1"
 
-        # Keep legacy behavior: use the "video Pi" as same subnet with last octet set to 2.
-        self.IP_address_video = self.IP_address
-        ip_parts = self.IP_address.split(".")
-        if len(ip_parts) == 4:
-            ip_parts[-1] = "2"
-            self.IP_address_video = ".".join(ip_parts)
+        # Default to the local camera service on the same Pi. Older two-Pi
+        # deployments can still override this explicitly in session_info.
+        self.IP_address_video = str(self.session_info.get("camera_host", "127.0.0.1"))
+        self.camera_service_port = int(os.environ.get("CAMERA_SERVICE_PORT", "8000"))
 
         ###############################################################################################
         # event list trigger by the interaction between the RPi and the animal for visualization
@@ -422,6 +420,12 @@ class BehavBox(object):
     # These work with fake video files but haven't been tested with real ones
     ###############################################################################################
     def video_start(self):
+        """Start the configured camera session over the HTTP camera service.
+
+        Returns:
+            None.
+        """
+
         if CameraClient is None:
             raise RuntimeError("CameraClient is unavailable; camera HTTP control cannot start")
         IP_address_video = self.IP_address_video
@@ -432,7 +436,7 @@ class BehavBox(object):
 
         print(Fore.YELLOW + "Starting camera session via HTTP service.\n" + Style.RESET_ALL)
         try:
-            client = CameraClient(IP_address_video)
+            client = CameraClient(IP_address_video, port=self.camera_service_port)
             # Treadmill initiation
             if self.treadmill is not False:
                 try:
@@ -461,12 +465,20 @@ class BehavBox(object):
             print(e)
 
     def video_stop(self):
+        """Stop the current camera session and offload it to external storage.
+
+        Returns:
+            None.
+        """
+
         # Get the basename from the session information
         basename = self.session_info['basename']
         # Get the ip address for the box video:
         IP_address_video = self.IP_address_video
         try:
-            client = getattr(self, "_camera_client", CameraClient(IP_address_video))
+            client = getattr(self, "_camera_client", None)
+            if client is None:
+                client = CameraClient(IP_address_video, port=self.camera_service_port)
             client.stop_recording(owner="automated")
             time.sleep(1)
             time.sleep(2)

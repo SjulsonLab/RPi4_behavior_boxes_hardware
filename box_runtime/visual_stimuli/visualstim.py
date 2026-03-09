@@ -57,7 +57,8 @@ class VisualStim:
         session_info: Mapping containing at least ``vis_gratings`` and
             ``gray_level``. ``vis_gratings`` is a list of YAML spec file paths.
             Optional keys are ``visual_backend``, ``visual_display_resolution_px``,
-            ``visual_display_refresh_hz``, and ``visual_display_degrees_subtended``.
+            ``visual_display_refresh_hz``, ``visual_display_degrees_subtended``,
+            and ``visual_display_connector``.
 
     Returns:
         VisualStim: Compatibility facade backed by the new runtime worker.
@@ -76,6 +77,9 @@ class VisualStim:
             session_info.get("visual_display_refresh_hz"),
             default=None,
         )
+        requested_connector = _normalize_connector_name(
+            session_info.get("visual_display_connector", os.environ.get("VISUAL_STIM_CONNECTOR", "HDMI-A-1"))
+        )
         self._default_degrees_subtended = _normalize_positive_float(
             session_info.get("visual_display_degrees_subtended"),
             default=80.0,
@@ -84,6 +88,7 @@ class VisualStim:
             backend=backend_name,
             requested_resolution_px=requested_resolution,
             requested_refresh_hz=requested_refresh_hz,
+            requested_connector=requested_connector,
         )
 
         self.load_session_gratings()
@@ -282,3 +287,23 @@ def _normalize_positive_float(value: Any, default: float | None) -> float | None
     if value_f <= 0.0:
         raise ValueError("session float overrides must be > 0")
     return value_f
+
+
+def _normalize_connector_name(value: Any) -> str | None:
+    """Normalize an optional DRM connector name override.
+
+    Args:
+        value: Raw session or environment value naming a DRM connector.
+
+    Returns:
+        str | None: Trimmed connector name, or ``None`` if absent.
+    """
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("visual_display_connector must be a string")
+    connector_name = value.strip()
+    if not connector_name:
+        raise ValueError("visual_display_connector must not be empty")
+    return connector_name
