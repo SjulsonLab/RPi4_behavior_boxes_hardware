@@ -30,6 +30,12 @@ to support independent versioning of hardware code and task code.
 
 - BehavBox now uses a strict head-fixed GPIO arrangement hard-coded in:
   `essential/behavbox.py` (`HEAD_FIXED_GPIO`).
+- Hardware callbacks now enqueue structured `BehaviorEvent` objects with
+  detection-time wall-clock timestamps (`name`, `timestamp`) instead of plain
+  event-name strings.
+- Compatibility helpers for task-side consumers are available on `BehavBox`:
+  - `event_name(event)`
+  - `event_timestamp(event)`
 - Non-Raspberry Pi hosts automatically use a mock GPIO backend and launch a local web UI.
 - Default UI URL: `http://127.0.0.1:8765`
 - Optional environment overrides:

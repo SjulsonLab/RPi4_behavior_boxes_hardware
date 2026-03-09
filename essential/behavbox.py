@@ -17,12 +17,14 @@ import platform
 import socket
 import time
 from collections import deque
+from dataclasses import dataclass
 
 import numpy as np
 import scipy.io, pickle
 
 import logging
 from colorama import Fore, Style
+from typing import Optional
 
 # for the flipper
 try:
@@ -104,6 +106,14 @@ HEAD_FIXED_GPIO = {
         "vacuum": 25,
     },
 }
+
+
+@dataclass(frozen=True)
+class BehaviorEvent:
+    """Event emitted by hardware callbacks and consumed by task code."""
+
+    name: str
+    timestamp: float
 
 
 class BehavBox(object):
@@ -345,6 +355,35 @@ class BehavBox(object):
                 print(str(error_message))
         else:
             print("Pygame/matplotlib plotting unavailable; keyboard simulation disabled.")
+
+    @staticmethod
+    def event_name(event: object) -> str:
+        """Compatibility helper: returns event name from object or legacy string."""
+        if isinstance(event, BehaviorEvent):
+            return event.name
+        if isinstance(event, str):
+            return event
+        if isinstance(event, dict):
+            name = event.get("name")
+            return str(name) if name is not None else ""
+        return str(event)
+
+    @staticmethod
+    def event_timestamp(event: object) -> Optional[float]:
+        """Compatibility helper: returns wall-clock timestamp if available."""
+        if isinstance(event, BehaviorEvent):
+            return event.timestamp
+        if isinstance(event, dict):
+            value = event.get("timestamp")
+            if isinstance(value, (int, float)):
+                return float(value)
+            return None
+        return None
+
+    def _push_event(self, event_name: str) -> BehaviorEvent:
+        event = BehaviorEvent(name=event_name, timestamp=time.time())
+        self.event_list.append(event)
+        return event
     ###############################################################################################
     # check for data visualization - uses pygame window to show behavior progress
     ###############################################################################################
@@ -541,54 +580,54 @@ class BehavBox(object):
     # callbacks
     ###############################################################################################
     def left_entry(self):
-        self.event_list.append("left_entry")
-        self.interact_list.append((time.time(), "left_entry"))
-        logging.info(";" + str(time.time()) + ";[action];left_entry")
+        event = self._push_event("left_entry")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def center_entry(self):
-        self.event_list.append("center_entry")
-        self.interact_list.append((time.time(), "center_entry"))
-        logging.info(";" + str(time.time()) + ";[action];center_entry")
+        event = self._push_event("center_entry")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def right_entry(self):
-        self.event_list.append("right_entry")
-        self.interact_list.append((time.time(), "right_entry"))
-        logging.info(";" + str(time.time()) + ";[action];right_entry")
+        event = self._push_event("right_entry")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def left_exit(self):
-        self.event_list.append("left_exit")
-        self.interact_list.append((time.time(), "left_exit"))
-        logging.info(";" + str(time.time()) + ";[action];left_exit")
+        event = self._push_event("left_exit")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def center_exit(self):
-        self.event_list.append("center_exit")
-        self.interact_list.append((time.time(), "center_exit"))
-        logging.info(";" + str(time.time()) + ";[action];center_exit")
+        event = self._push_event("center_exit")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def right_exit(self):
-        self.event_list.append("right_exit")
-        self.interact_list.append((time.time(), "right_exit"))
-        logging.info(";" + str(time.time()) + ";[action];right_exit")
+        event = self._push_event("right_exit")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def treadmill_1_entry(self):
-        self.event_list.append("treadmill_1_entry")
-        self.interact_list.append((time.time(), "treadmill_1_entry"))
-        logging.info(";" + str(time.time()) + ";[action];treadmill_1_entry")
+        event = self._push_event("treadmill_1_entry")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def treadmill_1_exit(self):
-        self.event_list.append("treadmill_1_exit")
-        self.interact_list.append((time.time(), "treadmill_1_exit"))
-        logging.info(";" + str(time.time()) + ";[action];treadmill_1_exit")
+        event = self._push_event("treadmill_1_exit")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def treadmill_2_entry(self):
-        self.event_list.append("treadmill_2_entry")
-        self.interact_list.append((time.time(), "treadmill_2_entry"))
-        logging.info(";" + str(time.time()) + ";[action];treadmill_2_entry")
+        event = self._push_event("treadmill_2_entry")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     def treadmill_2_exit(self):
-        self.event_list.append("treadmill_2_exit")
-        self.interact_list.append((time.time(), "treadmill_2_exit"))
-        logging.info(";" + str(time.time()) + ";[action];treadmill_2_exit")
+        event = self._push_event("treadmill_2_exit")
+        self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[action];%s", event.timestamp, event.name)
 
     # def reserved_rx1_pressed(self):
     #     self.event_list.append("reserved_rx1_pressed")
@@ -610,45 +649,45 @@ class BehavBox(object):
     #     self.interact_list.append((time.time(), "reserved_rx2_released"))
     #     logging.info(";" + str(time.time()) + ";[action];reserved_rx2_released")
     def IR_1_entry(self):
-        self.event_list.append("IR_1_entry")
-        logging.info(str(time.time()) + ", IR_1_entry")
+        event = self._push_event("IR_1_entry")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_2_entry(self):
-        self.event_list.append("IR_2_entry")
-        logging.info(str(time.time()) + ", IR_2_entry")
+        event = self._push_event("IR_2_entry")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_3_entry(self):
-        self.event_list.append("IR_3_entry")
-        logging.info(str(time.time()) + ", IR_3_entry")
+        event = self._push_event("IR_3_entry")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_4_entry(self):
-        self.event_list.append("IR_4_entry")
-        logging.info(str(time.time()) + ", IR_4_entry")
+        event = self._push_event("IR_4_entry")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_5_entry(self):
-        self.event_list.append("IR_5_entry")
-        logging.info(str(time.time()) + ", IR_5_entry")
+        event = self._push_event("IR_5_entry")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_1_exit(self):
-        self.event_list.append("IR_1_exit")
-        logging.info(str(time.time()) + ", IR_1_exit")
+        event = self._push_event("IR_1_exit")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_2_exit(self):
-        self.event_list.append("IR_2_exit")
+        event = self._push_event("IR_2_exit")
         # self.cueLED2.off()
-        logging.info(str(time.time()) + ", IR_2_exit")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_3_exit(self):
-        self.event_list.append("IR_3_exit")
-        logging.info(str(time.time()) + ", IR_3_exit")
+        event = self._push_event("IR_3_exit")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_4_exit(self):
-        self.event_list.append("IR_4_exit")
-        logging.info(str(time.time()) + ", IR_4_exit")
+        event = self._push_event("IR_4_exit")
+        logging.info("%s, %s", event.timestamp, event.name)
 
     def IR_5_exit(self):
-        self.event_list.append("IR_5_exit")
-        logging.info(str(time.time()) + ", IR_5_exit")
+        event = self._push_event("IR_5_exit")
+        logging.info("%s, %s", event.timestamp, event.name)
 
 # this is for the cue LEDs. BoxLED.value is the intensity value (PWM duty cycle, from 0 to 1)
 # currently. BoxLED.set_value is the saved intensity value that determines how bright the
