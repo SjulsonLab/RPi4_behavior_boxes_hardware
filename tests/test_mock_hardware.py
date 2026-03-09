@@ -9,12 +9,11 @@ from urllib.request import Request, urlopen
 os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
 os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
 
-from essential.behavbox import BehavBox, BehaviorEvent, HEAD_FIXED_GPIO, Pump
-from essential.FlipperOutput import FlipperOutput
-from essential.mock_hw.devices import Button, LED
-from essential.mock_hw.registry import REGISTRY, register_pin_label
-from essential.mock_hw.server import ensure_server_running
-from essential.mock_hw.visual_stim import MockVisualStim
+from box_runtime.behavior.behavbox import BehavBox, BehaviorEvent, HEAD_FIXED_GPIO, Pump
+from box_runtime.mock_hw.devices import Button, LED
+from box_runtime.mock_hw.registry import REGISTRY, register_pin_label
+from box_runtime.mock_hw.server import ensure_server_running
+from box_runtime.mock_hw.visual_stim import MockVisualStim
 
 
 def _session_info(base_dir: str):
@@ -60,7 +59,6 @@ class TestHeadFixedMapping(unittest.TestCase):
         os.chdir(self._cwd)
 
     def test_head_fixed_gpio_constants_present(self):
-        self.assertEqual(HEAD_FIXED_GPIO["flipper"], 4)
         self.assertEqual(HEAD_FIXED_GPIO["inputs"]["treadmill_1_input"], 13)
         self.assertEqual(HEAD_FIXED_GPIO["outputs"]["sound_4"], 10)
         self.assertEqual(HEAD_FIXED_GPIO["unused"], [5, 6, 12])
@@ -93,8 +91,6 @@ class TestHeadFixedMapping(unittest.TestCase):
             self.assertIs(box.IR_rx4, box.treadmill_input_1)
             self.assertIs(box.IR_rx5, box.treadmill_input_2)
 
-            box.flipper.close()
-
 
 class TestMockDevices(unittest.TestCase):
     def setUp(self):
@@ -122,16 +118,6 @@ class TestMockDevices(unittest.TestCase):
         pin_events = [e for e in events if e.get("kind") == "pin" and e.get("pin") == 901]
         self.assertGreaterEqual(len(pin_events), 4)
 
-    def test_flipper_write_uses_mock_backend(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            session_info = {"flipper_filename": os.path.join(tmp, "flipper")}
-            flipper = FlipperOutput(session_info=session_info, pin=4)
-            flipper._write(True)
-            state = REGISTRY.get_state()
-            pin4 = [p for p in state["pins"] if p["pin"] == 4][0]
-            self.assertTrue(pin4["active"])
-            flipper.close()
-
     def test_visual_stim_proxy_updates_state(self):
         vis = MockVisualStim({"mock_visual_stim_duration_s": 0.05})
         vis.show_grating("g_test")
@@ -154,12 +140,11 @@ class TestIntegration(unittest.TestCase):
         os.chdir(self._cwd)
 
     def test_behavbox_import_and_instantiation_non_pi(self):
-        module = importlib.import_module("essential.behavbox")
+        module = importlib.import_module("box_runtime.behavior.behavbox")
         with tempfile.TemporaryDirectory() as tmp:
             info = _session_info(tmp)
             box = module.BehavBox(info)
             self.assertIsInstance(box, module.BehavBox)
-            box.flipper.close()
 
     def test_event_queue_entries_include_detection_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -181,7 +166,6 @@ class TestIntegration(unittest.TestCase):
             interact_timestamp, interact_name = box.interact_list[-1]
             self.assertEqual(interact_name, "left_entry")
             self.assertEqual(interact_timestamp, queued_event.timestamp)
-            box.flipper.close()
 
     def test_web_api_press_release_and_pulse(self):
         btn = Button(902)

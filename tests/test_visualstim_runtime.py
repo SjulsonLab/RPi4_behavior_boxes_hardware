@@ -8,9 +8,9 @@ import numpy as np
 import pytest
 import yaml
 
-from essential.visualstim import VisualStim
-from essential.visual_runtime.grating_compiler import compile_grating
-from essential.visual_runtime.grating_specs import load_grating_spec
+from box_runtime.visual_stimuli.visualstim import VisualStim
+from box_runtime.visual_stimuli.visual_runtime.grating_compiler import compile_grating
+from box_runtime.visual_stimuli.visual_runtime.grating_specs import load_grating_spec
 
 
 def _write_spec(path: Path, **overrides: object) -> Path:

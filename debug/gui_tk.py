@@ -2,13 +2,20 @@ from colorama import Fore, Style
 
 import matplotlib
 import matplotlib.pyplot as plt
-from essential.base_classes import GUI, PerformanceFigure
 
 import tkinter as tk
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 from typing import Callable
 key_pressed = False
+
+
+class PerformanceFigure:
+    """Minimal plotting base used by the legacy Tk debug GUI."""
+
+
+class GUI:
+    """Minimal GUI base used by the legacy Tk debug GUI."""
 
 class LivePlot(PerformanceFigure):
 
@@ -79,4 +86,3 @@ class TkGUI(GUI):
 
         else:
             print("No figure available")
-

@@ -2,30 +2,40 @@
 
 Last updated: 2026-03-08
 Repo: `RPi4_behavior_boxes_hardware`
-Primary branch in progress: `codex/hardware-integration-phase1`
+Primary branch in progress: `rpgtest`
 
 ## Purpose
 Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GPIO mapping and a non-Pi mock hardware mode.
 
 ## Current Architecture
-- Core behavior logic: `essential/behavbox.py`
+- Runtime root: `box_runtime/`
+- Behavior orchestration and GPIO backend:
+- `box_runtime/behavior/behavbox.py`
+- `box_runtime/behavior/gpio_backend.py`
+- `box_runtime/behavior/ADS1x15.py`
 - Camera HTTP control:
-- `video_acquisition/http_camera_service.py`
-- `video_acquisition/picamera2_recorder.py`
-- `video_acquisition/camera_client.py`
-- `video_acquisition/camera_session.py`
-- Backend selection: `essential/gpio_backend.py`
+- `box_runtime/video_recording/http_camera_service.py`
+- `box_runtime/video_recording/picamera2_recorder.py`
+- `box_runtime/video_recording/camera_client.py`
+- `box_runtime/video_recording/camera_session.py`
+- `box_runtime/video_recording/VideoCapture.py`
+- Archived legacy camera scripts:
+- `box_runtime/video_recording/old/`
 - Visual stimulus runtime:
-- `essential/visualstim.py`
-- `essential/visual_runtime/grating_specs.py`
-- `essential/visual_runtime/grating_compiler.py`
-- `essential/visual_runtime/drm_runtime.py`
+- `box_runtime/visual_stimuli/visualstim.py`
+- `box_runtime/visual_stimuli/visual_runtime/grating_specs.py`
+- `box_runtime/visual_stimuli/visual_runtime/grating_compiler.py`
+- `box_runtime/visual_stimuli/visual_runtime/drm_runtime.py`
+- Treadmill support:
+- `box_runtime/treadmill/Treadmill.py`
 - Mock hardware stack:
-- `essential/mock_hw/devices.py`
-- `essential/mock_hw/registry.py`
-- `essential/mock_hw/server.py`
-- `essential/mock_hw/web.py`
-- `essential/mock_hw/visual_stim.py`
+- `box_runtime/mock_hw/devices.py`
+- `box_runtime/mock_hw/registry.py`
+- `box_runtime/mock_hw/server.py`
+- `box_runtime/mock_hw/web.py`
+- `box_runtime/mock_hw/visual_stim.py`
+- Shared support code:
+- `box_runtime/support/`
 - Tests:
 - `tests/test_mock_hardware.py`
 - `tests/test_visualstim_runtime.py`
@@ -73,7 +83,7 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 
 ## Event Queue Contract (Current)
 - Hardware callbacks now enqueue structured `BehaviorEvent` objects, not plain strings.
-- `BehaviorEvent` is defined in `essential/behavbox.py` and includes:
+- `BehaviorEvent` is defined in `box_runtime/behavior/behavbox.py` and includes:
 - `name: str`
 - `timestamp: float` (wall-clock from `time.time()`, captured at detection time)
 - Callback helper: `BehavBox._push_event(...)`.
@@ -83,7 +93,6 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `interact_list` entries now reuse the same detection timestamp used for queue event creation.
 
 ## Head-Fixed GPIO Mapping
-- `flipper`: 4
 - `treadmill_1_input`: 13
 - `treadmill_2_input`: 16
 - `reward_left`: 19
@@ -117,7 +126,7 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `BEHAVBOX_FORCE_MOCK`
 
 ## Visual Stimulus Runtime
-- Replaced RPG-based `essential/visualstim.py` with a YAML-spec + precompute pipeline.
+- Replaced RPG-based `box_runtime/visual_stimuli/visualstim.py` with a YAML-spec + precompute pipeline.
 - Stimuli are described by YAML files listed in `session_info["vis_gratings"]`.
 - `VisualStim` preserves task-facing compatibility for:
 - `show_grating(name)`
@@ -137,7 +146,7 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `cd /Users/lukesjulson/codex/RPi4_refactor/targets/RPi4_behavior_boxes_hardware`
 - `uv run --with numpy --with scipy --with colorama --with flask --with pytest pytest tests/test_camera_service.py`
 - `uv run --with numpy --with scipy --with colorama --with pytest pytest tests/test_mock_hardware.py tests/test_visualstim_runtime.py`
-- `python debug/run_mock_behavbox.py`
+- `uv run python debug/run_mock_behavbox.py`
 
 ## Recent Changes
 - Added wall-clock `BehaviorEvent` queue objects in `BehavBox`.
@@ -147,7 +156,7 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - Added an HTTP camera service with manual/automated ownership modes and browser preview/control pages.
 - Added drift-aware frame UTC derivation and session finalization utilities for raw H.264 + TSV attempts.
 - Replaced BehavBox camera SSH control with `CameraClient` HTTP control and verified offload.
-- Migrated standalone `essential/video_acquisition/VideoCapture.py` away from SSH-based camera start/stop/offload.
+- Migrated standalone capture control into `box_runtime/video_recording/VideoCapture.py`.
 - Added camera-service tests covering timestamp fitting, finalization, ownership blocking, preview/control UI, and offload paths.
 - Replaced the RPG visual stimulus wrapper with a persistent worker runtime.
 - Added YAML grating spec validation and NumPy precomputation.

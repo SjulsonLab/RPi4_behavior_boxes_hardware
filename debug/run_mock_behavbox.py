@@ -43,8 +43,8 @@ def main() -> int:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-    from essential.mock_hw.server import ensure_server_running
-    from essential.behavbox import BehavBox
+    from box_runtime.mock_hw.server import ensure_server_running
+    from box_runtime.behavior.behavbox import BehavBox
 
     run_dir = Path(tempfile.mkdtemp(prefix="behavbox_mock_"))
     session_info = _build_session_info(run_dir)
@@ -66,10 +66,6 @@ def main() -> int:
             time.sleep(0.05)
     except KeyboardInterrupt:
         print("Stopping mock BehavBox...")
-        try:
-            box.flipper.close()
-        except Exception:
-            pass
         return 0
 
 

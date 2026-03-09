@@ -7,10 +7,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from essential.behavbox import BehavBox
-from essential.video_acquisition.VideoCapture import VideoCapture
-from video_acquisition.camera_client import CameraClient
-from video_acquisition.camera_session import (
+from box_runtime.behavior.behavbox import BehavBox
+from box_runtime.video_recording.VideoCapture import VideoCapture
+from box_runtime.video_recording.camera_client import CameraClient
+from box_runtime.video_recording.camera_session import (
     CameraSessionError,
     derive_frame_utc_ns,
     estimate_required_bytes,
@@ -19,7 +19,7 @@ from video_acquisition.camera_session import (
     verify_manifest_hashes,
     write_manifest,
 )
-from video_acquisition.http_camera_service import create_app
+from box_runtime.video_recording.http_camera_service import create_app
 
 
 def _session_info(base_dir: str):
@@ -272,7 +272,7 @@ def test_behavbox_video_methods_use_camera_client(monkeypatch):
         def offload_session(self, session_id, destination_root):
             calls.append(("offload", session_id, destination_root))
 
-    monkeypatch.setattr("essential.behavbox.CameraClient", FakeCameraClient)
+    monkeypatch.setattr("box_runtime.behavior.behavbox.CameraClient", FakeCameraClient)
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
@@ -280,7 +280,6 @@ def test_behavbox_video_methods_use_camera_client(monkeypatch):
             box = BehavBox(info)
             box.video_start()
             box.video_stop()
-            box.flipper.close()
         finally:
             os.chdir(original_cwd)
 
@@ -312,7 +311,7 @@ def test_camera_client_offload_session_creates_single_session_directory(monkeypa
         )
         return subprocess.CompletedProcess(command, 0, "", "")
 
-    monkeypatch.setattr("video_acquisition.camera_client.subprocess.run", fake_run)
+    monkeypatch.setattr("box_runtime.video_recording.camera_client.subprocess.run", fake_run)
     monkeypatch.setattr(
         CameraClient,
         "acknowledge_transfer",
@@ -349,7 +348,7 @@ def test_video_capture_uses_camera_client_for_start_stop(monkeypatch):
             return target
 
     monkeypatch.setattr(
-        "essential.video_acquisition.VideoCapture.CameraClient",
+        "box_runtime.video_recording.VideoCapture.CameraClient",
         FakeCameraClient,
         raising=False,
     )
