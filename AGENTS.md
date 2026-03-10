@@ -1,5 +1,8 @@
 # AGENTS.md
 
+## Writing Rule
+- When using an abbreviation or acronym, define it the first time it appears in the response, for example `sound pressure level (SPL)`.
+
 ## Project Memory File
 - This repository uses `Codex.md` in the repo root as persistent project context.
 - At session start in this repo, read `Codex.md` automatically if it exists before deeper exploration.
