@@ -3,6 +3,9 @@
 ## Writing Rule
 - When using an abbreviation or acronym, define it the first time it appears in the response, for example `sound pressure level (SPL)`.
 
+## Gitignore Rule
+- Always add `.DS_Store` to `.gitignore` for repositories in this workspace if it is not already present.
+
 ## Project Memory File
 - This repository uses `Codex.md` in the repo root as persistent project context.
 - At session start in this repo, read `Codex.md` automatically if it exists before deeper exploration.

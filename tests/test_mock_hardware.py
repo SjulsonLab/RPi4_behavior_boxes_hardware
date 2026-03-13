@@ -93,6 +93,16 @@ class TestHeadFixedMapping(unittest.TestCase):
             self.assertIs(box.IR_rx4, box.treadmill_input_1)
             self.assertIs(box.IR_rx5, box.treadmill_input_2)
 
+    def test_behavbox_does_not_register_gpio11(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = _session_info(tmp)
+            BehavBox(info)
+
+            state = REGISTRY.get_state()
+            registered_pins = {pin["pin"] for pin in state["pins"]}
+            self.assertNotIn(11, registered_pins)
+            self.assertNotIn("user_output", state["labels"])
+
 
 class TestMockDevices(unittest.TestCase):
     def setUp(self):
