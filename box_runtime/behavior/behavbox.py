@@ -62,7 +62,8 @@ except Exception:
 
 
 HEAD_FIXED_GPIO = {
-    "unused": [5, 6, 12],
+    "user_configurable": [4],
+    "unused": [5, 6, 11, 12],
     "inputs": {
         "treadmill_1_input": 13,
         "treadmill_2_input": 16,
@@ -75,7 +76,6 @@ HEAD_FIXED_GPIO = {
         "cue_led_2": 18,
         "cue_led_3": 17,
         "cue_led_4": 14,
-        "user_output": 11,
         "sound_1": 23,
         "sound_2": 24,
         "sound_3": 9,
@@ -167,10 +167,9 @@ class BehavBox(object):
         register_pin_label(output_pins["cue_led_3"], "cue_led_3", direction="output")
         register_pin_label(output_pins["cue_led_4"], "cue_led_4", direction="output")
 
-        # CSV maps GPIO11 to generic user output.
-        self.user_output = LED(output_pins["user_output"])
-        register_pin_label(output_pins["user_output"], "user_output", direction="output")
-        self.DIO5 = self.user_output  # backward-compatible alias
+        # GPIO11 is reserved for IRIG output and is not owned by BehavBox.
+        self.user_output = None
+        self.DIO5 = None
 
         # Head-fixed sounds are explicit output pins 23/24/9/10.
         self.sound1 = LED(output_pins["sound_1"])
@@ -183,7 +182,7 @@ class BehavBox(object):
         register_pin_label(output_pins["sound_4"], "sound_4", direction="output")
         self.DIO4 = self.sound4  # backward-compatible alias
 
-        # CSV reserves GPIO5/6/12 as unused for head-fixed; do not initialize them.
+        # CSV reserves GPIO5/6/11/12 for non-BehavBox use; do not initialize them.
         self.IR_rx1 = None
         self.IR_rx2 = None
         self.IR_rx3 = None

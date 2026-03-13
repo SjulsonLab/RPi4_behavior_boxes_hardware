@@ -93,6 +93,7 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `interact_list` entries now reuse the same detection timestamp used for queue event creation.
 
 ## Head-Fixed GPIO Mapping
+- `user_configurable`: 4
 - `treadmill_1_input`: 13
 - `treadmill_2_input`: 16
 - `reward_left`: 19
@@ -105,7 +106,6 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `cue_led_2`: 18
 - `cue_led_3`: 17
 - `cue_led_4`: 14
-- `user_output`: 11
 - `lick_1`: 26
 - `lick_2`: 27
 - `lick_3`: 15
@@ -113,7 +113,7 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `sound_2`: 24
 - `sound_3`: 9
 - `sound_4`: 10
-- Unused: 5, 6, 12
+- Reserved / unused for BehavBox: 5, 6, 11, 12
 
 ## Runtime Behavior (Pi vs Non-Pi)
 - Raspberry Pi: real `gpiozero` devices.

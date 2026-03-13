@@ -28,7 +28,6 @@ const OUTPUT_FUNCTION_ORDER = [
   'sound_2',
   'sound_3',
   'sound_4',
-  'user_output',
 ];
 
 function buildOrderIndex(labels) {

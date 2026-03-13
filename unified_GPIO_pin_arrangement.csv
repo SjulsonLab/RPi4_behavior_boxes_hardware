@@ -1,0 +1,30 @@
+,GPIO,Type,PCB Name,,Head-fixed,Freely-moving,notes
+,4,user-configurable,,,user,user,user-configurable
+,,,,,,,
+,5,nosepoke,IR_rx1,,(unused),poke_left,could use in head-fixed for IR-based lick detector
+,6,nosepoke,IR_rx2,,(unused),poke_right,could use in head-fixed for IR-based lick detector
+,12,nosepoke,IR_rx3,,(unused),poke_center,could use in head-fixed for IR-based lick detector
+,13,nosepoke,IR_rx4,,Treadmill 1,poke_extra1,connect treadmill to the negative pin only
+,16,nosepoke,IR_rx5,,Treadmill 2,poke_extra2,connect treadmill to the negative pin only
+,,,,,,,
+,19,pump,pump1,,reward_left,reward_left,double-check the pin numbers because there is
+,20,pump,pump2,,reward_right,reward_right,some confusion with different versions of the
+,21,pump,pump3,,reward_center,reward_center,RPi breakout board
+,7,pump,pump4,,pump4,pump4,
+,8,pump,pump5,,airpuff,pump5,
+,25,pump,pump_en,,vacuum,vacuum,
+,,,,,,,
+,22,cueLED,Cue1,,cueLED1,cueLED1,
+,18,cueLED,Cue2,,cueLED2,cueLED2,
+,17,cueLED,Cue3,,cueLED3,cueLED3,
+,14,cueLED,Cue4,,cueLED4,cueLED4,
+,11,IRIG output,DIO5,,(unused),(unused),not used by behavbox (reserved for IRIG output)
+,,,,,,,
+,26,lick,Lick1,,Lick1,cueLED5,
+,27,lick,Lick2,,Lick2,(unused),
+,15,lick,Lick3,,Lick3,(unused),
+,,,,,,,
+,23,sound,DIO1,,Sound1,Sound1,
+,24,sound,DIO2,,Sound2,Sound2,
+,9,sound,DIO3,,Sound3,Sound3,
+,10,sound,DIO4,,Sound4,Sound4,

@@ -59,9 +59,10 @@ class TestHeadFixedMapping(unittest.TestCase):
         os.chdir(self._cwd)
 
     def test_head_fixed_gpio_constants_present(self):
+        self.assertEqual(HEAD_FIXED_GPIO["user_configurable"], [4])
         self.assertEqual(HEAD_FIXED_GPIO["inputs"]["treadmill_1_input"], 13)
         self.assertEqual(HEAD_FIXED_GPIO["outputs"]["sound_4"], 10)
-        self.assertEqual(HEAD_FIXED_GPIO["unused"], [5, 6, 12])
+        self.assertEqual(HEAD_FIXED_GPIO["unused"], [5, 6, 11, 12])
 
     def test_behavbox_uses_head_fixed_mapping(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -73,7 +74,8 @@ class TestHeadFixedMapping(unittest.TestCase):
             self.assertEqual(box.cueLED3.pin, 17)
             self.assertEqual(box.cueLED4.pin, 14)
 
-            self.assertEqual(box.user_output.pin, 11)
+            self.assertIsNone(box.user_output)
+            self.assertIsNone(box.DIO5)
             self.assertEqual(box.sound1.pin, 23)
             self.assertEqual(box.sound2.pin, 24)
             self.assertEqual(box.sound3.pin, 9)
