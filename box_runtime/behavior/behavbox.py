@@ -30,6 +30,7 @@ from box_runtime.behavior.gpio_backend import (
     PWMLED,
     LED,
     Button,
+    DigitalOutputDevice,
     is_raspberry_pi,
     register_pin_label,
     set_visual_stim_state,
@@ -150,6 +151,7 @@ class BehavBox(object):
         # interact_list: lick, choice interaction between the board and the animal for visualization
         ###############################################################################################
         self.interact_list = []
+        self._user_gpio_devices = {}
 
         pins = HEAD_FIXED_GPIO
         output_pins = pins["outputs"]
@@ -167,7 +169,7 @@ class BehavBox(object):
         register_pin_label(output_pins["cue_led_3"], "cue_led_3", direction="output")
         register_pin_label(output_pins["cue_led_4"], "cue_led_4", direction="output")
 
-        # GPIO11 is reserved for IRIG output and is not owned by BehavBox.
+        # GPIO11 is reserved for the IRIG timecode sender output and is not owned by BehavBox.
         self.user_output = None
         self.DIO5 = None
 
@@ -343,6 +345,68 @@ class BehavBox(object):
         event = BehaviorEvent(name=event_name, timestamp=time.time())
         self.event_list.append(event)
         return event
+
+    def _configure_user_gpio(self, *, label: str, direction: str, pull_up=None, active_state=True):
+        """Configure GPIO4 once for user-defined input or output use.
+
+        Args:
+            label: Human-readable registry label for the configured pin.
+            direction: Either ``"input"`` or ``"output"``.
+            pull_up: Input pull mode passed through to ``Button`` when ``direction`` is ``"input"``.
+            active_state: Active-state flag passed through to ``Button`` when ``direction`` is ``"input"``.
+
+        Returns:
+            A configured ``Button`` or ``DigitalOutputDevice`` instance bound to GPIO4.
+        """
+
+        pin = HEAD_FIXED_GPIO["user_configurable"][0]
+        if self._user_gpio_devices:
+            raise RuntimeError(f"GPIO{pin} is already configured for user-defined use.")
+        if direction == "output":
+            device = DigitalOutputDevice(pin)
+        elif direction == "input":
+            device = Button(pin, pull_up, active_state)
+        else:
+            raise ValueError(f"Unsupported user GPIO direction: {direction}")
+        register_pin_label(pin, label, direction=direction)
+        self._user_gpio_devices[pin] = device
+        return device
+
+    def configure_user_output(self, label: str = "user_gpio_4") -> DigitalOutputDevice:
+        """Create a user-controlled digital output on GPIO4.
+
+        Args:
+            label: Registry/UI label for the output.
+
+        Returns:
+            A ``DigitalOutputDevice`` bound to GPIO4.
+        """
+
+        return self._configure_user_gpio(label=label, direction="output")
+
+    def configure_user_input(
+        self,
+        label: str = "user_gpio_4",
+        pull_up=None,
+        active_state: bool = True,
+    ) -> Button:
+        """Create a user-controlled digital input on GPIO4.
+
+        Args:
+            label: Registry/UI label for the input.
+            pull_up: Pull configuration forwarded to ``Button``.
+            active_state: Whether the active logical state is high.
+
+        Returns:
+            A ``Button`` bound to GPIO4.
+        """
+
+        return self._configure_user_gpio(
+            label=label,
+            direction="input",
+            pull_up=pull_up,
+            active_state=active_state,
+        )
     ###############################################################################################
     # check for data visualization - uses pygame window to show behavior progress
     ###############################################################################################

@@ -10,6 +10,13 @@ os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
 os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
 
 from box_runtime.behavior.behavbox import BehavBox, BehaviorEvent, HEAD_FIXED_GPIO, Pump
+from box_runtime.behavior.gpio_backend import (
+    Button as BackendButton,
+    DigitalOutputDevice as BackendDigitalOutputDevice,
+    LED as BackendLED,
+    PWMLED as BackendPWMLED,
+    ReservedPinError,
+)
 from box_runtime.mock_hw.devices import Button, LED
 from box_runtime.mock_hw.registry import REGISTRY, register_pin_label
 from box_runtime.mock_hw.server import ensure_server_running
@@ -102,6 +109,53 @@ class TestHeadFixedMapping(unittest.TestCase):
             registered_pins = {pin["pin"] for pin in state["pins"]}
             self.assertNotIn(11, registered_pins)
             self.assertNotIn("user_output", state["labels"])
+
+    def test_user_gpio4_can_be_configured_as_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = _session_info(tmp)
+            box = BehavBox(info)
+
+            user_output = box.configure_user_output(label="aux_output")
+            user_output.on()
+
+            state = REGISTRY.get_state()
+            self.assertEqual(state["labels"]["aux_output"], 4)
+            pin_entry = next(pin for pin in state["pins"] if pin["pin"] == 4)
+            self.assertEqual(pin_entry["direction"], "output")
+            self.assertTrue(pin_entry["active"])
+
+    def test_user_gpio4_can_be_configured_as_input(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = _session_info(tmp)
+            box = BehavBox(info)
+
+            user_input = box.configure_user_input(label="aux_input")
+            user_input.press(source="test")
+
+            state = REGISTRY.get_state()
+            self.assertEqual(state["labels"]["aux_input"], 4)
+            pin_entry = next(pin for pin in state["pins"] if pin["pin"] == 4)
+            self.assertEqual(pin_entry["direction"], "input")
+            self.assertTrue(pin_entry["active"])
+
+    def test_reconfiguring_user_gpio4_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            info = _session_info(tmp)
+            box = BehavBox(info)
+
+            box.configure_user_output(label="aux_output")
+            with self.assertRaises(RuntimeError):
+                box.configure_user_input(label="aux_input")
+
+    def test_reserved_gpio11_raises_in_backend(self):
+        with self.assertRaises(ReservedPinError):
+            BackendLED(11)
+        with self.assertRaises(ReservedPinError):
+            BackendPWMLED(11)
+        with self.assertRaises(ReservedPinError):
+            BackendDigitalOutputDevice(11)
+        with self.assertRaises(ReservedPinError):
+            BackendButton(11)
 
 
 class TestMockDevices(unittest.TestCase):

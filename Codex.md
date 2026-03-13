@@ -114,6 +114,14 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `sound_3`: 9
 - `sound_4`: 10
 - Reserved / unused for BehavBox: 5, 6, 11, 12
+- Supported user-expansion path:
+- `BehavBox.configure_user_output(label=...)` reserves GPIO4 as a user-controlled digital output.
+- `BehavBox.configure_user_input(label=..., pull_up=..., active_state=...)` reserves GPIO4 as a user-controlled digital input.
+- GPIO4 may only be configured once per `BehavBox` instance.
+- Reserved-pin guard:
+- `box_runtime/behavior/gpio_backend.py` raises `ReservedPinError` if active runtime code tries to claim GPIO11 through the supported GPIO device classes.
+- GPIO11 is reserved because it is the pin used by the IRIG timecode sender output.
+- This protects IRIG timecode sender use of GPIO11 from future BehavBox edits, but archived `old/` scripts are not covered unless they import through `gpio_backend.py`.
 
 ## Runtime Behavior (Pi vs Non-Pi)
 - Raspberry Pi: real `gpiozero` devices.
