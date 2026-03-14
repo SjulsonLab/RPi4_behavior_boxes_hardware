@@ -18,6 +18,7 @@ import socket
 import time
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import scipy.io, pickle
@@ -28,13 +29,15 @@ from typing import Optional
 
 from box_runtime.behavior.gpio_backend import (
     PWMLED,
-    LED,
     Button,
     DigitalOutputDevice,
+    LED,
     is_raspberry_pi,
     register_pin_label,
     set_visual_stim_state,
 )
+from box_runtime.audio.importer import AudioPaths
+from box_runtime.audio.runtime import SoundRuntime
 from box_runtime.video_recording.camera_client import CameraClient, CameraClientError
 
 try:
@@ -152,6 +155,7 @@ class BehavBox(object):
         ###############################################################################################
         self.interact_list = []
         self._user_gpio_devices = {}
+        self.sound_runtime = self._build_sound_runtime()
 
         pins = HEAD_FIXED_GPIO
         output_pins = pins["outputs"]
@@ -173,16 +177,8 @@ class BehavBox(object):
         self.user_output = None
         self.DIO5 = None
 
-        # Head-fixed sounds are explicit output pins 23/24/9/10.
-        self.sound1 = LED(output_pins["sound_1"])
-        self.sound2 = LED(output_pins["sound_2"])
-        self.sound3 = LED(output_pins["sound_3"])
-        self.sound4 = LED(output_pins["sound_4"])
-        register_pin_label(output_pins["sound_1"], "sound_1", direction="output")
-        register_pin_label(output_pins["sound_2"], "sound_2", direction="output")
-        register_pin_label(output_pins["sound_3"], "sound_3", direction="output")
-        register_pin_label(output_pins["sound_4"], "sound_4", direction="output")
-        self.DIO4 = self.sound4  # backward-compatible alias
+        # Legacy GPIO sound outputs are retired from the supported runtime path.
+        self.DIO4 = None
 
         # CSV reserves GPIO5/6/11/12 for non-BehavBox use; do not initialize them.
         self.IR_rx1 = None
@@ -346,6 +342,22 @@ class BehavBox(object):
         self.event_list.append(event)
         return event
 
+    def _build_sound_runtime(self) -> SoundRuntime:
+        """Create the persistent audio runtime for named cue playback.
+
+        Returns:
+            SoundRuntime configured with the repository audio directories.
+        """
+
+        audio_root = Path(__file__).resolve().parents[1] / "audio"
+        paths = AudioPaths(
+            tracked_sounds_dir=audio_root / "sounds",
+            local_source_dir=audio_root / "local_source_wavs",
+            local_sounds_dir=audio_root / "local_sounds",
+        )
+        device_name = str(self.session_info.get("audio_device", os.environ.get("BEHAVBOX_AUDIO_DEVICE", "default")))
+        return SoundRuntime(paths=paths, device_name=device_name)
+
     def _configure_user_gpio(self, *, label: str, direction: str, pull_up=None, active_state=True):
         """Configure GPIO4 once for user-defined input or output use.
 
@@ -407,6 +419,139 @@ class BehavBox(object):
             pull_up=pull_up,
             active_state=active_state,
         )
+
+    def import_wav_file(
+        self,
+        source_name: str,
+        cue_name: Optional[str] = None,
+        overwrite: bool = False,
+        max_duration_s: float = 10.0,
+        allow_longer: bool = False,
+    ) -> Path:
+        """Import a source WAV into the local canonical cue directory.
+
+        Args:
+            source_name: Source basename resolved under the local source-waveform
+                directory.
+            cue_name: Optional canonical cue basename.
+            overwrite: Whether an existing canonical cue may be replaced.
+            max_duration_s: Maximum imported duration in seconds when
+                ``allow_longer`` is ``False``.
+            allow_longer: Whether to preserve source duration beyond
+                ``max_duration_s``.
+
+        Returns:
+            Path to the canonical WAV written by the importer.
+        """
+
+        return self.sound_runtime.import_wav_file(
+            source_name=source_name,
+            cue_name=cue_name,
+            overwrite=overwrite,
+            max_duration_s=max_duration_s,
+            allow_longer=allow_longer,
+        )
+
+    def load_sound(self, name: str):
+        """Load one canonical cue into random-access memory (RAM).
+
+        Args:
+            name: Canonical cue basename with or without ``.wav`` suffix.
+
+        Returns:
+            LoadedSound prepared for playback.
+        """
+
+        return self.sound_runtime.load_sound(name)
+
+    def clear_sounds(self) -> None:
+        """Release all loaded cues from random-access memory (RAM)."""
+
+        self.sound_runtime.clear_sounds()
+
+    def play_sound(
+        self,
+        name: str,
+        side: str = "both",
+        gain_db: float = 0.0,
+        duration_s: Optional[float] = None,
+    ) -> None:
+        """Play a named cue through the persistent audio runtime.
+
+        Args:
+            name: Loaded cue basename.
+            side: Playback side, one of ``"left"``, ``"right"``, or ``"both"``.
+            gain_db: Playback gain in decibels.
+            duration_s: Optional requested duration in seconds.
+
+        Returns:
+            ``None``.
+        """
+
+        self.sound_runtime.play_sound(
+            name=name,
+            side=side,
+            gain_db=gain_db,
+            duration_s=duration_s,
+        )
+
+    def stop_sound(self) -> None:
+        """Stop the currently playing cue, if any."""
+
+        self.sound_runtime.stop_sound()
+
+    def start_sound_calibration(self, side: str = "both", gain_db: float = 0.0) -> None:
+        """Start continuous white-noise playback for speaker calibration."""
+
+        self.sound_runtime.start_sound_calibration(side=side, gain_db=gain_db)
+
+    def stop_sound_calibration(self) -> None:
+        """Stop the calibration playback mode."""
+
+        self.sound_runtime.stop_sound_calibration()
+
+    def measure_sound_latency(
+        self,
+        name: str,
+        side: str = "both",
+        gain_db: float = 0.0,
+        repeats: int = 3,
+    ) -> list[float]:
+        """Measure loopback latency for a loaded cue.
+
+        Args:
+            name: Loaded cue basename.
+            side: Playback side.
+            gain_db: Playback gain in decibels.
+            repeats: Number of repeated measurements.
+
+        Returns:
+            List of latency values in milliseconds.
+        """
+
+        return self.sound_runtime.measure_sound_latency(
+            name=name,
+            side=side,
+            gain_db=gain_db,
+            repeats=repeats,
+        )
+
+    def close(self) -> None:
+        """Close long-lived runtime resources owned by BehavBox.
+
+        Returns:
+            ``None``.
+        """
+
+        if getattr(self, "sound_runtime", None) is not None:
+            self.sound_runtime.close()
+            self.sound_runtime = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
     ###############################################################################################
     # check for data visualization - uses pygame window to show behavior progress
     ###############################################################################################

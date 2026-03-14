@@ -24,10 +24,6 @@ const OUTPUT_FUNCTION_ORDER = [
   'cue_led_2',
   'cue_led_3',
   'cue_led_4',
-  'sound_1',
-  'sound_2',
-  'sound_3',
-  'sound_4',
 ];
 
 function buildOrderIndex(labels) {

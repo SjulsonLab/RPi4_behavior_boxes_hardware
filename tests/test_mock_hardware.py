@@ -68,7 +68,6 @@ class TestHeadFixedMapping(unittest.TestCase):
     def test_head_fixed_gpio_constants_present(self):
         self.assertEqual(HEAD_FIXED_GPIO["user_configurable"], [4])
         self.assertEqual(HEAD_FIXED_GPIO["inputs"]["treadmill_1_input"], 13)
-        self.assertEqual(HEAD_FIXED_GPIO["outputs"]["sound_4"], 10)
         self.assertEqual(HEAD_FIXED_GPIO["unused"], [5, 6, 11, 12])
 
     def test_behavbox_uses_head_fixed_mapping(self):
@@ -83,10 +82,8 @@ class TestHeadFixedMapping(unittest.TestCase):
 
             self.assertIsNone(box.user_output)
             self.assertIsNone(box.DIO5)
-            self.assertEqual(box.sound1.pin, 23)
-            self.assertEqual(box.sound2.pin, 24)
-            self.assertEqual(box.sound3.pin, 9)
-            self.assertEqual(box.sound4.pin, 10)
+            self.assertIsNone(box.DIO4)
+            self.assertIsNotNone(box.sound_runtime)
 
             self.assertEqual(box.treadmill_input_1.pin, 13)
             self.assertEqual(box.treadmill_input_2.pin, 16)
@@ -109,6 +106,10 @@ class TestHeadFixedMapping(unittest.TestCase):
             registered_pins = {pin["pin"] for pin in state["pins"]}
             self.assertNotIn(11, registered_pins)
             self.assertNotIn("user_output", state["labels"])
+            self.assertNotIn("sound_1", state["labels"])
+            self.assertNotIn("sound_2", state["labels"])
+            self.assertNotIn("sound_3", state["labels"])
+            self.assertNotIn("sound_4", state["labels"])
 
     def test_user_gpio4_can_be_configured_as_output(self):
         with tempfile.TemporaryDirectory() as tmp:
