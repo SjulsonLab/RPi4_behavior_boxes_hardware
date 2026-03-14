@@ -1,6 +1,7 @@
 """Local one-Pi camera orchestration for automated BehavBox sessions.
 
 Data contracts:
+
 - ``camera_id``: semantic camera identifier string such as ``"camera0"`` or
   ``"camera1"``
 - ``session_info``: mapping containing at least ``dir_name`` and optional
