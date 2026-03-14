@@ -9,7 +9,7 @@ from urllib.request import Request, urlopen
 os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
 os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
 
-from box_runtime.behavior.behavbox import BehavBox, BehaviorEvent, HEAD_FIXED_GPIO, Pump
+from box_runtime.behavior.behavbox import BehavBox, BehaviorEvent
 from box_runtime.behavior.gpio_backend import (
     Button as BackendButton,
     DigitalOutputDevice as BackendDigitalOutputDevice,
@@ -17,6 +17,7 @@ from box_runtime.behavior.gpio_backend import (
     PWMLED as BackendPWMLED,
     ReservedPinError,
 )
+from box_runtime.io_manifest import load_box_profile
 from box_runtime.mock_hw.devices import Button, LED
 from box_runtime.mock_hw.registry import (
     REGISTRY,
@@ -29,8 +30,8 @@ from box_runtime.mock_hw.server import ensure_server_running
 from box_runtime.mock_hw.visual_stim import MockVisualStim
 
 
-def _session_info(base_dir: str):
-    return {
+def _session_info(base_dir: str, **overrides):
+    info = {
         "external_storage": base_dir,
         "basename": "test_session",
         "dir_name": os.path.join(base_dir, "run"),
@@ -49,8 +50,10 @@ def _session_info(base_dir: str):
         "vacuum_duration": 0.01,
         "visual_stimulus": False,
         "treadmill": False,
-        "input_profile": "head_fixed",
+        "box_profile": "head_fixed",
     }
+    info.update(overrides)
+    return info
 
 
 def _json_request(url: str, method: str = "GET", payload=None):
@@ -64,7 +67,7 @@ def _json_request(url: str, method: str = "GET", payload=None):
         return json.loads(resp.read().decode("utf-8"))
 
 
-class TestHeadFixedMapping(unittest.TestCase):
+class TestManifestAndMapping(unittest.TestCase):
     def setUp(self):
         REGISTRY.reset()
         self._cwd = os.getcwd()
@@ -72,64 +75,47 @@ class TestHeadFixedMapping(unittest.TestCase):
     def tearDown(self):
         os.chdir(self._cwd)
 
-    def test_head_fixed_gpio_constants_present(self):
-        self.assertEqual(HEAD_FIXED_GPIO["user_configurable"], [4])
-        self.assertEqual(HEAD_FIXED_GPIO["inputs"]["treadmill_1_input"], 13)
-        self.assertEqual(HEAD_FIXED_GPIO["unused"], [5, 6, 11, 12])
+    def test_head_fixed_manifest_uses_v4_mapping(self):
+        manifest = load_box_profile("head_fixed")
 
-    def test_behavbox_uses_head_fixed_mapping(self):
+        self.assertEqual(manifest.source_csv.name, "unified_GPIO_pin_arrangement_v4.csv")
+        self.assertEqual(manifest.inputs["trigger_in"].pin, 23)
+        self.assertEqual(manifest.outputs["trigger_out"].pin, 24)
+        self.assertEqual(manifest.outputs["cue_led_5"].pin, 10)
+        self.assertEqual(manifest.outputs["cue_led_6"].pin, 11)
+        self.assertEqual(manifest.user_configurable["user_configurable"].pin, 4)
+        self.assertIn(9, manifest.reserved)
+        self.assertEqual(manifest.reserved[9].board_alias, "DIO3")
+
+    def test_behavbox_registers_v4_head_fixed_pins(self):
         with tempfile.TemporaryDirectory() as tmp:
-            info = _session_info(tmp)
-            box = BehavBox(info)
+            box = BehavBox(_session_info(tmp))
             box.prepare_session()
 
-            self.assertEqual(box.cueLED1.pin, 22)
-            self.assertEqual(box.cueLED2.pin, 18)
-            self.assertEqual(box.cueLED3.pin, 17)
-            self.assertEqual(box.cueLED4.pin, 14)
-
-            self.assertIsNone(box.DIO4)
-            self.assertIsNotNone(box.sound_runtime)
-            self.assertIsNotNone(box.input_service)
-
-            self.assertEqual(box.lick1.pin, 26)
-            self.assertEqual(box.lick2.pin, 27)
-            self.assertEqual(box.lick3.pin, 15)
-            self.assertEqual(box.ttl_trigger.pin, 4)
-
-            self.assertIsNotNone(box.treadmill_encoder)
+            self.assertEqual(box.trigger_in.pin, 23)
             self.assertEqual(box.treadmill_encoder.a.pin, 13)
             self.assertEqual(box.treadmill_encoder.b.pin, 16)
 
-            self.assertIsNone(box.IR_rx1)
-            self.assertIsNone(box.IR_rx2)
-            self.assertIsNone(box.IR_rx3)
-            self.assertIsNone(box.IR_rx4)
-            self.assertIsNone(box.IR_rx5)
-
-    def test_behavbox_does_not_register_gpio11(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            info = _session_info(tmp)
-            box = BehavBox(info)
-            box.prepare_session()
-
             state = REGISTRY.get_state()
             registered_pins = {pin["pin"] for pin in state["pins"]}
-            self.assertNotIn(11, registered_pins)
-            self.assertNotIn("sound_1", state["labels"])
-            self.assertNotIn("sound_2", state["labels"])
-            self.assertNotIn("sound_3", state["labels"])
-            self.assertNotIn("sound_4", state["labels"])
+            self.assertNotIn(9, registered_pins)
+            self.assertIn(10, registered_pins)
+            self.assertIn(11, registered_pins)
 
-    def test_reserved_gpio11_raises_in_backend(self):
+            reward_left = next(pin for pin in state["pins"] if pin.get("label") == "reward_left")
+            self.assertIn("pump1", reward_left.get("aliases", []))
+            trigger_out = next(pin for pin in state["pins"] if pin.get("label") == "trigger_out")
+            self.assertIn("DIO2", trigger_out.get("aliases", []))
+
+    def test_reserved_gpio9_raises_in_backend(self):
         with self.assertRaises(ReservedPinError):
-            BackendLED(11)
+            BackendLED(9)
         with self.assertRaises(ReservedPinError):
-            BackendPWMLED(11)
+            BackendPWMLED(9)
         with self.assertRaises(ReservedPinError):
-            BackendDigitalOutputDevice(11)
+            BackendDigitalOutputDevice(9)
         with self.assertRaises(ReservedPinError):
-            BackendButton(11)
+            BackendButton(9)
 
 
 class TestMockDevices(unittest.TestCase):
@@ -230,6 +216,29 @@ class TestIntegration(unittest.TestCase):
         state = _json_request(f"{url}/api/state")
         self.assertIn("pins", state)
 
+    def test_web_api_output_endpoints_support_canonical_and_alias_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            box = BehavBox(_session_info(tmp))
+            box.prepare_session()
+            url = ensure_server_running(host="127.0.0.1", port=0)
+
+            _json_request(f"{url}/api/output/reward_left/on", method="POST")
+            state = _json_request(f"{url}/api/state")
+            reward_left = next(pin for pin in state["pins"] if pin.get("label") == "reward_left")
+            self.assertEqual(reward_left["value"], 1)
+            self.assertIn("pump1", reward_left.get("aliases", []))
+
+            _json_request(f"{url}/api/output/reward_left/off", method="POST")
+            _json_request(
+                f"{url}/api/output/pump1/pulse",
+                method="POST",
+                payload={"duration_ms": 30},
+            )
+            time.sleep(0.06)
+            state = _json_request(f"{url}/api/state")
+            reward_left = next(pin for pin in state["pins"] if pin.get("label") == "reward_left")
+            self.assertEqual(reward_left["value"], 0)
+
     def test_web_api_state_includes_runtime_sections(self):
         url = ensure_server_running(host="127.0.0.1", port=0)
         set_session_state(lifecycle_state="running", active=True, protocol_name="head_fixed_gonogo")
@@ -243,11 +252,11 @@ class TestIntegration(unittest.TestCase):
         self.assertEqual(state["runtime"]["task"]["phase"], "stimulus")
         self.assertEqual(state["runtime"]["audio"]["current_cue_name"], "gonogo_go")
 
-    def test_pump_reward_records_output_activity(self):
+    def test_deliver_reward_records_output_activity_without_pump_class(self):
         with tempfile.TemporaryDirectory() as tmp:
-            info = _session_info(tmp)
-            pump = Pump(info)
-            pump.reward("1", 100)
+            box = BehavBox(_session_info(tmp))
+            box.prepare_session()
+            box.deliver_reward("reward_left", 100)
             time.sleep(0.08)
             events = REGISTRY.get_events(limit=200)["events"]
             reward_events = [

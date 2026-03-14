@@ -1,0 +1,30 @@
+,GPIO,Type,PCB Name,,Head-fixed,Freely-moving,notes
+,4,user-configurable,Camera,,user,user,user-configurable
+,,,,,,,
+,5,IR_sensor,IR_rx1,,IR_lick_left,poke_left,could use in head-fixed for IR-based lick detector
+,6,IR_sensor,IR_rx2,,IR_lick_right,poke_right,could use in head-fixed for IR-based lick detector
+,12,IR_sensor,IR_rx3,,IR_lick_center,poke_center,could use in head-fixed for IR-based lick detector
+,13,IR_sensor,IR_rx4,,Treadmill 1,poke_extra1,connect treadmill to the negative pin only
+,16,IR_sensor,IR_rx5,,Treadmill 2,poke_extra2,connect treadmill to the negative pin only
+,,,,,,,
+,19,pump,pump1,,reward_left,reward_left,double-check the pin numbers because there is
+,20,pump,pump2,,reward_right,reward_right,some confusion with different versions of the
+,21,pump,pump3,,reward_center,reward_center,RPi breakout board
+,7,pump,pump4,,reward_4,reward_4,
+,8,pump,pump5,,airpuff,reward_5,
+,25,pump,pump_en,,vacuum,vacuum,
+,,,,,,,
+,22,cueLED,Cue1,,cueLED1,cueLED1,
+,18,cueLED,Cue2,,cueLED2,cueLED2,
+,17,cueLED,Cue3,,cueLED3,cueLED3,
+,14,cueLED,Cue4,,cueLED4,cueLED4,
+,10,cueLED,DIO4,,cueLED5,cueLED5,
+,11,cueLED,DIO5,,cueLED6,cueLED6,
+,,,,,,,
+,26,lick,Lick1,,lick_left,(unused),
+,27,lick,Lick2,,lick_right,(unused),
+,15,lick,Lick3,,lick_center,(unused),
+,,,,,,,
+,23,trigger,DIO1,,trigger_in,trigger_in,
+,24,trigger,DIO2,,trigger_out,trigger_out,
+,9,IRIG output,DIO3,,(unused),(unused),not used by behavbox (reserved for IRIG output)

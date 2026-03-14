@@ -40,7 +40,7 @@ def _session_info(base_dir: str) -> dict:
         "vacuum_duration": 0.01,
         "visual_stimulus": False,
         "treadmill": False,
-        "input_profile": "head_fixed",
+        "box_profile": "head_fixed",
     }
 
 
@@ -87,7 +87,7 @@ def test_go_trial_center_response_yields_hit_and_reward():
                     "response_window_s": 0.25,
                     "reward_phase_s": 0.01,
                     "cleanup_s": 0.01,
-                    "reward_output": "3",
+                    "reward_output": "reward_center",
                     "reward_size_ul": 50,
                     "max_trials": 1,
                 },
@@ -101,7 +101,11 @@ def test_go_trial_center_response_yields_hit_and_reward():
 
         assert task_state["counters"]["hits"] == 1
         assert task_state["counters"]["completed_trials"] == 1
-        assert any(name == "pump3_reward" for name, _ in box.pump.reward_list)
+        reward_events = [
+            event for event in box.output_service.history
+            if event["name"] == "reward_center_pulse"
+        ]
+        assert reward_events
 
         box.stop_session()
         box.finalize_session()

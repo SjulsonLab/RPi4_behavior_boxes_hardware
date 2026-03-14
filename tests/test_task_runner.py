@@ -41,7 +41,7 @@ def _session_info(base_dir: str) -> dict:
         "vacuum_duration": 0.01,
         "visual_stimulus": False,
         "treadmill": False,
-        "input_profile": "head_fixed",
+        "box_profile": "head_fixed",
     }
 
 
