@@ -104,6 +104,49 @@ class PyAlsaCaptureDevice:
             self.close()
             return self._capture_with_arecord(frame_count)
 
+    def capture_around_playback(
+        self,
+        play_callback: Callable[[], None],
+        total_frames: int,
+        pre_roll_frames: int,
+    ) -> np.ndarray:
+        """Capture audio around a playback trigger.
+
+        Args:
+            play_callback: Zero-argument callable that starts playback.
+            total_frames: Total number of mono frames to capture.
+            pre_roll_frames: Number of captured frames to accumulate before
+                calling ``play_callback``.
+
+        Returns:
+            One-dimensional ``float32`` waveform of shape ``(total_frames,)``.
+        """
+
+        chunks: list[np.ndarray] = []
+        captured = 0
+        playback_started = False
+        try:
+            while captured < total_frames:
+                length, data = self._pcm.read()
+                if length <= 0:
+                    continue
+                chunk = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
+                chunk = chunk[:length]
+                chunks.append(chunk)
+                captured += int(length)
+                if not playback_started and captured >= pre_roll_frames:
+                    play_callback()
+                    playback_started = True
+            recorded = np.concatenate(chunks)[:total_frames]
+            return recorded.astype(np.float32, copy=False)
+        except Exception:  # pragma: no cover - exercised on Raspberry Pi hardware
+            self.close()
+            return self._capture_with_arecord_streaming(
+                play_callback=play_callback,
+                total_frames=total_frames,
+                pre_roll_frames=pre_roll_frames,
+            )
+
     def close(self) -> None:
         if hasattr(self, "_pcm"):
             self._pcm.close()
@@ -146,6 +189,62 @@ class PyAlsaCaptureDevice:
         recorded = recorded.astype(np.float32) / 32768.0
         return recorded[:frame_count]
 
+    def _capture_with_arecord_streaming(
+        self,
+        play_callback: Callable[[], None],
+        total_frames: int,
+        pre_roll_frames: int,
+    ) -> np.ndarray:
+        """Fallback capture path using streaming `arecord` stdout.
+
+        Args:
+            play_callback: Zero-argument callable that starts playback.
+            total_frames: Total number of mono frames to capture.
+            pre_roll_frames: Number of captured frames to accumulate before
+                starting playback.
+
+        Returns:
+            One-dimensional ``float32`` waveform of shape ``(total_frames,)``.
+        """
+
+        bytes_per_frame = 2
+        target_bytes = total_frames * bytes_per_frame
+        process = subprocess.Popen(
+            [
+                "arecord",
+                "-q",
+                "-D",
+                self.device_name,
+                "-f",
+                "S16_LE",
+                "-c",
+                "1",
+                "-r",
+                str(self.sample_rate_hz),
+                "-t",
+                "raw",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        playback_started = False
+        raw_buffer = bytearray()
+        try:
+            while len(raw_buffer) < target_bytes:
+                assert process.stdout is not None
+                chunk = process.stdout.read(self.period_size_frames * bytes_per_frame)
+                if not chunk:
+                    break
+                raw_buffer.extend(chunk)
+                if not playback_started and len(raw_buffer) >= pre_roll_frames * bytes_per_frame:
+                    play_callback()
+                    playback_started = True
+        finally:
+            process.terminate()
+            process.wait(timeout=2.0)
+        recorded = np.frombuffer(bytes(raw_buffer[:target_bytes]), dtype=np.int16).astype(np.float32) / 32768.0
+        return recorded[:total_frames]
+
 
 def measure_loopback_latency(
     capture_device: PyAlsaCaptureDevice,
@@ -171,27 +270,17 @@ def measure_loopback_latency(
     """
 
     played_waveform_mono = np.asarray(played_waveform_mono, dtype=np.float32)
-    total_frames = int(round((pre_roll_s + post_roll_s) * sample_rate_hz)) + int(played_waveform_mono.shape[0])
-    start_time = time.time()
-    # Capture in a helper thread-equivalent style: begin blocking capture,
-    # trigger playback immediately after.
-    # The ALSA capture call blocks until each period is available, so this
-    # function intentionally keeps the orchestration simple.
-    import threading
-
-    recorded_holder: dict[str, np.ndarray] = {}
-
-    def _capture():
-        recorded_holder["waveform"] = capture_device.capture_frames(total_frames)
-
-    capture_thread = threading.Thread(target=_capture, daemon=True)
-    capture_thread.start()
-    time.sleep(pre_roll_s)
-    play_callback()
-    capture_thread.join(timeout=pre_roll_s + post_roll_s + 5.0)
-    if "waveform" not in recorded_holder:
+    pre_roll_frames = int(round(pre_roll_s * sample_rate_hz))
+    post_roll_frames = int(round(post_roll_s * sample_rate_hz))
+    total_frames = pre_roll_frames + post_roll_frames + int(played_waveform_mono.shape[0])
+    recorded = capture_device.capture_around_playback(
+        play_callback=play_callback,
+        total_frames=total_frames,
+        pre_roll_frames=pre_roll_frames,
+    )
+    if recorded.shape[0] < played_waveform_mono.shape[0]:
         raise TimeoutError("Timed out waiting for loopback capture.")
-    offset = estimate_loopback_latency_samples(recorded_holder["waveform"], played_waveform_mono)
+    offset = estimate_loopback_latency_samples(recorded, played_waveform_mono)
     # Subtract the intentional pre-roll offset.
-    offset -= int(round(pre_roll_s * sample_rate_hz))
-    return LoopbackMeasurement(offset_samples=max(0, offset), sample_rate_hz=sample_rate_hz)
+    offset -= pre_roll_frames
+    return LoopbackMeasurement(offset_samples=offset, sample_rate_hz=sample_rate_hz)
