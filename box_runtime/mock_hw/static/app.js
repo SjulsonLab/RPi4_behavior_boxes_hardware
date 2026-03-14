@@ -9,25 +9,39 @@ const visualEl = document.getElementById('visual-stim');
 
 // Head-fixed, function-first ordering for UI display.
 const INPUT_FUNCTION_ORDER = [
-  'lick_1',
-  'lick_2',
-  'lick_3',
-  'treadmill_encoder_a',
-  'treadmill_encoder_b',
-  'ttl_trigger',
+  'ir_lick_left',
+  'ir_lick_right',
+  'ir_lick_center',
+  'lick_left',
+  'lick_right',
+  'lick_center',
+  'poke_left',
+  'poke_right',
+  'poke_center',
+  'treadmill_1',
+  'treadmill_2',
+  'poke_extra1',
+  'poke_extra2',
+  'trigger_in',
+  'user_input',
 ];
 
 const OUTPUT_FUNCTION_ORDER = [
   'reward_left',
-  'reward_center',
   'reward_right',
-  'pump4',
+  'reward_center',
+  'reward_4',
+  'reward_5',
   'airpuff',
   'vacuum',
   'cue_led_1',
   'cue_led_2',
   'cue_led_3',
   'cue_led_4',
+  'cue_led_5',
+  'cue_led_6',
+  'trigger_out',
+  'ttl_output',
 ];
 
 function buildOrderIndex(labels) {
@@ -67,6 +81,14 @@ function escapeHtml(value) {
     .replaceAll('>', '&gt;')
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
+}
+
+function pinDisplayLabel(pin) {
+  const label = pin.label || `pin_${pin.pin}`;
+  const aliases = Array.isArray(pin.aliases) ? pin.aliases.filter(Boolean) : [];
+  return aliases.length > 0
+    ? `${label} (${aliases.join(', ')})`
+    : label;
 }
 
 async function postJson(url, body = null) {
@@ -172,7 +194,7 @@ function renderPins(state) {
     card.className = 'card';
     card.innerHTML = `
       <div class="pin-title">
-        <span class="pin-label">${label}</span>
+        <span class="pin-label">${escapeHtml(pinDisplayLabel(pin))}</span>
         ${statePill(pin.active)}
       </div>
       <div class="pin-meta">GPIO ${pin.pin}</div>
@@ -194,12 +216,21 @@ function renderPins(state) {
     card.className = 'card';
     card.innerHTML = `
       <div class="pin-title">
-        <span class="pin-label">${label}</span>
+        <span class="pin-label">${escapeHtml(pinDisplayLabel(pin))}</span>
         ${statePill(pin.active)}
       </div>
       <div class="pin-meta">GPIO ${pin.pin}</div>
       <div class="pin-meta">Type: ${pin.device_type || '-'}</div>
       <div class="pin-meta">Value: ${pin.value}</div>
+      <div class="controls">
+        <button data-label="${label}" data-output-action="on">On</button>
+        <button data-label="${label}" data-output-action="off">Off</button>
+        <button data-label="${label}" data-output-action="toggle">Toggle</button>
+      </div>
+      <div class="controls">
+        <input type="number" min="0" step="10" value="100" data-output-duration="${label}" aria-label="Output pulse duration ms">
+        <button data-label="${label}" data-output-action="pulse">Pulse (ms)</button>
+      </div>
     `;
     outputsEl.appendChild(card);
   }
@@ -297,18 +328,38 @@ async function refresh() {
 
 document.body.addEventListener('click', async (evt) => {
   const btn = evt.target.closest('button[data-action]');
-  if (!btn) return;
+  if (btn) {
+    const label = btn.getAttribute('data-label');
+    const action = btn.getAttribute('data-action');
 
-  const label = btn.getAttribute('data-label');
-  const action = btn.getAttribute('data-action');
+    try {
+      if (action === 'pulse') {
+        const durationInput = document.querySelector(`input[data-duration="${label}"]`);
+        const duration = parseInt(durationInput?.value || '100', 10);
+        await postJson(`/api/input/${encodeURIComponent(label)}/pulse`, { duration_ms: duration });
+      } else {
+        await postJson(`/api/input/${encodeURIComponent(label)}/${action}`);
+      }
+      await refresh();
+    } catch (err) {
+      statusLine.textContent = `Action failed: ${err.message}`;
+    }
+    return;
+  }
+
+  const outputBtn = evt.target.closest('button[data-output-action]');
+  if (!outputBtn) return;
+
+  const outputLabel = outputBtn.getAttribute('data-label');
+  const outputAction = outputBtn.getAttribute('data-output-action');
 
   try {
-    if (action === 'pulse') {
-      const durationInput = document.querySelector(`input[data-duration="${label}"]`);
+    if (outputAction === 'pulse') {
+      const durationInput = document.querySelector(`input[data-output-duration="${outputLabel}"]`);
       const duration = parseInt(durationInput?.value || '100', 10);
-      await postJson(`/api/input/${encodeURIComponent(label)}/pulse`, { duration_ms: duration });
+      await postJson(`/api/output/${encodeURIComponent(outputLabel)}/pulse`, { duration_ms: duration });
     } else {
-      await postJson(`/api/input/${encodeURIComponent(label)}/${action}`);
+      await postJson(`/api/output/${encodeURIComponent(outputLabel)}/${outputAction}`);
     }
     await refresh();
   } catch (err) {

@@ -92,35 +92,35 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `BehavBox.event_timestamp(event)`
 - `interact_list` entries now reuse the same detection timestamp used for queue event creation.
 
-## Head-Fixed GPIO Mapping
-- `user_configurable`: 4
-- `treadmill_1_input`: 13
-- `treadmill_2_input`: 16
-- `reward_left`: 19
-- `reward_right`: 20
-- `reward_center`: 21
-- `pump4`: 7
-- `airpuff`: 8
-- `vacuum`: 25
-- `cue_led_1`: 22
-- `cue_led_2`: 18
-- `cue_led_3`: 17
-- `cue_led_4`: 14
-- `lick_1`: 26
-- `lick_2`: 27
-- `lick_3`: 15
-- Reserved / unused for BehavBox: 5, 6, 11, 12
-- Legacy sound-board GPIO pins remain present on some hardware drawings, but the
-  supported runtime no longer owns them. Sound playback now uses the direct USB
-  audio subsystem under `box_runtime/audio/`.
-- Supported user-expansion path:
-- `BehavBox.configure_user_output(label=...)` reserves GPIO4 as a user-controlled digital output.
-- `BehavBox.configure_user_input(label=..., pull_up=..., active_state=...)` reserves GPIO4 as a user-controlled digital input.
-- GPIO4 may only be configured once per `BehavBox` instance.
+## Profile-Aware GPIO Mapping
+- Active GPIO mapping is loaded from `unified_GPIO_pin_arrangement_v4.csv`, not a hard-coded dict.
+- Canonical profile key: `box_profile`
+  - fallback: `input_profile` if `box_profile` is absent
+- Dedicated trigger lines:
+  - `trigger_in`: GPIO23
+  - `trigger_out`: GPIO24
+- Generic user-configurable line:
+  - GPIO4, claimed later as input or output if requested
+- Head-fixed inputs:
+  - `ir_lick_left/right/center`: GPIO5/6/12
+  - `lick_left/right/center`: GPIO26/27/15
+  - `treadmill_1/2`: GPIO13/16
+- Freely-moving inputs:
+  - `poke_left/right/center`: GPIO5/6/12
+  - `poke_extra1/2`: GPIO13/16
+- Shared outputs:
+  - `reward_left/right/center`: GPIO19/20/21
+  - `reward_4`: GPIO7
+  - `vacuum`: GPIO25
+  - `cue_led_1..6`: GPIO22/18/17/14/10/11
+  - `trigger_out`: GPIO24
+- Profile-specific GPIO8:
+  - `head_fixed`: `airpuff`
+  - `freely_moving`: `reward_5`
+- User-facing manual-control surfaces show canonical names plus board aliases (for example `reward_left (pump1)`).
 - Reserved-pin guard:
-- `box_runtime/behavior/gpio_backend.py` raises `ReservedPinError` if active runtime code tries to claim GPIO11 through the supported GPIO device classes.
-- GPIO11 is reserved because it is the pin used by the IRIG timecode sender output.
-- This protects IRIG timecode sender use of GPIO11 from future BehavBox edits, but archived `old/` scripts are not covered unless they import through `gpio_backend.py`.
+  - `box_runtime/behavior/gpio_backend.py` raises `ReservedPinError` for GPIO9.
+  - GPIO9 is reserved for the IRIG sender output and should not be claimed by active BehavBox runtime code.
 
 ## Runtime Behavior (Pi vs Non-Pi)
 - Raspberry Pi: real `gpiozero` devices.

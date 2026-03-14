@@ -94,11 +94,17 @@ def make_handler(registry, static_dir: str):
 
         def do_POST(self):
             parsed = urlparse(self.path)
-            if not parsed.path.startswith("/api/input/"):
+            if parsed.path.startswith("/api/input/"):
+                endpoint_prefix = "/api/input/"
+                registry_method = "input"
+            elif parsed.path.startswith("/api/output/"):
+                endpoint_prefix = "/api/output/"
+                registry_method = "output"
+            else:
                 self._send_text("Not found", status=HTTPStatus.NOT_FOUND)
                 return
 
-            remainder = parsed.path[len("/api/input/"):]
+            remainder = parsed.path[len(endpoint_prefix):]
             parts = [p for p in remainder.split("/") if p]
             if len(parts) != 2:
                 self._send_text("Bad request", status=HTTPStatus.BAD_REQUEST)
@@ -108,14 +114,24 @@ def make_handler(registry, static_dir: str):
             action = parts[1]
 
             try:
-                if action == "press":
+                if registry_method == "input" and action == "press":
                     registry.press_input(label=label, source="ui")
-                elif action == "release":
+                elif registry_method == "input" and action == "release":
                     registry.release_input(label=label, source="ui")
-                elif action == "pulse":
+                elif registry_method == "input" and action == "pulse":
                     body = self._read_json()
                     duration_ms = int(body.get("duration_ms", 100))
                     registry.pulse_input(label=label, duration_ms=duration_ms, source="pulse")
+                elif registry_method == "output" and action == "on":
+                    registry.set_output_state(label=label, active=True, source="ui")
+                elif registry_method == "output" and action == "off":
+                    registry.set_output_state(label=label, active=False, source="ui")
+                elif registry_method == "output" and action == "toggle":
+                    registry.toggle_output(label=label, source="ui")
+                elif registry_method == "output" and action == "pulse":
+                    body = self._read_json()
+                    duration_ms = int(body.get("duration_ms", 100))
+                    registry.pulse_output(label=label, duration_ms=duration_ms, source="pulse")
                 else:
                     self._send_text("Unknown action", status=HTTPStatus.BAD_REQUEST)
                     return

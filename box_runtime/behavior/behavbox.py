@@ -29,10 +29,7 @@ from colorama import Fore, Style
 from typing import Callable, Optional
 
 from box_runtime.behavior.gpio_backend import (
-    PWMLED,
-    LED,
     is_raspberry_pi,
-    register_pin_label,
     set_audio_state,
     set_session_state,
     set_task_state,
@@ -40,7 +37,10 @@ from box_runtime.behavior.gpio_backend import (
 )
 from box_runtime.audio.importer import AudioPaths
 from box_runtime.audio.runtime import RecordingPlaybackBackend, SoundRuntime
+from box_runtime.io_manifest import load_box_profile
+from box_runtime.io_recording import SharedIoRecorder
 from box_runtime.input import InputService
+from box_runtime.output import OutputService
 from box_runtime.video_recording.camera_client import CameraClient, CameraClientError
 
 try:
@@ -61,38 +61,6 @@ except Exception:
     pygame = None
     plt = None
     fg = None
-
-
-HEAD_FIXED_GPIO = {
-    "user_configurable": [4],
-    "unused": [5, 6, 11, 12],
-    "inputs": {
-        "treadmill_1_input": 13,
-        "treadmill_2_input": 16,
-        "lick_1": 26,
-        "lick_2": 27,
-        "lick_3": 15,
-    },
-    "outputs": {
-        "cue_led_1": 22,
-        "cue_led_2": 18,
-        "cue_led_3": 17,
-        "cue_led_4": 14,
-        "sound_1": 23,
-        "sound_2": 24,
-        "sound_3": 9,
-        "sound_4": 10,
-    },
-    "pumps": {
-        "reward_left": 19,
-        "reward_right": 20,
-        "reward_center": 21,
-        "pump4": 7,
-        "airpuff": 8,
-        "vacuum": 25,
-    },
-}
-
 
 @dataclass(frozen=True)
 class BehaviorEvent:
@@ -160,10 +128,13 @@ class BehavBox(object):
         }
         self.event_list = deque()
         self.interact_list = []
+        self.box_profile = str(self.session_info.get("box_profile") or self.session_info.get("input_profile") or "head_fixed").lower()
+        self.box_manifest = load_box_profile(self.box_profile)
 
         self.sound_runtime = None
-        self.pump = None
         self.input_service = None
+        self.output_service = None
+        self.io_recorder = None
         self.visualstim = None
         self.ADC = None
         self.keyboard_active = False
@@ -179,16 +150,29 @@ class BehavBox(object):
         self.lick1 = None
         self.lick2 = None
         self.lick3 = None
+        self.lick_left = None
+        self.lick_right = None
+        self.lick_center = None
+        self.ir_lick_left = None
+        self.ir_lick_right = None
+        self.ir_lick_center = None
+        self.trigger_in = None
+        self.trigger_out = None
         self.ttl_trigger = None
         self.treadmill_input_1 = None
         self.treadmill_input_2 = None
         self.treadmill_encoder = None
+        self.poke_left = None
+        self.poke_right = None
+        self.poke_center = None
         self.poke_extra1 = None
         self.poke_extra2 = None
         self.cueLED1 = None
         self.cueLED2 = None
         self.cueLED3 = None
         self.cueLED4 = None
+        self.cueLED5 = None
+        self.cueLED6 = None
 
         try:
             if platform.system() == "Linux":
@@ -256,17 +240,6 @@ class BehavBox(object):
         """Receive audio-runtime state updates from the playback layer."""
 
         self.publish_runtime_state("audio", **payload)
-
-    def _prepare_gpio_outputs(self) -> None:
-        output_pins = HEAD_FIXED_GPIO["outputs"]
-        self.cueLED1 = BoxLED(output_pins["cue_led_1"], frequency=200)
-        self.cueLED2 = BoxLED(output_pins["cue_led_2"], frequency=200)
-        self.cueLED3 = BoxLED(output_pins["cue_led_3"], frequency=200)
-        self.cueLED4 = BoxLED(output_pins["cue_led_4"], frequency=200)
-        register_pin_label(output_pins["cue_led_1"], "cue_led_1", direction="output")
-        register_pin_label(output_pins["cue_led_2"], "cue_led_2", direction="output")
-        register_pin_label(output_pins["cue_led_3"], "cue_led_3", direction="output")
-        register_pin_label(output_pins["cue_led_4"], "cue_led_4", direction="output")
 
     def _prepare_visual_runtime(self) -> None:
         visual_enabled = bool(self.session_info.get("visual_stimulus", False))
@@ -344,9 +317,9 @@ class BehavBox(object):
         self._configure_logging()
         self._prepared_session_dir = Path(self.session_info["dir_name"])
         self.sound_runtime = self._build_sound_runtime()
-        self._prepare_gpio_outputs()
-        self.pump = Pump(self.session_info)
-        self.input_service = InputService(self, self.session_info)
+        self.io_recorder = SharedIoRecorder(self.session_info)
+        self.output_service = OutputService(self, self.session_info, self.box_manifest, self.io_recorder)
+        self.input_service = InputService(self, self.session_info, self.box_manifest, self.io_recorder)
         self._prepare_visual_runtime()
         self._prepare_adc()
         self._prepare_keyboard()
@@ -510,15 +483,17 @@ class BehavBox(object):
             ``DigitalOutputDevice`` bound to the former TTL input pin.
         """
 
-        return self.input_service.handoff_ttl_to_output(label=label)
+        if self.output_service is None:
+            raise RuntimeError("Output runtime is unavailable before prepare_session().")
+        return self.output_service.configure_user_output(label=label)
 
     def configure_user_input(
         self,
-        label: str = "ttl_trigger",
+        label: str = "user_input",
         pull_up=None,
         active_state: bool = True,
     ):
-        """Return the active TTL trigger input for compatibility.
+        """Claim the generic user-configurable GPIO4 line as an input.
 
         Args:
             label: Ignored compatibility label.
@@ -526,11 +501,13 @@ class BehavBox(object):
             active_state: Unused compatibility argument.
 
         Returns:
-            The active TTL ``Button`` instance, if still owned by the input service.
+            The active user-configurable ``Button`` instance.
         """
 
-        del label, pull_up, active_state
-        return self.ttl_trigger
+        del pull_up, active_state
+        if self.input_service is None:
+            raise RuntimeError("Input runtime is unavailable before prepare_session().")
+        return self.input_service.configure_user_input(label=label)
 
     def import_wav_file(
         self,
@@ -668,20 +645,43 @@ class BehavBox(object):
             reward_size_ul: Reward amount in microliters.
         """
 
-        if self.pump is None:
-            raise RuntimeError("Pump runtime is unavailable before prepare_session().")
+        if self.output_service is None:
+            raise RuntimeError("Output runtime is unavailable before prepare_session().")
         reward_size = float(self.session_info.get("reward_size", 50) if reward_size_ul is None else reward_size_ul)
-        pump_lookup = {
-            "reward_left": "1",
-            "reward_right": "2",
-            "reward_center": "3",
-            "1": "1",
-            "2": "2",
-            "3": "3",
+        compatibility_lookup = {
+            "1": "reward_left",
+            "2": "reward_right",
+            "3": "reward_center",
+            "4": "reward_4",
         }
-        if output_name not in pump_lookup:
-            raise KeyError(f"Unknown reward output {output_name!r}.")
-        self.pump.reward(pump_lookup[output_name], reward_size)
+        canonical_output = compatibility_lookup.get(str(output_name), str(output_name))
+        self.output_service.deliver_reward(canonical_output, reward_size_ul=reward_size)
+
+    def pulse_output(self, output_name: str, duration_s: Optional[float] = None) -> None:
+        """Pulse one named GPIO output.
+
+        Args:
+            output_name: Canonical output name or supported alias.
+            duration_s: Optional pulse duration in seconds.
+        """
+
+        if self.output_service is None:
+            raise RuntimeError("Output runtime is unavailable before prepare_session().")
+        self.output_service.pulse_output(output_name, duration_s=duration_s)
+
+    def set_output(self, output_name: str, active: bool) -> None:
+        """Set one named GPIO output high or low."""
+
+        if self.output_service is None:
+            raise RuntimeError("Output runtime is unavailable before prepare_session().")
+        self.output_service.set_output(output_name, active)
+
+    def toggle_output(self, output_name: str) -> None:
+        """Toggle one named GPIO output."""
+
+        if self.output_service is None:
+            raise RuntimeError("Output runtime is unavailable before prepare_session().")
+        self.output_service.toggle_output(output_name)
 
     def close(self) -> None:
         """Close long-lived runtime resources owned by BehavBox.
@@ -695,6 +695,12 @@ class BehavBox(object):
         if getattr(self, "input_service", None) is not None:
             self.input_service.close()
             self.input_service = None
+        if getattr(self, "output_service", None) is not None:
+            self.output_service.close()
+            self.output_service = None
+        if getattr(self, "io_recorder", None) is not None:
+            self.io_recorder.close()
+            self.io_recorder = None
         if getattr(self, "sound_runtime", None) is not None:
             self.sound_runtime.close()
             self.sound_runtime = None
@@ -765,25 +771,15 @@ class BehavBox(object):
                     #     self.reserved_rx2_pressed()
                     #     logging.info(";" + str(time.time()) + ";[action];key_pressed_reserved_rx2_pressed()")
                     elif event.key == pygame.K_q:
-                        # print("Q down: syringe pump 1 moves")
-                        # logging.info(";" + str(time.time()) + ";[reward];key_pressed_pump1")
-                        self.pump.reward("key_1", self.session_info["key_reward_amount"])
+                        self.deliver_reward("reward_left", self.session_info["key_reward_amount"])
                     elif event.key == pygame.K_w:
-                        # print("W down: syringe pump 2 moves")
-                        # logging.info(";" + str(time.time()) + ";[reward];key_pressed_pump2")
-                        self.pump.reward("key_2", self.session_info["key_reward_amount"])
+                        self.deliver_reward("reward_right", self.session_info["key_reward_amount"])
                     elif event.key == pygame.K_e:
-                        # print("E down: syringe pump 3 moves")
-                        # logging.info(";" + str(time.time()) + ";[reward];key_pressed_pump3")
-                        self.pump.reward("key_3", self.session_info["key_reward_amount"])
+                        self.deliver_reward("reward_center", self.session_info["key_reward_amount"])
                     elif event.key == pygame.K_r:
-                        # print("R down: syringe pump 4 moves")
-                        # logging.info(";" + str(time.time()) + ";[reward];key_pressed_pump4")
-                        self.pump.reward("key_4", self.session_info["key_reward_amount"])
+                        self.deliver_reward("reward_4", self.session_info["key_reward_amount"])
                     elif event.key == pygame.K_t:
-                        # print("T down: vacuum on")
-                        # logging.info(";" + str(time.time()) + ";[reward];key_pressed_pump_vacuum")
-                        self.pump.reward("key_vacuum", 1)
+                        self.pulse_output("vacuum")
                 elif event.type == pygame.KEYUP:
                     if event.key == pygame.K_1:
                         self.left_exit()
@@ -887,7 +883,7 @@ class BehavBox(object):
             Absolute path to the active input-recording directory.
         """
 
-        return self.input_service.start_recording(owner="user")
+        return self._start_shared_recording(owner="user")
 
     def stop_recording(self) -> dict[str, object]:
         """Clear standalone user recording demand.
@@ -896,7 +892,7 @@ class BehavBox(object):
             Status dictionary describing whether recording stopped or deferred.
         """
 
-        return self.input_service.stop_recording(owner="user")
+        return self._stop_shared_recording(owner="user")
 
     def start_task_recording(self) -> str:
         """Assert task-owned input recording using the active session directory.
@@ -905,7 +901,7 @@ class BehavBox(object):
             Absolute path to the active input-recording directory.
         """
 
-        return self.input_service.start_recording(
+        return self._start_shared_recording(
             owner="task",
             task_dir=self.session_info["dir_name"],
         )
@@ -917,7 +913,33 @@ class BehavBox(object):
             Status dictionary describing whether recording stopped or remained active.
         """
 
-        return self.input_service.stop_recording(owner="task")
+        return self._stop_shared_recording(owner="task")
+
+    def _start_shared_recording(self, owner: str, task_dir: str | None = None) -> str:
+        """Start shared input/output recording and attach treadmill sampling."""
+
+        if self.io_recorder is None or self.input_service is None:
+            raise RuntimeError("Recording runtime is unavailable before prepare_session().")
+        recording_dir, started_now = self.io_recorder.start_recording(owner=owner, task_dir=task_dir)
+        if started_now:
+            self.input_service.on_recording_started()
+            self._handle_input_event("input_recording_started", record_interaction=False, log_category="configuration")
+        return recording_dir
+
+    def _stop_shared_recording(self, owner: str) -> dict[str, object]:
+        """Stop shared input/output recording when no owner still demands it."""
+
+        if self.io_recorder is None or self.input_service is None:
+            raise RuntimeError("Recording runtime is unavailable before prepare_session().")
+        status = self.io_recorder.stop_recording(owner=owner)
+        if status["status"] == "deferred":
+            self._handle_input_event("input_recording_stop_deferred", record_interaction=False, log_category="warning")
+            return status
+        if status["status"] != "stop_pending":
+            return status
+        self._handle_input_event("input_recording_stopped", record_interaction=False, log_category="configuration")
+        self.input_service.on_recording_stopped()
+        return self.io_recorder.finalize_stop()
 
     ###############################################################################################
     # callbacks
@@ -1011,107 +1033,3 @@ class BehavBox(object):
     def IR_5_exit(self):
         event = self._push_event("IR_5_exit")
         logging.info("%s, %s", event.timestamp, event.name)
-
-# this is for the cue LEDs. BoxLED.value is the intensity value (PWM duty cycle, from 0 to 1)
-# currently. BoxLED.set_value is the saved intensity value that determines how bright the
-# LED will be if BoxLED.on() is called. This is better than the original PWMLED class.
-class BoxLED(PWMLED):
-    set_value = 1  # the intensity value, ranging from 0-1
-
-    def on(
-            self,
-    ):  # unlike PWMLED, here the on() function sets the intensity to set_value,
-        # not to full intensity
-        self.value = self.set_value
-
-
-class Pump(object):
-    def __init__(self, session_info):
-        self.session_info = session_info
-        pump_pins = HEAD_FIXED_GPIO["pumps"]
-        self.pump1 = LED(pump_pins["reward_left"])
-        self.pump2 = LED(pump_pins["reward_right"])
-        self.pump3 = LED(pump_pins["reward_center"])
-        self.pump4 = LED(pump_pins["pump4"])
-        self.pump_air = LED(pump_pins["airpuff"])
-        self.pump_vacuum = LED(pump_pins["vacuum"])
-        register_pin_label(pump_pins["reward_left"], "reward_left", direction="output")
-        register_pin_label(pump_pins["reward_right"], "reward_right", direction="output")
-        register_pin_label(pump_pins["reward_center"], "reward_center", direction="output")
-        register_pin_label(pump_pins["pump4"], "pump4", direction="output")
-        register_pin_label(pump_pins["airpuff"], "airpuff", direction="output")
-        register_pin_label(pump_pins["vacuum"], "vacuum", direction="output")
-        self.reward_list = [] # a list of tuple (pump_x, reward_amount) with information of reward history for data
-        # visualization
-
-    def reward(self, which_pump, reward_size):
-        # import coefficient from the session_information
-        coefficient_p1 = self.session_info["calibration_coefficient"]['1']
-        coefficient_p2 = self.session_info["calibration_coefficient"]['2']
-        coefficient_p3 = self.session_info["calibration_coefficient"]['3']
-        coefficient_p4 = self.session_info["calibration_coefficient"]['4']
-        duration_air = self.session_info['air_duration']
-        duration_vac = self.session_info["vacuum_duration"]
-
-        if which_pump == "1":
-            duration = round((coefficient_p1[0] * (reward_size / 1000) + coefficient_p1[1]), 5)  # linear function
-            self.pump1.blink(duration, 0.1, 1)
-            self.reward_list.append(("pump1_reward", reward_size))
-            logging.info(";" + str(time.time()) + ";[reward];pump1_reward(reward_coeff: " + str(coefficient_p1) +
-                         ", reward_amount: " + str(reward_size) + "duration: " + str(duration) + ")")
-        elif which_pump == "2":
-            duration = round((coefficient_p2[0] * (reward_size / 1000) + coefficient_p2[1]), 5)  # linear function
-            self.pump2.blink(duration, 0.1, 1)
-            self.reward_list.append(("pump2_reward", reward_size))
-            logging.info(";" + str(time.time()) + ";[reward];pump2_reward(reward_coeff: " + str(coefficient_p2) +
-                         ", reward_amount: " + str(reward_size) + "duration: " + str(duration) + ")")
-        elif which_pump == "3":
-            duration = round((coefficient_p3[0] * (reward_size / 1000) + coefficient_p3[1]), 5)  # linear function
-            self.pump3.blink(duration, 0.1, 1)
-            self.reward_list.append(("pump3_reward", reward_size))
-            logging.info(";" + str(time.time()) + ";[reward];pump3_reward(reward_coeff: " + str(coefficient_p3) +
-                         ", reward_amount: " + str(reward_size) + "duration: " + str(duration) + ")")
-        elif which_pump == "4":
-            duration = round((coefficient_p4[0] * (reward_size / 1000) + coefficient_p4[1]), 5)  # linear function
-            self.pump4.blink(duration, 0.1, 1)
-            self.reward_list.append(("pump4_reward", reward_size))
-            logging.info(";" + str(time.time()) + ";[reward];pump4_reward(reward_coeff: " + str(coefficient_p4) +
-                         ", reward_amount: " + str(reward_size) + "duration: " + str(duration) + ")")
-        elif which_pump == "air_puff":
-            self.pump_air.blink(duration_air, 0.1, 1)
-            self.reward_list.append(("air_puff", reward_size))
-            logging.info(";" + str(time.time()) + ";[reward];pump4_reward_" + str(reward_size))
-        elif which_pump == "vacuum":
-            self.pump_vacuum.blink(duration_vac, 0.1, 1)
-            logging.info(";" + str(time.time()) + ";[reward];pump_vacuum" + str(duration_vac))
-        elif which_pump == "key_1":
-            duration = round((coefficient_p1[0] * (reward_size / 1000) + coefficient_p1[1]), 5)  # linear function
-            self.pump1.blink(duration, 0.1, 1)
-            self.reward_list.append(("pump1_reward", reward_size))
-            logging.info(";" + str(time.time()) + ";[key];pump1_reward(reward_coeff: " + str(coefficient_p1) +
-                         ", reward_amount: " + str(reward_size) + "duration: " + str(duration) + ")")
-        elif which_pump == "key_2":
-            duration = round((coefficient_p2[0] * (reward_size / 1000) + coefficient_p2[1]), 5)  # linear function
-            self.pump2.blink(duration, 0.1, 1)
-            self.reward_list.append(("pump2_reward", reward_size))
-            logging.info(";" + str(time.time()) + ";[key];pump2_reward(reward_coeff: " + str(coefficient_p2) +
-                         ", reward_amount: " + str(reward_size) + "duration: " + str(duration) + ")")
-        elif which_pump == "key_3":
-            duration = round((coefficient_p3[0] * (reward_size / 1000) + coefficient_p3[1]), 5)  # linear function
-            self.pump3.blink(duration, 0.1, 1)
-            self.reward_list.append(("pump3_reward", reward_size))
-            logging.info(";" + str(time.time()) + ";[key];pump3_reward(reward_coeff: " + str(coefficient_p3) +
-                         ", reward_amount: " + str(reward_size) + "duration: " + str(duration) + ")")
-        elif which_pump == "key_4":
-            duration = round((coefficient_p4[0] * (reward_size / 1000) + coefficient_p4[1]), 5)  # linear function
-            self.pump4.blink(duration, 0.1, 1)
-            self.reward_list.append(("pump4_reward", reward_size))
-            logging.info(";" + str(time.time()) + ";[key];pump4_reward(reward_coeff: " + str(coefficient_p4) +
-                         ", reward_amount: " + str(reward_size) + "duration: " + str(duration) + ")")
-        elif which_pump == "key_air_puff":
-            self.pump_air.blink(duration_air, 0.1, 1)
-            self.reward_list.append(("air_puff", reward_size))
-            logging.info(";" + str(time.time()) + ";[key];pump4_reward_" + str(reward_size))
-        elif which_pump == "key_vacuum":
-            self.pump_vacuum.blink(duration_vac, 0.1, 1)
-            logging.info(";" + str(time.time()) + ";[key];pump_vacuum" + str(duration_vac))

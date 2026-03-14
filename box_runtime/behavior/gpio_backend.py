@@ -7,7 +7,7 @@ class ReservedPinError(RuntimeError):
 
 
 RESERVED_PIN_REASONS = {
-    11: "GPIO11 is reserved for the IRIG timecode sender output and must not be claimed by BehavBox.",
+    9: "GPIO9 is reserved for the IRIG timecode sender output and must not be claimed by BehavBox.",
 }
 
 
@@ -52,7 +52,7 @@ if not USING_MOCK_BACKEND:
         RotaryEncoder as _GPIOZeroRotaryEncoder,
     )
 
-    def register_pin_label(pin: int, label: str, direction=None) -> None:
+    def register_pin_label(pin: int, label: str, direction=None, aliases=None) -> None:
         return None
 
     def set_visual_stim_state(

@@ -27,7 +27,8 @@ The currently implemented reference task is ``head_fixed_gonogo``.
 It is intentionally narrow:
 
 - default input profile: ``head_fixed``
-- response event: ``center_entry`` from ``lick_3`` in the mock browser UI
+- response event: ``center_entry`` from ``lick_center`` (alias ``lick_3``) in
+  the mock browser UI
 - audio cues distinguish ``go`` from ``nogo``
 - reward is delivered on the center reward output
 - visual stimulus is disabled in this first slice

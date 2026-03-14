@@ -45,7 +45,7 @@ def _build_session_info(output_root: Path, session_tag: str) -> dict:
         "vacuum_duration": 0.01,
         "visual_stimulus": False,
         "treadmill": False,
-        "input_profile": "head_fixed",
+        "box_profile": "head_fixed",
         "mock_audio": True,
     }
 
