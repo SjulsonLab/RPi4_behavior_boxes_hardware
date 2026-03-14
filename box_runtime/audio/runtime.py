@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 import threading
 import time
@@ -78,6 +79,51 @@ class NullPlaybackBackend:
 
     def write_frames(self, frames: np.ndarray, stop_requested) -> int:
         raise RuntimeError("Audio playback is unavailable because pyalsaaudio is not installed.")
+
+    def close(self) -> None:
+        return None
+
+
+class RecordingPlaybackBackend:
+    """Mock playback backend that records submitted stereo buffers.
+
+    Args:
+        sample_rate_hz: Playback sampling rate in hertz.
+        chunk_frames: Number of stereo frames consumed per worker iteration.
+        chunk_sleep_s: Optional per-chunk sleep used to emulate slower devices.
+    """
+
+    def __init__(self, sample_rate_hz: int, chunk_frames: int = 256, chunk_sleep_s: float = 0.0):
+        self.sample_rate_hz = int(sample_rate_hz)
+        self.chunk_frames = int(chunk_frames)
+        self.chunk_sleep_s = float(chunk_sleep_s)
+        self.play_calls: list[np.ndarray] = []
+
+    def write_frames(self, frames: np.ndarray, stop_requested) -> int:
+        """Record the played stereo frames.
+
+        Args:
+            frames: Stereo ``int16`` array of shape ``(num_frames, 2)``.
+            stop_requested: Zero-argument callable returning whether playback
+                should stop early.
+
+        Returns:
+            Number of stereo frames consumed.
+        """
+
+        consumed = 0
+        chunks: list[np.ndarray] = []
+        total_frames = int(frames.shape[0])
+        while consumed < total_frames:
+            if stop_requested():
+                break
+            stop = min(consumed + self.chunk_frames, total_frames)
+            chunks.append(frames[consumed:stop].copy())
+            consumed = stop
+            if self.chunk_sleep_s > 0:
+                time.sleep(self.chunk_sleep_s)
+        self.play_calls.append(np.vstack(chunks) if chunks else np.empty((0, 2), dtype=np.int16))
+        return consumed
 
     def close(self) -> None:
         return None
@@ -220,6 +266,33 @@ class SoundRuntime:
         """Release all loaded cues from RAM."""
 
         self.loaded_sounds.clear()
+
+    def register_white_noise(self, name: str, duration_s: float, seed: int = 0) -> LoadedSound:
+        """Register a generated white-noise cue directly in memory.
+
+        Args:
+            name: Cue identifier.
+            duration_s: Cue duration in seconds.
+            seed: Deterministic random seed for waveform generation.
+
+        Returns:
+            LoadedSound prepared for playback.
+        """
+
+        waveform = generate_white_noise(
+            duration_s=float(duration_s),
+            sample_rate_hz=self.sample_rate_hz,
+            rms=self.reference_rms,
+            seed=int(seed),
+        )
+        loaded = build_loaded_sound(
+            name=Path(name).stem,
+            waveform_mono=waveform,
+            sample_rate_hz=self.sample_rate_hz,
+            ramp_duration_s=self.ramp_duration_s,
+        )
+        self.loaded_sounds[loaded.name] = loaded
+        return loaded
 
     def play_sound(
         self,
@@ -370,6 +443,9 @@ class SoundRuntime:
         self.backend.close()
 
     def _build_backend(self) -> PlaybackBackend:
+        if str(os.environ.get("BEHAVBOX_MOCK_AUDIO", "0")).strip().lower() in {"1", "true", "yes", "on"}:
+            LOGGER.info("Using recording audio backend because BEHAVBOX_MOCK_AUDIO is enabled.")
+            return RecordingPlaybackBackend(sample_rate_hz=self.sample_rate_hz)
         if alsaaudio is None:  # pragma: no cover - exercised on Raspberry Pi hardware
             LOGGER.warning("pyalsaaudio is unavailable; using null audio backend.")
             return NullPlaybackBackend(sample_rate_hz=self.sample_rate_hz)

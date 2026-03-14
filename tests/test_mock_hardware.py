@@ -75,6 +75,7 @@ class TestHeadFixedMapping(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             info = _session_info(tmp)
             box = BehavBox(info)
+            box.prepare_session()
 
             self.assertEqual(box.cueLED1.pin, 22)
             self.assertEqual(box.cueLED2.pin, 18)
@@ -103,7 +104,8 @@ class TestHeadFixedMapping(unittest.TestCase):
     def test_behavbox_does_not_register_gpio11(self):
         with tempfile.TemporaryDirectory() as tmp:
             info = _session_info(tmp)
-            BehavBox(info)
+            box = BehavBox(info)
+            box.prepare_session()
 
             state = REGISTRY.get_state()
             registered_pins = {pin["pin"] for pin in state["pins"]}
@@ -182,6 +184,7 @@ class TestIntegration(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             info = _session_info(tmp)
             box = BehavBox(info)
+            box.prepare_session()
             box.event_list.clear()
 
             before = time.time()

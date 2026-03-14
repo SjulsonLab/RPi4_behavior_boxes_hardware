@@ -323,6 +323,7 @@ def test_behavbox_video_methods_use_camera_client(monkeypatch):
         try:
             info = _session_info(tmp)
             box = BehavBox(info)
+            box.prepare_session()
             box.video_start()
             box.video_stop()
         finally:
@@ -357,6 +358,7 @@ def test_behavbox_respects_camera_host_override(monkeypatch):
             info = _session_info(tmp)
             info["camera_host"] = "10.0.0.99"
             box = BehavBox(info)
+            box.prepare_session()
             box.video_start()
             box.video_stop()
         finally:

@@ -18,6 +18,7 @@ import socket
 import time
 from collections import deque
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 import numpy as np
@@ -25,7 +26,7 @@ import scipy.io, pickle
 
 import logging
 from colorama import Fore, Style
-from typing import Optional
+from typing import Callable, Optional
 
 from box_runtime.behavior.gpio_backend import (
     PWMLED,
@@ -35,7 +36,7 @@ from box_runtime.behavior.gpio_backend import (
     set_visual_stim_state,
 )
 from box_runtime.audio.importer import AudioPaths
-from box_runtime.audio.runtime import SoundRuntime
+from box_runtime.audio.runtime import RecordingPlaybackBackend, SoundRuntime
 from box_runtime.input import InputService
 from box_runtime.video_recording.camera_client import CameraClient, CameraClientError
 
@@ -103,27 +104,66 @@ class BehavBox(object):
         deque()
     )  # all detected events are added to this queue to be read out by the behavior class
 
-    def __init__(self, session_info):
-        try:
-            self.session_info = session_info
+    def __init__(
+        self,
+        session_info,
+        *,
+        sound_runtime_factory: Optional[Callable[["BehavBox"], SoundRuntime]] = None,
+        clock: Optional[Callable[[], float]] = None,
+    ):
+        """Construct one BehavBox appliance wrapper without starting a session.
 
-            # make data directory and initialize logfile
-            os.makedirs(session_info['dir_name'])
-            os.chdir(session_info['dir_name'])
-            session_info['file_basename'] = session_info['dir_name'] + '/' + session_info['mouse_name'] + "_" + session_info['datetime']
-            logging.basicConfig(
-                level=logging.INFO,
-                format="%(asctime)s.%(msecs)03d,[%(levelname)s],%(message)s",
-                datefmt=('%H:%M:%S'),
-                handlers=[
-                    logging.FileHandler(session_info['file_basename'] + '.log'),
-                    logging.StreamHandler()  # sends copy of log output to screen
-                ]
-            )
-            logging.info(";" + str(time.time()) + ";[initialization];behavior_box_initialized")
-        except Exception as error_message:
-            print("Logging error")
-            print(str(error_message))
+        Args:
+            session_info: Mapping-like session configuration. Filesystem paths
+                are expected under ``dir_name`` and ``external_storage``.
+            sound_runtime_factory: Optional factory returning the long-lived
+                ``SoundRuntime`` instance for this box.
+            clock: Optional zero-argument wall-clock callable returning POSIX
+                seconds as ``float``.
+        """
+
+        self.session_info = session_info
+        self._clock = clock or time.time
+        self._sound_runtime_factory = sound_runtime_factory
+        self._lifecycle_state = "created"
+        self._session_started_at_s: Optional[float] = None
+        self._session_stopped_at_s: Optional[float] = None
+        self._prepared_session_dir: Optional[Path] = None
+        self._runtime_events: list[dict[str, object]] = []
+        self._logging_configured = False
+        self._is_closed = False
+        self._camera_client = None
+        self.event_list = deque()
+        self.interact_list = []
+
+        self.sound_runtime = None
+        self.pump = None
+        self.input_service = None
+        self.visualstim = None
+        self.ADC = None
+        self.keyboard_active = False
+        self.main_display = None
+        self.user_output = None
+        self.DIO5 = None
+        self.DIO4 = None
+        self.IR_rx1 = None
+        self.IR_rx2 = None
+        self.IR_rx3 = None
+        self.IR_rx4 = None
+        self.IR_rx5 = None
+        self.lick1 = None
+        self.lick2 = None
+        self.lick3 = None
+        self.ttl_trigger = None
+        self.treadmill_input_1 = None
+        self.treadmill_input_2 = None
+        self.treadmill_encoder = None
+        self.poke_extra1 = None
+        self.poke_extra2 = None
+        self.cueLED1 = None
+        self.cueLED2 = None
+        self.cueLED3 = None
+        self.cueLED4 = None
 
         try:
             if platform.system() == "Linux":
@@ -143,19 +183,33 @@ class BehavBox(object):
         self.IP_address_video = str(self.session_info.get("camera_host", "127.0.0.1"))
         self.camera_service_port = int(os.environ.get("CAMERA_SERVICE_PORT", "8000"))
 
-        ###############################################################################################
-        # event list trigger by the interaction between the RPi and the animal for visualization
-        # interact_list: lick, choice interaction between the board and the animal for visualization
-        ###############################################################################################
-        self.interact_list = []
-        self.sound_runtime = self._build_sound_runtime()
+    def _require_lifecycle(self, *allowed_states: str) -> None:
+        if self._lifecycle_state not in allowed_states:
+            raise RuntimeError(
+                f"BehavBox lifecycle error: current state is {self._lifecycle_state!r}, "
+                f"expected one of {allowed_states!r}."
+            )
 
-        pins = HEAD_FIXED_GPIO
-        output_pins = pins["outputs"]
+    def _configure_logging(self) -> None:
+        session_dir = Path(self.session_info["dir_name"])
+        session_dir.mkdir(parents=True, exist_ok=True)
+        file_basename = session_dir / f'{self.session_info["mouse_name"]}_{self.session_info["datetime"]}'
+        self.session_info["file_basename"] = str(file_basename)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s.%(msecs)03d,[%(levelname)s],%(message)s",
+            datefmt="%H:%M:%S",
+            handlers=[
+                logging.FileHandler(str(file_basename) + ".log"),
+                logging.StreamHandler(),
+            ],
+            force=True,
+        )
+        self._logging_configured = True
+        logging.info(";%s;[initialization];behavior_box_initialized", self._clock())
 
-        ###############################################################################################
-        # Head-fixed GPIO map (strict CSV semantics)
-        ###############################################################################################
+    def _prepare_gpio_outputs(self) -> None:
+        output_pins = HEAD_FIXED_GPIO["outputs"]
         self.cueLED1 = BoxLED(output_pins["cue_led_1"], frequency=200)
         self.cueLED2 = BoxLED(output_pins["cue_led_2"], frequency=200)
         self.cueLED3 = BoxLED(output_pins["cue_led_3"], frequency=200)
@@ -165,113 +219,139 @@ class BehavBox(object):
         register_pin_label(output_pins["cue_led_3"], "cue_led_3", direction="output")
         register_pin_label(output_pins["cue_led_4"], "cue_led_4", direction="output")
 
-        # GPIO11 is reserved for the IRIG timecode sender output and is not owned by BehavBox.
-        self.user_output = None
-        self.DIO5 = None
-
-        # Legacy GPIO sound outputs are retired from the supported runtime path.
-        self.DIO4 = None
-
-        # CSV reserves GPIO5/6/11/12 for non-BehavBox use; do not initialize them.
-        self.IR_rx1 = None
-        self.IR_rx2 = None
-        self.IR_rx3 = None
-        self.IR_rx4 = None
-        self.IR_rx5 = None
-        self.lick1 = None
-        self.lick2 = None
-        self.lick3 = None
-        self.ttl_trigger = None
-        self.treadmill_input_1 = None
-        self.treadmill_input_2 = None
-        self.treadmill_encoder = None
-        self.poke_extra1 = None
-        self.poke_extra2 = None
-
-        ###############################################################################################
-        # pump: trigger signal output to a driver board induce the solenoid valve to deliver reward
-        ###############################################################################################
-        self.pump = Pump(self.session_info)
-        self.input_service = InputService(self, self.session_info)
-
-        ###############################################################################################
-        # visual stimuli initiation
-        ###############################################################################################
-        self.visualstim = None
+    def _prepare_visual_runtime(self) -> None:
         visual_enabled = bool(self.session_info.get("visual_stimulus", False))
         set_visual_stim_state(
             visual_stim_enabled=visual_enabled,
             visual_stim_active=False,
             current_grating=None,
         )
-        if visual_enabled:
-            try:
-                if is_raspberry_pi():
-                    from box_runtime.visual_stimuli.visualstim import VisualStim
-                    self.visualstim = VisualStim(self.session_info)
-                else:
-                    from box_runtime.mock_hw.visual_stim import MockVisualStim
-                    self.visualstim = MockVisualStim(self.session_info)
-            except Exception as error_message:
-                print("visualstim issue\n")
-                print(str(error_message))
+        if not visual_enabled:
+            self.visualstim = None
+            return
+        try:
+            if is_raspberry_pi():
+                from box_runtime.visual_stimuli.visualstim import VisualStim
 
-        ###############################################################################################
-        # ADC(Adafruit_ADS1x15) setup
-        ###############################################################################################
-        self.ADC = None
+                self.visualstim = VisualStim(self.session_info)
+            else:
+                from box_runtime.mock_hw.visual_stim import MockVisualStim
+
+                self.visualstim = MockVisualStim(self.session_info)
+        except Exception as error_message:
+            print("visualstim issue\n")
+            print(str(error_message))
+            self.visualstim = None
+
+    def _prepare_adc(self) -> None:
         if ADS1x15 is not None:
             try:
                 self.ADC = ADS1x15.ADS1015
             except Exception as error_message:
                 print("ADC issue\n")
                 print(str(error_message))
+                self.ADC = None
         else:
             print("ADC module unavailable; continuing without ADC support.")
+            self.ADC = None
 
-        ###############################################################################################
-        # pygame window setup and keystroke handler
-        ###############################################################################################
+    def _prepare_keyboard(self) -> None:
         self.keyboard_active = False
-        if PLOTTING_AVAILABLE:
-            try:
-                pygame.init()
-                self.main_display = pygame.display.set_mode((800, 600))
-                pygame.display.set_caption(session_info["box_name"])
-                fig, axes = plt.subplots(1, 1, )
-                axes.plot()
-                self.check_plot(fig)
-                print(
-                    "\nKeystroke handler initiated. In order for keystrokes to register, the pygame window"
-                )
-                print("must be in the foreground. Keys are as follows:\n")
-                print(
-                    Fore.YELLOW
-                    + "         1: left poke            2: center poke            3: right poke"
-                )
-                print(
-                    "         Q: pump_1            W: pump_2            E: pump_3            R: pump_4"
-                )
-                print(
-                    Fore.CYAN
-                    + "                       Esc: close key capture window\n"
-                    + Style.RESET_ALL
-                )
-                print(
-                    Fore.GREEN
-                    + Style.BRIGHT
-                    + "         TO EXIT, CLICK THE MAIN TEXT WINDOW AND PRESS CTRL-C "
-                    + Fore.RED
-                    + "ONCE\n"
-                    + Style.RESET_ALL
-                )
-
-                self.keyboard_active = True
-            except Exception as error_message:
-                print("pygame issue\n")
-                print(str(error_message))
-        else:
+        if not PLOTTING_AVAILABLE:
             print("Pygame/matplotlib plotting unavailable; keyboard simulation disabled.")
+            return
+        try:
+            pygame.init()
+            self.main_display = pygame.display.set_mode((800, 600))
+            pygame.display.set_caption(self.session_info["box_name"])
+            fig, axes = plt.subplots(1, 1)
+            axes.plot()
+            self.check_plot(fig)
+            print(
+                "\nKeystroke handler initiated. In order for keystrokes to register, the pygame window"
+            )
+            print("must be in the foreground. Keys are as follows:\n")
+            print(Fore.YELLOW + "         1: left poke            2: center poke            3: right poke")
+            print("         Q: pump_1            W: pump_2            E: pump_3            R: pump_4")
+            print(Fore.CYAN + "                       Esc: close key capture window\n" + Style.RESET_ALL)
+            print(
+                Fore.GREEN
+                + Style.BRIGHT
+                + "         TO EXIT, CLICK THE MAIN TEXT WINDOW AND PRESS CTRL-C "
+                + Fore.RED
+                + "ONCE\n"
+                + Style.RESET_ALL
+            )
+            self.keyboard_active = True
+        except Exception as error_message:
+            print("pygame issue\n")
+            print(str(error_message))
+            self.main_display = None
+
+    def prepare_session(self) -> None:
+        """Prepare all long-lived runtime resources for one upcoming session."""
+
+        self._require_lifecycle("created")
+        self._configure_logging()
+        self._prepared_session_dir = Path(self.session_info["dir_name"])
+        self.sound_runtime = self._build_sound_runtime()
+        self._prepare_gpio_outputs()
+        self.pump = Pump(self.session_info)
+        self.input_service = InputService(self, self.session_info)
+        self._prepare_visual_runtime()
+        self._prepare_adc()
+        self._prepare_keyboard()
+        self._runtime_events.append({"name": "session_prepared", "timestamp": self._clock()})
+        self._lifecycle_state = "prepared"
+        self._is_closed = False
+
+    def start_session(self) -> None:
+        """Transition the appliance from prepared to active session state."""
+
+        self._require_lifecycle("prepared")
+        self.start_task_recording()
+        self._session_started_at_s = self._clock()
+        self._runtime_events.append({"name": "session_started", "timestamp": self._session_started_at_s})
+        self._handle_input_event("session_started", record_interaction=False, log_category="configuration")
+        self._lifecycle_state = "running"
+
+    def poll_runtime(self) -> list[BehaviorEvent]:
+        """Run lightweight non-task-specific runtime work and drain current events."""
+
+        self._require_lifecycle("running")
+        self.check_keybd()
+        drained_events: list[BehaviorEvent] = []
+        while self.event_list:
+            drained_events.append(self.event_list.popleft())
+        return drained_events
+
+    def stop_session(self) -> None:
+        """Leave the active session state and stop task-owned recording."""
+
+        self._require_lifecycle("running")
+        self.stop_task_recording()
+        self.stop_sound()
+        self._session_stopped_at_s = self._clock()
+        self._runtime_events.append({"name": "session_stopped", "timestamp": self._session_stopped_at_s})
+        self._handle_input_event("session_stopped", record_interaction=False, log_category="configuration")
+        self._lifecycle_state = "stopped"
+
+    def finalize_session(self) -> Path:
+        """Write standardized session metadata after the run has stopped."""
+
+        self._require_lifecycle("stopped")
+        session_dir = Path(self.session_info["dir_name"])
+        session_dir.mkdir(parents=True, exist_ok=True)
+        metadata_path = session_dir / "session_metadata.json"
+        payload = {
+            "session_info": self.session_info,
+            "runtime_events": list(self._runtime_events),
+            "session_started_at_s": self._session_started_at_s,
+            "session_stopped_at_s": self._session_stopped_at_s,
+        }
+        metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        self._lifecycle_state = "finalized"
+        return metadata_path
 
     @staticmethod
     def event_name(event: object) -> str:
@@ -298,7 +378,7 @@ class BehavBox(object):
         return None
 
     def _push_event(self, event_name: str) -> BehaviorEvent:
-        event = BehaviorEvent(name=event_name, timestamp=time.time())
+        event = BehaviorEvent(name=event_name, timestamp=self._clock())
         self.event_list.append(event)
         return event
 
@@ -335,6 +415,9 @@ class BehavBox(object):
             SoundRuntime configured with the repository audio directories.
         """
 
+        if self._sound_runtime_factory is not None:
+            return self._sound_runtime_factory(self)
+
         audio_root = Path(__file__).resolve().parents[1] / "audio"
         paths = AudioPaths(
             tracked_sounds_dir=audio_root / "sounds",
@@ -342,7 +425,9 @@ class BehavBox(object):
             local_sounds_dir=audio_root / "local_sounds",
         )
         device_name = str(self.session_info.get("audio_device", os.environ.get("BEHAVBOX_AUDIO_DEVICE", "default")))
-        return SoundRuntime(paths=paths, device_name=device_name)
+        use_mock_audio = bool(self.session_info.get("mock_audio", False)) or not is_raspberry_pi()
+        backend = RecordingPlaybackBackend(sample_rate_hz=48_000) if use_mock_audio else None
+        return SoundRuntime(paths=paths, device_name=device_name, backend=backend)
 
     def configure_user_output(self, label: str = "ttl_output"):
         """Hand off the default TTL pin to output ownership.
@@ -451,6 +536,17 @@ class BehavBox(object):
             duration_s=duration_s,
         )
 
+    def register_noise_cue(self, name: str, duration_s: float, seed: int = 0) -> None:
+        """Create or replace one generated white-noise cue in the audio runtime.
+
+        Args:
+            name: Cue identifier without requiring a filesystem-backed WAV.
+            duration_s: Cue duration in seconds.
+            seed: Deterministic random seed for reproducible waveform content.
+        """
+
+        self.sound_runtime.register_white_noise(name=name, duration_s=duration_s, seed=seed)
+
     def stop_sound(self) -> None:
         """Stop the currently playing cue, if any."""
 
@@ -492,6 +588,30 @@ class BehavBox(object):
             repeats=repeats,
         )
 
+    def deliver_reward(self, output_name: str = "reward_center", reward_size_ul: Optional[float] = None) -> None:
+        """Deliver liquid reward through a stable named output path.
+
+        Args:
+            output_name: One of ``reward_left``, ``reward_right``, or
+                ``reward_center``.
+            reward_size_ul: Reward amount in microliters.
+        """
+
+        if self.pump is None:
+            raise RuntimeError("Pump runtime is unavailable before prepare_session().")
+        reward_size = float(self.session_info.get("reward_size", 50) if reward_size_ul is None else reward_size_ul)
+        pump_lookup = {
+            "reward_left": "1",
+            "reward_right": "2",
+            "reward_center": "3",
+            "1": "1",
+            "2": "2",
+            "3": "3",
+        }
+        if output_name not in pump_lookup:
+            raise KeyError(f"Unknown reward output {output_name!r}.")
+        self.pump.reward(pump_lookup[output_name], reward_size)
+
     def close(self) -> None:
         """Close long-lived runtime resources owned by BehavBox.
 
@@ -499,12 +619,29 @@ class BehavBox(object):
             ``None``.
         """
 
+        if self._is_closed:
+            return
         if getattr(self, "input_service", None) is not None:
             self.input_service.close()
             self.input_service = None
         if getattr(self, "sound_runtime", None) is not None:
             self.sound_runtime.close()
             self.sound_runtime = None
+        if getattr(self, "visualstim", None) is not None and hasattr(self.visualstim, "close"):
+            try:
+                self.visualstim.close()
+            except Exception:
+                pass
+            self.visualstim = None
+        if PLOTTING_AVAILABLE:
+            try:
+                pygame.quit()
+            except Exception:
+                pass
+        self.keyboard_active = False
+        self.main_display = None
+        self._is_closed = True
+        self._lifecycle_state = "closed"
 
     def __del__(self):
         try:

@@ -52,6 +52,7 @@ class TestInputProfiles(unittest.TestCase):
     def test_head_fixed_profile_uses_rotary_encoder_and_ttl_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = BehavBox(_session_info(tmp, input_profile="head_fixed"))
+            box.prepare_session()
 
             self.assertIsNotNone(box.input_service)
             self.assertEqual(box.ttl_trigger.pin, 4)
@@ -66,6 +67,7 @@ class TestInputProfiles(unittest.TestCase):
     def test_freely_moving_profile_uses_beam_breaks_and_no_rotary_encoder(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = BehavBox(_session_info(tmp, input_profile="freely_moving"))
+            box.prepare_session()
 
             self.assertIsNotNone(box.input_service)
             self.assertEqual(box.ttl_trigger.pin, 4)
@@ -85,6 +87,7 @@ class TestInputRecordingLifecycle(unittest.TestCase):
     def test_manual_recording_creates_timestamped_directory_and_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = BehavBox(_session_info(tmp))
+            box.prepare_session()
 
             recording_dir = Path(box.start_recording())
 
@@ -100,6 +103,7 @@ class TestInputRecordingLifecycle(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             info = _session_info(tmp)
             box = BehavBox(info)
+            box.prepare_session()
 
             recording_dir = Path(box.start_task_recording())
 
@@ -112,6 +116,7 @@ class TestInputRecordingLifecycle(unittest.TestCase):
     def test_task_reuses_manual_recording_and_user_stop_defers_until_task_end(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = BehavBox(_session_info(tmp))
+            box.prepare_session()
 
             manual_dir = Path(box.start_recording())
             task_dir = Path(box.start_task_recording())
@@ -137,6 +142,7 @@ class TestInputArtifacts(unittest.TestCase):
     def test_ttl_edges_are_written_to_log_and_jsonl(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = BehavBox(_session_info(tmp))
+            box.prepare_session()
             recording_dir = Path(box.start_recording())
 
             box.ttl_trigger.press(source="test")
@@ -157,6 +163,7 @@ class TestInputArtifacts(unittest.TestCase):
     def test_ttl_handoff_logs_configuration_change_and_stops_input_logging(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = BehavBox(_session_info(tmp))
+            box.prepare_session()
             recording_dir = Path(box.start_recording())
 
             box.ttl_trigger.press(source="test")
@@ -178,6 +185,7 @@ class TestInputArtifacts(unittest.TestCase):
     def test_treadmill_speed_tsv_contains_signed_cm_per_s_samples(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = BehavBox(_session_info(tmp, treadmill_speed_hz=25.0))
+            box.prepare_session()
             recording_dir = Path(box.start_recording())
 
             box.treadmill_encoder.rotate(20)
@@ -196,6 +204,7 @@ class TestInputArtifacts(unittest.TestCase):
     def test_minimal_behavior_events_still_flow_into_queue_and_interact_list(self):
         with tempfile.TemporaryDirectory() as tmp:
             box = BehavBox(_session_info(tmp))
+            box.prepare_session()
             box.event_list.clear()
 
             box.left_entry()

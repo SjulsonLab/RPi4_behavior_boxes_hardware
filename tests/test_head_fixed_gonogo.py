@@ -79,17 +79,19 @@ def test_go_trial_center_response_yields_hit_and_reward():
         box.start_session()
         task_state = gonogo_task.prepare_task(
             box,
-            {
-                "trial_sequence": ["go"],
-                "go_cue_duration_s": 0.02,
-                "nogo_cue_duration_s": 0.02,
-                "iti_s": 0.0,
-                "response_window_s": 0.25,
-                "reward_output": "3",
-                "reward_size_ul": 50,
-                "max_trials": 1,
-            },
-        )
+                {
+                    "trial_sequence": ["go"],
+                    "go_cue_duration_s": 0.02,
+                    "nogo_cue_duration_s": 0.02,
+                    "iti_s": 0.0,
+                    "response_window_s": 0.25,
+                    "reward_phase_s": 0.01,
+                    "cleanup_s": 0.01,
+                    "reward_output": "3",
+                    "reward_size_ul": 50,
+                    "max_trials": 1,
+                },
+            )
         gonogo_task.start_task(box, task_state)
         _advance_task(box, task_state)
 
@@ -113,16 +115,17 @@ def test_nogo_trial_center_response_yields_false_alarm_and_timeout():
         box.start_session()
         task_state = gonogo_task.prepare_task(
             box,
-            {
-                "trial_sequence": ["nogo"],
-                "go_cue_duration_s": 0.02,
-                "nogo_cue_duration_s": 0.02,
-                "iti_s": 0.0,
-                "response_window_s": 0.25,
-                "timeout_s": 0.02,
-                "max_trials": 1,
-            },
-        )
+                {
+                    "trial_sequence": ["nogo"],
+                    "go_cue_duration_s": 0.02,
+                    "nogo_cue_duration_s": 0.02,
+                    "iti_s": 0.0,
+                    "response_window_s": 0.25,
+                    "timeout_s": 0.02,
+                    "cleanup_s": 0.01,
+                    "max_trials": 1,
+                },
+            )
         gonogo_task.start_task(box, task_state)
         _advance_task(box, task_state)
 
@@ -146,15 +149,17 @@ def test_mock_input_injector_drives_same_response_path():
         injector = MockInputInjector()
         task_state = gonogo_task.prepare_task(
             box,
-            {
-                "trial_sequence": ["go"],
-                "go_cue_duration_s": 0.02,
-                "nogo_cue_duration_s": 0.02,
-                "iti_s": 0.0,
-                "response_window_s": 0.25,
-                "max_trials": 1,
-            },
-        )
+                {
+                    "trial_sequence": ["go"],
+                    "go_cue_duration_s": 0.02,
+                    "nogo_cue_duration_s": 0.02,
+                    "iti_s": 0.0,
+                    "response_window_s": 0.25,
+                    "reward_phase_s": 0.01,
+                    "cleanup_s": 0.01,
+                    "max_trials": 1,
+                },
+            )
         gonogo_task.start_task(box, task_state)
         _advance_task(box, task_state)
 

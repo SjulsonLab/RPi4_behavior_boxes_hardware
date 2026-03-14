@@ -1,0 +1,19 @@
+{
+  "go_probability": 0.5,
+  "go_cue_name": "gonogo_go",
+  "nogo_cue_name": "gonogo_nogo",
+  "go_cue_duration_s": 0.1,
+  "nogo_cue_duration_s": 0.1,
+  "cue_side": "both",
+  "iti_s": 0.5,
+  "response_window_s": 1.0,
+  "reward_phase_s": 0.05,
+  "timeout_s": 1.0,
+  "cleanup_s": 0.05,
+  "reward_output": "reward_center",
+  "reward_size_ul": 50.0,
+  "response_event": "center_entry",
+  "max_trials": 20,
+  "max_duration_s": 600.0,
+  "rng_seed": 0
+}
