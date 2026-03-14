@@ -11,3 +11,4 @@ legacy general-purpose input/output (GPIO) sound-trigger pins.
 
    audio
    input
+   tasks
