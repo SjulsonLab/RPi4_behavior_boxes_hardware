@@ -60,6 +60,9 @@ class PinRegistry:
         with self._lock:
             if not label:
                 return
+            stale_labels = [name for name, mapped_pin in self._labels.items() if mapped_pin == pin and name != label]
+            for stale_label in stale_labels:
+                del self._labels[stale_label]
             self._labels[label] = pin
             pin_entry = self._pins.setdefault(pin, {"pin": pin, "value": 0, "active": False})
             pin_entry["label"] = label

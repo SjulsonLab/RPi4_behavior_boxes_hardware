@@ -43,6 +43,7 @@ def _session_info(base_dir: str):
         "vacuum_duration": 0.01,
         "visual_stimulus": False,
         "treadmill": False,
+        "input_profile": "head_fixed",
     }
 
 
@@ -80,22 +81,24 @@ class TestHeadFixedMapping(unittest.TestCase):
             self.assertEqual(box.cueLED3.pin, 17)
             self.assertEqual(box.cueLED4.pin, 14)
 
-            self.assertIsNone(box.user_output)
-            self.assertIsNone(box.DIO5)
             self.assertIsNone(box.DIO4)
             self.assertIsNotNone(box.sound_runtime)
+            self.assertIsNotNone(box.input_service)
 
-            self.assertEqual(box.treadmill_input_1.pin, 13)
-            self.assertEqual(box.treadmill_input_2.pin, 16)
             self.assertEqual(box.lick1.pin, 26)
             self.assertEqual(box.lick2.pin, 27)
             self.assertEqual(box.lick3.pin, 15)
+            self.assertEqual(box.ttl_trigger.pin, 4)
+
+            self.assertIsNotNone(box.treadmill_encoder)
+            self.assertEqual(box.treadmill_encoder.a.pin, 13)
+            self.assertEqual(box.treadmill_encoder.b.pin, 16)
 
             self.assertIsNone(box.IR_rx1)
             self.assertIsNone(box.IR_rx2)
             self.assertIsNone(box.IR_rx3)
-            self.assertIs(box.IR_rx4, box.treadmill_input_1)
-            self.assertIs(box.IR_rx5, box.treadmill_input_2)
+            self.assertIsNone(box.IR_rx4)
+            self.assertIsNone(box.IR_rx5)
 
     def test_behavbox_does_not_register_gpio11(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -105,48 +108,10 @@ class TestHeadFixedMapping(unittest.TestCase):
             state = REGISTRY.get_state()
             registered_pins = {pin["pin"] for pin in state["pins"]}
             self.assertNotIn(11, registered_pins)
-            self.assertNotIn("user_output", state["labels"])
             self.assertNotIn("sound_1", state["labels"])
             self.assertNotIn("sound_2", state["labels"])
             self.assertNotIn("sound_3", state["labels"])
             self.assertNotIn("sound_4", state["labels"])
-
-    def test_user_gpio4_can_be_configured_as_output(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            info = _session_info(tmp)
-            box = BehavBox(info)
-
-            user_output = box.configure_user_output(label="aux_output")
-            user_output.on()
-
-            state = REGISTRY.get_state()
-            self.assertEqual(state["labels"]["aux_output"], 4)
-            pin_entry = next(pin for pin in state["pins"] if pin["pin"] == 4)
-            self.assertEqual(pin_entry["direction"], "output")
-            self.assertTrue(pin_entry["active"])
-
-    def test_user_gpio4_can_be_configured_as_input(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            info = _session_info(tmp)
-            box = BehavBox(info)
-
-            user_input = box.configure_user_input(label="aux_input")
-            user_input.press(source="test")
-
-            state = REGISTRY.get_state()
-            self.assertEqual(state["labels"]["aux_input"], 4)
-            pin_entry = next(pin for pin in state["pins"] if pin["pin"] == 4)
-            self.assertEqual(pin_entry["direction"], "input")
-            self.assertTrue(pin_entry["active"])
-
-    def test_reconfiguring_user_gpio4_raises(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            info = _session_info(tmp)
-            box = BehavBox(info)
-
-            box.configure_user_output(label="aux_output")
-            with self.assertRaises(RuntimeError):
-                box.configure_user_input(label="aux_input")
 
     def test_reserved_gpio11_raises_in_backend(self):
         with self.assertRaises(ReservedPinError):
