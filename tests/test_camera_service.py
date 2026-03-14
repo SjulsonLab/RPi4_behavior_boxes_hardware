@@ -15,6 +15,7 @@ from box_runtime.video_recording.camera_session import (
     derive_frame_utc_ns,
     estimate_required_bytes,
     finalize_session_directory,
+    load_raw_frames_tsv,
     load_manifest,
     verify_manifest_hashes,
     write_manifest,
@@ -51,19 +52,26 @@ def _write_raw_attempt(
     attempt_index: int,
     sensor_timestamps_ns: np.ndarray,
     arrival_utc_ns: np.ndarray,
+    boottime_to_realtime_offset_ns: np.ndarray | None = None,
 ) -> None:
     raw_video = session_dir / f"attempt_{attempt_index:03d}.h264"
     raw_video.write_bytes(b"\x00\x00\x00\x01\x09\xf0")
     raw_tsv = session_dir / f"attempt_{attempt_index:03d}_raw_frames.tsv"
+    if boottime_to_realtime_offset_ns is None:
+        boottime_to_realtime_offset_ns = arrival_utc_ns - sensor_timestamps_ns
     with raw_tsv.open("w", encoding="utf-8") as handle:
-        handle.write("frame_index\tsensor_timestamp_ns\tarrival_utc_ns\n")
-        for frame_index, (sensor_ns, arrival_ns) in enumerate(
-            zip(sensor_timestamps_ns, arrival_utc_ns)
+        handle.write(
+            "frame_index\tsensor_timestamp_ns\tarrival_utc_ns\tboottime_to_realtime_offset_ns\n"
+        )
+        for frame_index, (sensor_ns, arrival_ns, offset_ns) in enumerate(
+            zip(sensor_timestamps_ns, arrival_utc_ns, boottime_to_realtime_offset_ns)
         ):
-            handle.write(f"{frame_index}\t{int(sensor_ns)}\t{int(arrival_ns)}\n")
+            handle.write(
+                f"{frame_index}\t{int(sensor_ns)}\t{int(arrival_ns)}\t{int(offset_ns)}\n"
+            )
 
 
-def test_derive_frame_utc_ns_tracks_slow_drift_better_than_single_anchor():
+def test_derive_frame_utc_ns_tracks_smoothed_offset_better_than_raw_arrival_timestamps():
     rng = np.random.default_rng(1234)
     frame_period_ns = int(1e9 / 10.0)
     frame_count = 3 * 60 * 60 * 10
@@ -79,22 +87,46 @@ def test_derive_frame_utc_ns_tracks_slow_drift_better_than_single_anchor():
     true_utc_ns = sensor_timestamps_ns + true_offset_ns
     jitter_ns = rng.normal(0.0, 2_000_000.0, frame_count).astype(np.int64)
     arrival_utc_ns = true_utc_ns + jitter_ns
+    offset_noise_ns = rng.normal(0.0, 150_000.0, frame_count).astype(np.int64)
+    measured_offset_ns = true_offset_ns + offset_noise_ns
 
     derived_utc_ns, diagnostics = derive_frame_utc_ns(
         sensor_timestamps_ns,
-        arrival_utc_ns,
+        measured_offset_ns,
+        arrival_utc_ns=arrival_utc_ns,
         bin_size_ns=60 * 1_000_000_000,
     )
-    single_anchor_ns = arrival_utc_ns[0] + (
-        sensor_timestamps_ns - sensor_timestamps_ns[0]
-    )
+    arrival_based_utc_ns = sensor_timestamps_ns + (arrival_utc_ns - sensor_timestamps_ns)
 
     derived_error = np.abs(derived_utc_ns - true_utc_ns)
-    single_anchor_error = np.abs(single_anchor_ns - true_utc_ns)
+    arrival_error = np.abs(arrival_based_utc_ns - true_utc_ns)
 
-    assert derived_error.max() < single_anchor_error.max()
-    assert derived_error.max() < 8_000_000
+    assert derived_error.max() < arrival_error.max()
+    assert derived_error.max() < 1_000_000
     assert diagnostics["max_abs_residual_ns"] >= diagnostics["p95_abs_residual_ns"]
+
+
+def test_load_raw_frames_tsv_backfills_offset_for_legacy_three_column_files() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        raw_tsv = Path(tmp) / "attempt_001_raw_frames.tsv"
+        raw_tsv.write_text(
+            "\n".join(
+                [
+                    "frame_index\tsensor_timestamp_ns\tarrival_utc_ns",
+                    "0\t10\t1010",
+                    "1\t20\t1025",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        rows = load_raw_frames_tsv(raw_tsv)
+
+        assert rows["frame_index"].tolist() == [0, 1]
+        assert rows["sensor_timestamp_ns"].tolist() == [10, 20]
+        assert rows["arrival_utc_ns"].tolist() == [1010, 1025]
+        assert rows["boottime_to_realtime_offset_ns"].tolist() == [1000, 1005]
 
 
 def test_finalize_clean_session_emits_single_mp4_and_tsv():
