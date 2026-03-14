@@ -49,14 +49,22 @@ class _FrameWriter:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.handle = path.open("w", encoding="utf-8", buffering=1)
-        self.handle.write("frame_index\tsensor_timestamp_ns\tarrival_utc_ns\n")
+        self.handle.write(
+            "frame_index\tsensor_timestamp_ns\tarrival_utc_ns\tboottime_to_realtime_offset_ns\n"
+        )
         self.frame_index = 0
         self.lock = threading.Lock()
 
-    def append(self, sensor_timestamp_ns: int, arrival_utc_ns: int) -> None:
+    def append(
+        self,
+        sensor_timestamp_ns: int,
+        arrival_utc_ns: int,
+        boottime_to_realtime_offset_ns: int,
+    ) -> None:
         with self.lock:
             self.handle.write(
-                f"{self.frame_index}\t{int(sensor_timestamp_ns)}\t{int(arrival_utc_ns)}\n"
+                f"{self.frame_index}\t{int(sensor_timestamp_ns)}\t{int(arrival_utc_ns)}\t"
+                f"{int(boottime_to_realtime_offset_ns)}\n"
             )
             self.frame_index += 1
 
@@ -136,7 +144,9 @@ class Picamera2Recorder:
             def append_frame(request):
                 meta = request.get_metadata()
                 sensor_ts = int(meta.get("SensorTimestamp", 0))
-                self._frame_writer.append(sensor_ts, time.time_ns())
+                arrival_utc_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
+                offset_ns = _sample_boottime_to_realtime_offset_ns()
+                self._frame_writer.append(sensor_ts, arrival_utc_ns, offset_ns)
 
             self.picam2.pre_callback = append_frame
             self._recording_encoder = H264Encoder(bitrate=self.current_bitrate_bps)
@@ -265,6 +275,23 @@ class Picamera2Recorder:
                 self.picam2.stop()
             except Exception:
                 pass
+
+
+def _sample_boottime_to_realtime_offset_ns() -> int:
+    """Measure the current CLOCK_BOOTTIME to CLOCK_REALTIME offset in ns.
+
+    Returns:
+        int: Estimated offset ``realtime_ns - boottime_ns`` measured using the
+        midpoint of a bracketed BOOTTIME read.
+    """
+
+    if not hasattr(time, "CLOCK_BOOTTIME"):
+        raise RuntimeError("CLOCK_BOOTTIME is unavailable on this platform")
+    boot_before_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    realtime_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
+    boot_after_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    boot_mid_ns = (boot_before_ns + boot_after_ns) // 2
+    return int(realtime_ns - boot_mid_ns)
 
     def configure(self, mode: dict[str, Any]) -> None:
         with self.lock:
