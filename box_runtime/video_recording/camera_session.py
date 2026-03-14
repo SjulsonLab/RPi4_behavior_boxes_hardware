@@ -341,21 +341,9 @@ def _write_final_attempt_tsv(
 ) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(
-            [
-                "frame_index",
-                "sensor_timestamp_ns",
-                "arrival_utc_ns",
-                "derived_utc_ns",
-            ]
-        )
-        for values in zip(
-            rows["frame_index"],
-            rows["sensor_timestamp_ns"],
-            rows["arrival_utc_ns"],
-            derived_utc_ns,
-        ):
-            writer.writerow([int(value) for value in values])
+        writer.writerow(["frame_index", "utc_s"])
+        for frame_index, utc_ns in zip(rows["frame_index"], derived_utc_ns):
+            writer.writerow([int(frame_index), f"{float(utc_ns) / 1e9:.3f}"])
 
 
 def _sha256(path: Path) -> str:
