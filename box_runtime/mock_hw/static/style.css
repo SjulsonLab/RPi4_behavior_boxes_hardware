@@ -7,6 +7,8 @@
   --off: #d0d5dd;
   --warn: #b54708;
   --accent: #0b7285;
+  --accent-bg: #eff8ff;
+  --accent-border: #b2ddff;
 }
 
 * { box-sizing: border-box; }
@@ -42,6 +44,10 @@ main { padding: 16px 20px; display: grid; gap: 16px; }
   padding: 12px;
 }
 
+.status-grid .card {
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+}
+
 .pin-title {
   display: flex;
   justify-content: space-between;
@@ -51,6 +57,15 @@ main { padding: 16px 20px; display: grid; gap: 16px; }
 
 .pin-label { font-weight: 600; }
 .pin-meta { color: var(--muted); font-size: 0.9rem; }
+.runtime-value { font-size: 1.1rem; font-weight: 700; margin: 6px 0; }
+.runtime-detail { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+.highlight {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 10px;
+}
 
 .state-pill {
   display: inline-block;

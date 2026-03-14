@@ -18,6 +18,28 @@ class PinRegistry:
             "last_visual_stim_on_ts": None,
             "last_visual_stim_off_ts": None,
         }
+        self._runtime_state: Dict[str, Dict[str, Any]] = {
+            "session": {
+                "active": False,
+                "lifecycle_state": "idle",
+                "protocol_name": None,
+                "box_name": None,
+            },
+            "task": {
+                "protocol_name": None,
+                "phase": None,
+                "trial_index": None,
+                "trial_type": None,
+                "completed_trials": 0,
+                "max_trials": None,
+                "stimulus_active": False,
+            },
+            "audio": {
+                "active": False,
+                "current_cue_name": None,
+                "last_cue_name": None,
+            },
+        }
 
     def reset(self) -> None:
         with self._lock:
@@ -31,6 +53,28 @@ class PinRegistry:
                 "current_grating": None,
                 "last_visual_stim_on_ts": None,
                 "last_visual_stim_off_ts": None,
+            }
+            self._runtime_state = {
+                "session": {
+                    "active": False,
+                    "lifecycle_state": "idle",
+                    "protocol_name": None,
+                    "box_name": None,
+                },
+                "task": {
+                    "protocol_name": None,
+                    "phase": None,
+                    "trial_index": None,
+                    "trial_type": None,
+                    "completed_trials": 0,
+                    "max_trials": None,
+                    "stimulus_active": False,
+                },
+                "audio": {
+                    "active": False,
+                    "current_cue_name": None,
+                    "last_cue_name": None,
+                },
             }
 
     def register_device(
@@ -119,6 +163,28 @@ class PinRegistry:
                 }
             )
 
+    def set_runtime_state(self, section: str, source: str = "code", **values) -> None:
+        """Update one runtime-state section and record a state-change event.
+
+        Args:
+            section: Runtime section name such as ``session``, ``task``, or ``audio``.
+            source: State-update source string.
+            values: JSON-serializable key/value updates for the section.
+        """
+
+        with self._lock:
+            if section not in self._runtime_state:
+                self._runtime_state[section] = {}
+            self._runtime_state[section].update(values)
+            event = {
+                "ts": time.time(),
+                "kind": f"runtime_{section}",
+                "section": section,
+                "source": source,
+            }
+            event.update(values)
+            self._events.append(event)
+
     def _get_pin_by_label(self, label: str) -> int:
         with self._lock:
             if label not in self._labels:
@@ -157,6 +223,10 @@ class PinRegistry:
                 "pins": pins,
                 "labels": dict(self._labels),
                 "visual": dict(self._visual_state),
+                "runtime": {
+                    section: dict(values)
+                    for section, values in self._runtime_state.items()
+                },
             }
 
     def get_events(self, limit: int = 200) -> Dict[str, Any]:
@@ -182,3 +252,15 @@ def set_visual_stim_state(
         visual_stim_active=visual_stim_active,
         current_grating=current_grating,
     )
+
+
+def set_session_state(source: str = "code", **values) -> None:
+    REGISTRY.set_runtime_state("session", source=source, **values)
+
+
+def set_task_state(source: str = "code", **values) -> None:
+    REGISTRY.set_runtime_state("task", source=source, **values)
+
+
+def set_audio_state(source: str = "code", **values) -> None:
+    REGISTRY.set_runtime_state("audio", source=source, **values)

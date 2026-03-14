@@ -33,6 +33,9 @@ from box_runtime.behavior.gpio_backend import (
     LED,
     is_raspberry_pi,
     register_pin_label,
+    set_audio_state,
+    set_session_state,
+    set_task_state,
     set_visual_stim_state,
 )
 from box_runtime.audio.importer import AudioPaths
@@ -133,6 +136,28 @@ class BehavBox(object):
         self._logging_configured = False
         self._is_closed = False
         self._camera_client = None
+        self.runtime_status = {
+            "session": {
+                "active": False,
+                "lifecycle_state": "created",
+                "protocol_name": None,
+                "box_name": self.session_info.get("box_name"),
+            },
+            "task": {
+                "protocol_name": None,
+                "phase": None,
+                "trial_index": None,
+                "trial_type": None,
+                "completed_trials": 0,
+                "max_trials": None,
+                "stimulus_active": False,
+            },
+            "audio": {
+                "active": False,
+                "current_cue_name": None,
+                "last_cue_name": None,
+            },
+        }
         self.event_list = deque()
         self.interact_list = []
 
@@ -207,6 +232,30 @@ class BehavBox(object):
         )
         self._logging_configured = True
         logging.info(";%s;[initialization];behavior_box_initialized", self._clock())
+
+    def publish_runtime_state(self, section: str, **values) -> None:
+        """Publish one generic runtime-state update.
+
+        Args:
+            section: Runtime-state section name, typically ``session``,
+                ``task``, or ``audio``.
+            values: JSON-serializable key/value updates for that section.
+        """
+
+        if section not in self.runtime_status:
+            self.runtime_status[section] = {}
+        self.runtime_status[section].update(values)
+        if section == "session":
+            set_session_state(**values)
+        elif section == "task":
+            set_task_state(**values)
+        elif section == "audio":
+            set_audio_state(**values)
+
+    def _handle_audio_runtime_state(self, payload: dict[str, object]) -> None:
+        """Receive audio-runtime state updates from the playback layer."""
+
+        self.publish_runtime_state("audio", **payload)
 
     def _prepare_gpio_outputs(self) -> None:
         output_pins = HEAD_FIXED_GPIO["outputs"]
@@ -304,6 +353,12 @@ class BehavBox(object):
         self._runtime_events.append({"name": "session_prepared", "timestamp": self._clock()})
         self._lifecycle_state = "prepared"
         self._is_closed = False
+        self.publish_runtime_state(
+            "session",
+            active=False,
+            lifecycle_state="prepared",
+            box_name=self.session_info.get("box_name"),
+        )
 
     def start_session(self) -> None:
         """Transition the appliance from prepared to active session state."""
@@ -314,6 +369,7 @@ class BehavBox(object):
         self._runtime_events.append({"name": "session_started", "timestamp": self._session_started_at_s})
         self._handle_input_event("session_started", record_interaction=False, log_category="configuration")
         self._lifecycle_state = "running"
+        self.publish_runtime_state("session", active=True, lifecycle_state="running")
 
     def poll_runtime(self) -> list[BehaviorEvent]:
         """Run lightweight non-task-specific runtime work and drain current events."""
@@ -335,6 +391,7 @@ class BehavBox(object):
         self._runtime_events.append({"name": "session_stopped", "timestamp": self._session_stopped_at_s})
         self._handle_input_event("session_stopped", record_interaction=False, log_category="configuration")
         self._lifecycle_state = "stopped"
+        self.publish_runtime_state("session", active=False, lifecycle_state="stopped")
 
     def finalize_session(self) -> Path:
         """Write standardized session metadata after the run has stopped."""
@@ -351,6 +408,8 @@ class BehavBox(object):
         }
         metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
         self._lifecycle_state = "finalized"
+        self.publish_runtime_state("session", active=False, lifecycle_state="finalized")
+        self.publish_runtime_state("audio", active=False, current_cue_name=None)
         return metadata_path
 
     @staticmethod
@@ -426,8 +485,20 @@ class BehavBox(object):
         )
         device_name = str(self.session_info.get("audio_device", os.environ.get("BEHAVBOX_AUDIO_DEVICE", "default")))
         use_mock_audio = bool(self.session_info.get("mock_audio", False)) or not is_raspberry_pi()
-        backend = RecordingPlaybackBackend(sample_rate_hz=48_000) if use_mock_audio else None
-        return SoundRuntime(paths=paths, device_name=device_name, backend=backend)
+        backend = (
+            RecordingPlaybackBackend(
+                sample_rate_hz=48_000,
+                chunk_sleep_s=256.0 / 48_000.0,
+            )
+            if use_mock_audio
+            else None
+        )
+        return SoundRuntime(
+            paths=paths,
+            device_name=device_name,
+            backend=backend,
+            state_callback=self._handle_audio_runtime_state,
+        )
 
     def configure_user_output(self, label: str = "ttl_output"):
         """Hand off the default TTL pin to output ownership.
@@ -642,6 +713,8 @@ class BehavBox(object):
         self.main_display = None
         self._is_closed = True
         self._lifecycle_state = "closed"
+        self.publish_runtime_state("session", active=False, lifecycle_state="closed")
+        self.publish_runtime_state("task", phase=None, stimulus_active=False)
 
     def __del__(self):
         try:

@@ -1,4 +1,7 @@
 const statusLine = document.getElementById('status-line');
+const sessionStatusEl = document.getElementById('session-status');
+const taskStatusEl = document.getElementById('task-status');
+const audioStatusEl = document.getElementById('audio-status');
 const inputsEl = document.getElementById('inputs');
 const outputsEl = document.getElementById('outputs');
 const eventsEl = document.getElementById('event-log');
@@ -9,8 +12,9 @@ const INPUT_FUNCTION_ORDER = [
   'lick_1',
   'lick_2',
   'lick_3',
-  'treadmill_1_input',
-  'treadmill_2_input',
+  'treadmill_encoder_a',
+  'treadmill_encoder_b',
+  'ttl_trigger',
 ];
 
 const OUTPUT_FUNCTION_ORDER = [
@@ -56,6 +60,15 @@ function statePill(active) {
   return `<span class="${klass}">${active ? 'ACTIVE' : 'INACTIVE'}</span>`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 async function postJson(url, body = null) {
   const opts = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
   if (body !== null) opts.body = JSON.stringify(body);
@@ -65,6 +78,62 @@ async function postJson(url, body = null) {
     throw new Error(text);
   }
   return await res.json();
+}
+
+function renderRuntime(runtime = {}) {
+  const session = runtime.session || {};
+  const task = runtime.task || {};
+  const audio = runtime.audio || {};
+
+  const protocolName = task.protocol_name || session.protocol_name || 'idle';
+  const lifecycleState = session.lifecycle_state || 'unknown';
+  const sessionActive = !!session.active;
+  const phase = task.phase || 'idle';
+  const trialNumber = Number.isInteger(task.trial_index) ? task.trial_index + 1 : null;
+  const maxTrials = task.max_trials ?? '-';
+  const taskActive = !!task.phase;
+  const cueActive = !!audio.active;
+  const cueName = audio.current_cue_name || audio.last_cue_name || 'none';
+
+  statusLine.textContent = sessionActive
+    ? `Running ${protocolName} | ${phase}`
+    : `Connected | session ${lifecycleState}`;
+
+  sessionStatusEl.innerHTML = `
+    <div class="pin-title">
+      <span class="pin-label">Session</span>
+      ${statePill(sessionActive)}
+    </div>
+    <div class="runtime-value">${escapeHtml(protocolName)}</div>
+    <div class="runtime-detail">Lifecycle: ${escapeHtml(lifecycleState)}</div>
+    <div class="runtime-detail">Box: ${escapeHtml(session.box_name || '-')}</div>
+  `;
+
+  const taskHeadline = taskActive ? `${escapeHtml(phase)}` : 'No active task phase';
+  const taskHighlight = trialNumber === null
+    ? '<div class="highlight">Waiting for first trial.</div>'
+    : `<div class="highlight">Trial ${trialNumber} of ${escapeHtml(maxTrials)} | ${escapeHtml(task.trial_type || 'unassigned')}</div>`;
+  taskStatusEl.innerHTML = `
+    <div class="pin-title">
+      <span class="pin-label">Task</span>
+      ${statePill(taskActive)}
+    </div>
+    <div class="runtime-value">${taskHeadline}</div>
+    <div class="runtime-detail">Completed trials: ${escapeHtml(task.completed_trials ?? 0)}</div>
+    <div class="runtime-detail">Stimulus active: ${task.stimulus_active ? 'yes' : 'no'}</div>
+    ${taskHighlight}
+  `;
+
+  audioStatusEl.innerHTML = `
+    <div class="pin-title">
+      <span class="pin-label">Audio Cue</span>
+      ${statePill(cueActive)}
+    </div>
+    <div class="runtime-value">${escapeHtml(cueName)}</div>
+    <div class="runtime-detail">Cue playing: ${cueActive ? 'yes' : 'no'}</div>
+    <div class="runtime-detail">Current cue: ${escapeHtml(audio.current_cue_name || '-')}</div>
+    <div class="runtime-detail">Last cue: ${escapeHtml(audio.last_cue_name || '-')}</div>
+  `;
 }
 
 function renderVisual(visual) {
@@ -136,19 +205,69 @@ function renderPins(state) {
   }
 
   renderVisual(state.visual || {});
+  renderRuntime(state.runtime || {});
+}
+
+function describeEvent(event) {
+  if (event.kind === 'pin') {
+    return {
+      kind: 'pin',
+      label: event.label || '-',
+      pin: event.pin ?? '-',
+      value: event.value ?? '-',
+      source: event.source || '-',
+    };
+  }
+  if (event.kind === 'visual_stim') {
+    return {
+      kind: 'visual_stim',
+      label: event.current_grating || 'visual stimulus',
+      pin: '-',
+      value: event.visual_stim_active ?? '-',
+      source: event.source || '-',
+    };
+  }
+  if ((event.kind || '').startsWith('runtime_')) {
+    const section = event.section || event.kind.replace('runtime_', '');
+    const label = section === 'task'
+      ? `${event.phase || 'idle'}${event.trial_type ? ` (${event.trial_type})` : ''}`
+      : section === 'audio'
+        ? (event.current_cue_name || event.last_cue_name || 'audio state')
+        : (event.protocol_name || section);
+    const value = section === 'task'
+      ? `trial=${event.trial_index ?? '-'} completed=${event.completed_trials ?? '-'}`
+      : section === 'audio'
+        ? `active=${event.active ? 'yes' : 'no'}`
+        : `state=${event.lifecycle_state || '-'}`;
+    return {
+      kind: event.kind,
+      label,
+      pin: '-',
+      value,
+      source: event.source || '-',
+    };
+  }
+  return {
+    kind: event.kind || '-',
+    label: event.label || '-',
+    pin: event.pin ?? '-',
+    value: event.value ?? '-',
+    source: event.source || '-',
+  };
 }
 
 function renderEvents(events) {
   eventsEl.innerHTML = '';
   for (const event of events) {
+    const rowState = describeEvent(event);
     const row = document.createElement('tr');
     row.innerHTML = `
       <td>${fmtTs(event.ts)}</td>
-      <td>${event.kind || '-'}</td>
-      <td>${event.label || event.current_grating || '-'}</td>
-      <td>${event.pin ?? '-'}</td>
-      <td>${event.value ?? event.visual_stim_active ?? '-'}</td>
-      <td>${event.source || '-'}</td>
+      <td>${escapeHtml(rowState.kind)}</td>
+      <td>${escapeHtml(rowState.label)}</td>
+      <td>${escapeHtml(rowState.pin)}</td>
+      <td>${escapeHtml(rowState.value)}</td>
+      <td>${escapeHtml(rowState.source)}</td>
     `;
     eventsEl.appendChild(row);
   }
@@ -160,12 +279,17 @@ async function refresh() {
       fetch('/api/state'),
       fetch('/api/events?limit=150'),
     ]);
+    if (!stateRes.ok) {
+      throw new Error(`state ${stateRes.status}`);
+    }
+    if (!eventsRes.ok) {
+      throw new Error(`events ${eventsRes.status}`);
+    }
     const state = await stateRes.json();
     const events = await eventsRes.json();
 
     renderPins(state);
     renderEvents(events.events || []);
-    statusLine.textContent = 'Connected';
   } catch (err) {
     statusLine.textContent = `Error: ${err.message}`;
   }

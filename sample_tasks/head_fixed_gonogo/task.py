@@ -9,6 +9,29 @@ from pathlib import Path
 
 from sample_tasks.common.fsm import append_task_event, enter_phase
 
+PROTOCOL_NAME = "head_fixed_gonogo"
+
+
+def _publish_runtime_state(box, task_state: dict) -> None:
+    """Publish current task runtime state for live browser consumers.
+
+    Args:
+    - ``box``: BehavBox runtime exposing ``publish_runtime_state``.
+    - ``task_state``: Mutable task-state dictionary.
+    """
+
+    trial_index = int(task_state["trial_index"])
+    box.publish_runtime_state(
+        "task",
+        protocol_name=PROTOCOL_NAME,
+        phase=task_state["phase"],
+        trial_index=None if trial_index < 0 else trial_index,
+        trial_type=task_state["current_trial_type"],
+        completed_trials=int(task_state["counters"]["completed_trials"]),
+        max_trials=task_state["config"].get("max_trials"),
+        stimulus_active=(task_state["phase"] == "stimulus"),
+    )
+
 
 def _load_defaults() -> dict:
     """Load the default task configuration from the tracked JSON file.
@@ -78,6 +101,7 @@ def _begin_trial(box, task_state: dict, now_s: float) -> None:
         trial_type=trial_type,
     )
     box.play_sound(cue_name, side=str(task_state["config"]["cue_side"]))
+    _publish_runtime_state(box, task_state)
 
 
 def prepare_task(box, task_config: dict) -> dict:
@@ -118,6 +142,7 @@ def prepare_task(box, task_config: dict) -> dict:
         },
     }
     append_task_event(task_state, "task_prepared", time.time())
+    _publish_runtime_state(box, task_state)
     return task_state
 
 
@@ -132,7 +157,9 @@ def start_task(box, task_state: dict) -> None:
     now_s = time.time()
     task_state["started_at_s"] = now_s
     append_task_event(task_state, "task_started", now_s)
+    box.publish_runtime_state("session", protocol_name=PROTOCOL_NAME)
     enter_phase(task_state, "iti", now_s, duration_s=float(task_state["config"]["iti_s"]))
+    _publish_runtime_state(box, task_state)
 
 
 def handle_event(box, task_state: dict, event) -> None:
@@ -168,6 +195,7 @@ def handle_event(box, task_state: dict, event) -> None:
             duration_s=float(task_state["config"]["reward_phase_s"]),
             trial_type=task_state["current_trial_type"],
         )
+        _publish_runtime_state(box, task_state)
     else:
         task_state["counters"]["false_alarms"] += 1
         enter_phase(
@@ -177,6 +205,7 @@ def handle_event(box, task_state: dict, event) -> None:
             duration_s=float(task_state["config"]["timeout_s"]),
             trial_type=task_state["current_trial_type"],
         )
+        _publish_runtime_state(box, task_state)
 
 
 def update_task(box, task_state: dict, now_s: float) -> None:
@@ -200,6 +229,7 @@ def update_task(box, task_state: dict, now_s: float) -> None:
         return
     if phase == "stimulus":
         enter_phase(task_state, "response_window", float(now_s), duration_s=float(task_state["config"]["response_window_s"]))
+        _publish_runtime_state(box, task_state)
         return
     if phase == "response_window":
         if task_state["current_trial_type"] == "go":
@@ -208,13 +238,16 @@ def update_task(box, task_state: dict, now_s: float) -> None:
             task_state["counters"]["correct_rejects"] += 1
         task_state["counters"]["completed_trials"] += 1
         enter_phase(task_state, "inter_trial_cleanup", float(now_s), duration_s=float(task_state["config"]["cleanup_s"]))
+        _publish_runtime_state(box, task_state)
         return
     if phase in {"reward", "timeout"}:
         task_state["counters"]["completed_trials"] += 1
         enter_phase(task_state, "inter_trial_cleanup", float(now_s), duration_s=float(task_state["config"]["cleanup_s"]))
+        _publish_runtime_state(box, task_state)
         return
     if phase == "inter_trial_cleanup":
         enter_phase(task_state, "iti", float(now_s), duration_s=float(task_state["config"]["iti_s"]))
+        _publish_runtime_state(box, task_state)
 
 
 def should_stop(box, task_state: dict) -> bool:
@@ -254,6 +287,7 @@ def stop_task(box, task_state: dict, reason: str) -> None:
     task_state["stop_reason"] = str(reason)
     task_state["stopped_at_s"] = now_s
     append_task_event(task_state, "task_stopped", now_s, reason=str(reason), phase=task_state["phase"])
+    _publish_runtime_state(box, task_state)
 
 
 def finalize_task(box, task_state: dict) -> dict:
@@ -269,7 +303,9 @@ def finalize_task(box, task_state: dict) -> dict:
 
     now_s = time.time()
     append_task_event(task_state, "task_finalized", now_s, phase=task_state["phase"])
+    box.publish_runtime_state("task", phase=task_state["phase"], stimulus_active=False)
     return {
+        "protocol_name": PROTOCOL_NAME,
         "phase": task_state["phase"],
         "current_trial_type": task_state["current_trial_type"],
         "counters": dict(task_state["counters"]),

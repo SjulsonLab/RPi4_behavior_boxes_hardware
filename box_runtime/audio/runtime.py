@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import threading
 import time
-from typing import Protocol
+from typing import Callable, Optional, Protocol
 
 import numpy as np
 
@@ -184,6 +184,9 @@ class SoundRuntime:
         ramp_duration_s: Ramp duration in seconds applied to all cue edges.
         reference_rms: Canonical RMS amplitude used for imports and built-in
             white noise generation.
+        state_callback: Optional callback receiving JSON-serializable runtime
+            state updates with keys such as ``active`` and
+            ``current_cue_name``.
     """
 
     def __init__(
@@ -195,6 +198,7 @@ class SoundRuntime:
         period_size_frames: int = 256,
         ramp_duration_s: float = 0.002,
         reference_rms: float = DEFAULT_REFERENCE_RMS,
+        state_callback: Optional[Callable[[dict[str, object]], None]] = None,
     ):
         self.paths = paths
         self.paths.ensure_directories()
@@ -209,6 +213,7 @@ class SoundRuntime:
         self.device_name = str(device_name)
         self.period_size_frames = int(period_size_frames)
         self.backend = backend or self._build_backend()
+        self.state_callback = state_callback
         self.loaded_sounds: dict[str, LoadedSound] = {}
         self._condition = threading.Condition()
         self._pending_request: tuple[int, PlaybackRequest] | None = None
@@ -218,6 +223,7 @@ class SoundRuntime:
         self._shutdown = False
         self._worker = threading.Thread(target=self._worker_main, name="behavbox-sound", daemon=True)
         self._worker.start()
+        self._emit_state(active=False, current_cue_name=None, last_cue_name=None)
 
     def import_wav_file(
         self,
@@ -327,6 +333,7 @@ class SoundRuntime:
             self._pending_request = (next_token, request)
             self._busy = True
             self._condition.notify_all()
+        self._emit_state(active=True, current_cue_name=cue_key, last_cue_name=cue_key)
 
     def stop_sound(self) -> None:
         """Interrupt the currently playing cue, if any."""
@@ -335,6 +342,7 @@ class SoundRuntime:
             self._stop_token = max(self._stop_token, self._active_token + 1)
             self._active_token = max(self._active_token, self._stop_token)
             self._condition.notify_all()
+        self._emit_state(active=False, current_cue_name=None)
 
     def start_sound_calibration(self, side: str = "both", gain_db: float = 0.0) -> None:
         """Start long-running white-noise playback for hardware calibration."""
@@ -441,11 +449,15 @@ class SoundRuntime:
             self._condition.notify_all()
         self._worker.join(timeout=2.0)
         self.backend.close()
+        self._emit_state(active=False, current_cue_name=None)
 
     def _build_backend(self) -> PlaybackBackend:
         if str(os.environ.get("BEHAVBOX_MOCK_AUDIO", "0")).strip().lower() in {"1", "true", "yes", "on"}:
             LOGGER.info("Using recording audio backend because BEHAVBOX_MOCK_AUDIO is enabled.")
-            return RecordingPlaybackBackend(sample_rate_hz=self.sample_rate_hz)
+            return RecordingPlaybackBackend(
+                sample_rate_hz=self.sample_rate_hz,
+                chunk_sleep_s=256.0 / float(self.sample_rate_hz),
+            )
         if alsaaudio is None:  # pragma: no cover - exercised on Raspberry Pi hardware
             LOGGER.warning("pyalsaaudio is unavailable; using null audio backend.")
             return NullPlaybackBackend(sample_rate_hz=self.sample_rate_hz)
@@ -478,6 +490,11 @@ class SoundRuntime:
                     if self._pending_request is None:
                         self._busy = False
                         self._condition.notify_all()
+                self._emit_state(
+                    active=False,
+                    current_cue_name=None,
+                    last_cue_name=request.name,
+                )
 
     def _interrupt_requested(self, token: int) -> bool:
         with self._condition:
@@ -501,3 +518,14 @@ class SoundRuntime:
             clipped_percent,
             overshoot_db,
         )
+
+    def _emit_state(self, **payload: object) -> None:
+        """Forward one audio runtime-state update to the optional observer.
+
+        Args:
+            payload: JSON-serializable audio runtime-state fields.
+        """
+
+        if self.state_callback is None:
+            return
+        self.state_callback(dict(payload))

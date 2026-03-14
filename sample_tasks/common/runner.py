@@ -34,6 +34,15 @@ class TaskRunner:
         self.is_closed = False
         self.stop_reason: Optional[str] = None
 
+    def _protocol_name(self) -> str:
+        """Return the task protocol name used in runtime state and artifacts.
+
+        Returns:
+        - ``protocol_name``: Stable task protocol name string.
+        """
+
+        return str(getattr(self.task, "PROTOCOL_NAME", getattr(self.task, "__name__", "task")))
+
     def prepare(self) -> dict:
         """Prepare the box and task state.
 
@@ -44,6 +53,7 @@ class TaskRunner:
         if self.is_prepared:
             return self.task_state
         self.box.prepare_session()
+        self.box.publish_runtime_state("session", protocol_name=self._protocol_name())
         self.task_state = self.task.prepare_task(self.box, self.task_config)
         append_task_event(self.task_state, "runner_prepared", self.clock())
         self.is_prepared = True
@@ -57,6 +67,7 @@ class TaskRunner:
         if not self.is_prepared:
             self.prepare()
         self.box.start_session()
+        self.box.publish_runtime_state("session", protocol_name=self._protocol_name())
         self.task.start_task(self.box, self.task_state)
         self.runner_events.append({"name": "session_started", "timestamp": float(self.clock())})
         self.is_started = True
@@ -97,6 +108,7 @@ class TaskRunner:
         if self.is_started:
             self.task.stop_task(self.box, self.task_state, self.stop_reason)
             self.box.stop_session()
+            self.box.publish_runtime_state("session", protocol_name=self._protocol_name())
             self.runner_events.append({"name": "session_stopped", "timestamp": float(self.clock()), "reason": self.stop_reason})
         self.is_stopped = True
 

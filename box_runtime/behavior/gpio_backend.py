@@ -62,6 +62,15 @@ if not USING_MOCK_BACKEND:
     ) -> None:
         return None
 
+    def set_session_state(**kwargs) -> None:
+        return None
+
+    def set_task_state(**kwargs) -> None:
+        return None
+
+    def set_audio_state(**kwargs) -> None:
+        return None
+
     def get_registry():
         return None
 
@@ -74,7 +83,14 @@ else:
             PWMLED as _GPIOZeroPWMLED,
             RotaryEncoder as _GPIOZeroRotaryEncoder,
         )
-        from box_runtime.mock_hw.registry import REGISTRY, register_pin_label, set_visual_stim_state
+        from box_runtime.mock_hw.registry import (
+            REGISTRY,
+            register_pin_label,
+            set_audio_state,
+            set_session_state,
+            set_task_state,
+            set_visual_stim_state,
+        )
         from box_runtime.mock_hw.server import ensure_server_running
     except ImportError:
         from box_runtime.mock_hw.devices import (
@@ -84,7 +100,14 @@ else:
             PWMLED as _GPIOZeroPWMLED,
             RotaryEncoder as _GPIOZeroRotaryEncoder,
         )
-        from box_runtime.mock_hw.registry import REGISTRY, register_pin_label, set_visual_stim_state
+        from box_runtime.mock_hw.registry import (
+            REGISTRY,
+            register_pin_label,
+            set_audio_state,
+            set_session_state,
+            set_task_state,
+            set_visual_stim_state,
+        )
         from box_runtime.mock_hw.server import ensure_server_running
 
     def get_registry():
