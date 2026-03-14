@@ -18,7 +18,13 @@ from box_runtime.behavior.gpio_backend import (
     ReservedPinError,
 )
 from box_runtime.mock_hw.devices import Button, LED
-from box_runtime.mock_hw.registry import REGISTRY, register_pin_label
+from box_runtime.mock_hw.registry import (
+    REGISTRY,
+    register_pin_label,
+    set_audio_state,
+    set_session_state,
+    set_task_state,
+)
 from box_runtime.mock_hw.server import ensure_server_running
 from box_runtime.mock_hw.visual_stim import MockVisualStim
 
@@ -223,6 +229,19 @@ class TestIntegration(unittest.TestCase):
 
         state = _json_request(f"{url}/api/state")
         self.assertIn("pins", state)
+
+    def test_web_api_state_includes_runtime_sections(self):
+        url = ensure_server_running(host="127.0.0.1", port=0)
+        set_session_state(lifecycle_state="running", active=True, protocol_name="head_fixed_gonogo")
+        set_task_state(phase="stimulus", protocol_name="head_fixed_gonogo", trial_index=2, trial_type="go")
+        set_audio_state(active=True, current_cue_name="gonogo_go", last_cue_name="gonogo_go")
+
+        state = _json_request(f"{url}/api/state")
+
+        self.assertIn("runtime", state)
+        self.assertEqual(state["runtime"]["session"]["protocol_name"], "head_fixed_gonogo")
+        self.assertEqual(state["runtime"]["task"]["phase"], "stimulus")
+        self.assertEqual(state["runtime"]["audio"]["current_cue_name"], "gonogo_go")
 
     def test_pump_reward_records_output_activity(self):
         with tempfile.TemporaryDirectory() as tmp:

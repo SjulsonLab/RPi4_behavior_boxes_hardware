@@ -173,3 +173,34 @@ def test_mock_input_injector_drives_same_response_path():
         box.stop_session()
         box.finalize_session()
         box.close()
+
+
+def test_gonogo_publishes_runtime_state_for_phase_trial_and_audio():
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+        box.prepare_session()
+        box.start_session()
+        task_state = gonogo_task.prepare_task(
+            box,
+            {
+                "trial_sequence": ["go"],
+                "go_cue_duration_s": 0.2,
+                "nogo_cue_duration_s": 0.2,
+                "iti_s": 0.0,
+                "response_window_s": 0.25,
+                "max_trials": 1,
+            },
+        )
+        gonogo_task.start_task(box, task_state)
+        gonogo_task.update_task(box, task_state, now_s=time.time())
+
+        runtime_state = box.runtime_status
+        assert runtime_state["task"]["protocol_name"] == "head_fixed_gonogo"
+        assert runtime_state["task"]["phase"] == "stimulus"
+        assert runtime_state["task"]["trial_index"] == 0
+        assert runtime_state["task"]["trial_type"] == "go"
+        assert runtime_state["audio"]["current_cue_name"] == "gonogo_go"
+
+        box.stop_session()
+        box.finalize_session()
+        box.close()
