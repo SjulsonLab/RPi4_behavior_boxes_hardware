@@ -103,7 +103,7 @@ class TestInputRecordingLifecycle(unittest.TestCase):
 
             recording_dir = Path(box.start_task_recording())
 
-            self.assertEqual(recording_dir, Path(info["dir_name"]))
+            self.assertEqual(recording_dir.resolve(), Path(info["dir_name"]).resolve())
             self.assertTrue((recording_dir / "input_events.log").exists())
             self.assertTrue((recording_dir / "events.jsonl").exists())
 
@@ -205,4 +205,3 @@ class TestInputArtifacts(unittest.TestCase):
             self.assertIsInstance(event, BehaviorEvent)
             self.assertEqual(event.name, "left_entry")
             self.assertEqual(box.interact_list[-1][1], "left_entry")
-

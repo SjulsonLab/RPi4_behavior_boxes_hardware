@@ -29,8 +29,6 @@ from typing import Optional
 
 from box_runtime.behavior.gpio_backend import (
     PWMLED,
-    Button,
-    DigitalOutputDevice,
     LED,
     is_raspberry_pi,
     register_pin_label,
@@ -38,12 +36,8 @@ from box_runtime.behavior.gpio_backend import (
 )
 from box_runtime.audio.importer import AudioPaths
 from box_runtime.audio.runtime import SoundRuntime
+from box_runtime.input import InputService
 from box_runtime.video_recording.camera_client import CameraClient, CameraClientError
-
-try:
-    from box_runtime.treadmill import Treadmill
-except Exception:
-    Treadmill = None
 
 try:
     from box_runtime.behavior import ADS1x15
@@ -154,12 +148,10 @@ class BehavBox(object):
         # interact_list: lick, choice interaction between the board and the animal for visualization
         ###############################################################################################
         self.interact_list = []
-        self._user_gpio_devices = {}
         self.sound_runtime = self._build_sound_runtime()
 
         pins = HEAD_FIXED_GPIO
         output_pins = pins["outputs"]
-        input_pins = pins["inputs"]
 
         ###############################################################################################
         # Head-fixed GPIO map (strict CSV semantics)
@@ -184,42 +176,23 @@ class BehavBox(object):
         self.IR_rx1 = None
         self.IR_rx2 = None
         self.IR_rx3 = None
-
-        # CSV maps GPIO13/16 to treadmill inputs.
-        self.treadmill_input_1 = Button(input_pins["treadmill_1_input"], None, True)
-        self.treadmill_input_2 = Button(input_pins["treadmill_2_input"], None, True)
-        register_pin_label(input_pins["treadmill_1_input"], "treadmill_1_input", direction="input")
-        register_pin_label(input_pins["treadmill_2_input"], "treadmill_2_input", direction="input")
-        self.treadmill_input_1.when_pressed = self.treadmill_1_entry
-        self.treadmill_input_1.when_released = self.treadmill_1_exit
-        self.treadmill_input_2.when_pressed = self.treadmill_2_entry
-        self.treadmill_input_2.when_released = self.treadmill_2_exit
-
-        # Legacy aliases retained for tasks expecting these attributes.
-        self.IR_rx4 = self.treadmill_input_1
-        self.IR_rx5 = self.treadmill_input_2
-
-        ###############################################################################################
-        # Lick inputs
-        ###############################################################################################
-        self.lick1 = Button(input_pins["lick_1"], None, True)
-        self.lick2 = Button(input_pins["lick_2"], None, True)
-        self.lick3 = Button(input_pins["lick_3"], None, True)
-        register_pin_label(input_pins["lick_1"], "lick_1", direction="input")
-        register_pin_label(input_pins["lick_2"], "lick_2", direction="input")
-        register_pin_label(input_pins["lick_3"], "lick_3", direction="input")
-
-        self.lick1.when_pressed = self.left_exit
-        self.lick2.when_pressed = self.right_exit
-        self.lick3.when_pressed = self.center_exit
-        self.lick1.when_released = self.left_entry
-        self.lick2.when_released = self.right_entry
-        self.lick3.when_released = self.center_entry
+        self.IR_rx4 = None
+        self.IR_rx5 = None
+        self.lick1 = None
+        self.lick2 = None
+        self.lick3 = None
+        self.ttl_trigger = None
+        self.treadmill_input_1 = None
+        self.treadmill_input_2 = None
+        self.treadmill_encoder = None
+        self.poke_extra1 = None
+        self.poke_extra2 = None
 
         ###############################################################################################
         # pump: trigger signal output to a driver board induce the solenoid valve to deliver reward
         ###############################################################################################
         self.pump = Pump(self.session_info)
+        self.input_service = InputService(self, self.session_info)
 
         ###############################################################################################
         # visual stimuli initiation
@@ -256,19 +229,6 @@ class BehavBox(object):
         else:
             print("ADC module unavailable; continuing without ADC support.")
 
-        # ###############################################################################################
-        # # treadmill setup
-        # ###############################################################################################
-        self.treadmill = False
-        if session_info.get('treadmill') is True:
-            if Treadmill is None:
-                print("Treadmill module unavailable; continuing without treadmill support.")
-            else:
-                try:
-                    self.treadmill = Treadmill.Treadmill(self.session_info)
-                except Exception as error_message:
-                    print("treadmill issue\n")
-                    print(str(error_message))
         ###############################################################################################
         # pygame window setup and keystroke handler
         ###############################################################################################
@@ -342,6 +302,32 @@ class BehavBox(object):
         self.event_list.append(event)
         return event
 
+    def _handle_input_event(
+        self,
+        event_name: str,
+        *,
+        record_interaction: bool = True,
+        log_category: str = "action",
+    ) -> BehaviorEvent:
+        """Emit one runtime input event and mirror it into current input artifacts.
+
+        Args:
+            event_name: Canonical event name string.
+            record_interaction: Whether to append the event to ``interact_list``.
+            log_category: Legacy log category token written to the text log.
+
+        Returns:
+            Minimal ``BehaviorEvent`` with wall-clock timestamp.
+        """
+
+        event = self._push_event(event_name)
+        if record_interaction:
+            self.interact_list.append((event.timestamp, event.name))
+        logging.info(";%s;[%s];%s", event.timestamp, log_category, event.name)
+        if getattr(self, "input_service", None) is not None:
+            self.input_service.record_event(event, log_category=log_category)
+        return event
+
     def _build_sound_runtime(self) -> SoundRuntime:
         """Create the persistent audio runtime for named cue playback.
 
@@ -358,67 +344,37 @@ class BehavBox(object):
         device_name = str(self.session_info.get("audio_device", os.environ.get("BEHAVBOX_AUDIO_DEVICE", "default")))
         return SoundRuntime(paths=paths, device_name=device_name)
 
-    def _configure_user_gpio(self, *, label: str, direction: str, pull_up=None, active_state=True):
-        """Configure GPIO4 once for user-defined input or output use.
+    def configure_user_output(self, label: str = "ttl_output"):
+        """Hand off the default TTL pin to output ownership.
 
         Args:
-            label: Human-readable registry label for the configured pin.
-            direction: Either ``"input"`` or ``"output"``.
-            pull_up: Input pull mode passed through to ``Button`` when ``direction`` is ``"input"``.
-            active_state: Active-state flag passed through to ``Button`` when ``direction`` is ``"input"``.
+            label: Registry/UI label for the output-side pin ownership.
 
         Returns:
-            A configured ``Button`` or ``DigitalOutputDevice`` instance bound to GPIO4.
+            ``DigitalOutputDevice`` bound to the former TTL input pin.
         """
 
-        pin = HEAD_FIXED_GPIO["user_configurable"][0]
-        if self._user_gpio_devices:
-            raise RuntimeError(f"GPIO{pin} is already configured for user-defined use.")
-        if direction == "output":
-            device = DigitalOutputDevice(pin)
-        elif direction == "input":
-            device = Button(pin, pull_up, active_state)
-        else:
-            raise ValueError(f"Unsupported user GPIO direction: {direction}")
-        register_pin_label(pin, label, direction=direction)
-        self._user_gpio_devices[pin] = device
-        return device
-
-    def configure_user_output(self, label: str = "user_gpio_4") -> DigitalOutputDevice:
-        """Create a user-controlled digital output on GPIO4.
-
-        Args:
-            label: Registry/UI label for the output.
-
-        Returns:
-            A ``DigitalOutputDevice`` bound to GPIO4.
-        """
-
-        return self._configure_user_gpio(label=label, direction="output")
+        return self.input_service.handoff_ttl_to_output(label=label)
 
     def configure_user_input(
         self,
-        label: str = "user_gpio_4",
+        label: str = "ttl_trigger",
         pull_up=None,
         active_state: bool = True,
-    ) -> Button:
-        """Create a user-controlled digital input on GPIO4.
+    ):
+        """Return the active TTL trigger input for compatibility.
 
         Args:
-            label: Registry/UI label for the input.
-            pull_up: Pull configuration forwarded to ``Button``.
-            active_state: Whether the active logical state is high.
+            label: Ignored compatibility label.
+            pull_up: Unused compatibility argument.
+            active_state: Unused compatibility argument.
 
         Returns:
-            A ``Button`` bound to GPIO4.
+            The active TTL ``Button`` instance, if still owned by the input service.
         """
 
-        return self._configure_user_gpio(
-            label=label,
-            direction="input",
-            pull_up=pull_up,
-            active_state=active_state,
-        )
+        del label, pull_up, active_state
+        return self.ttl_trigger
 
     def import_wav_file(
         self,
@@ -543,6 +499,9 @@ class BehavBox(object):
             ``None``.
         """
 
+        if getattr(self, "input_service", None) is not None:
+            self.input_service.close()
+            self.input_service = None
         if getattr(self, "sound_runtime", None) is not None:
             self.sound_runtime.close()
             self.sound_runtime = None
@@ -643,15 +602,11 @@ class BehavBox(object):
         os.mkdir(hd_dir)
 
         print(Fore.YELLOW + "Starting camera session via HTTP service.\n" + Style.RESET_ALL)
+        task_recording_started = False
         try:
+            self.start_task_recording()
+            task_recording_started = True
             client = CameraClient(IP_address_video, port=self.camera_service_port)
-            # Treadmill initiation
-            if self.treadmill is not False:
-                try:
-                    self.treadmill.start()
-                except Exception as error_message:
-                    print("treadmill can't run\n")
-                    print(str(error_message))
 
             print(Fore.GREEN + "\nStart Recording!" + Style.RESET_ALL)
             client.start_recording(
@@ -667,9 +622,13 @@ class BehavBox(object):
             pickle.dump(self.session_info, open(hd_dir + "/" + basename + '_session_info.pkl', "wb"))
 
         except CameraClientError as e:
+            if task_recording_started:
+                self.stop_task_recording()
             print(e)
             raise
         except Exception as e:
+            if task_recording_started:
+                self.stop_task_recording()
             print(e)
 
     def video_stop(self):
@@ -690,11 +649,6 @@ class BehavBox(object):
             client.stop_recording(owner="automated")
             time.sleep(1)
             time.sleep(2)
-            if self.treadmill is not False:
-                try:  # try to stop recording the treadmill
-                    self.treadmill.close()
-                except:
-                    pass
             hostname = socket.gethostname()
             print("Moving video files from " + hostname + "video to " + hostname + ":")
 
@@ -713,59 +667,80 @@ class BehavBox(object):
             raise
         except Exception as e:
             print(e)
+        finally:
+            self.stop_task_recording()
+
+    def start_recording(self) -> str:
+        """Start standalone input recording under user ownership.
+
+        Returns:
+            Absolute path to the active input-recording directory.
+        """
+
+        return self.input_service.start_recording(owner="user")
+
+    def stop_recording(self) -> dict[str, object]:
+        """Clear standalone user recording demand.
+
+        Returns:
+            Status dictionary describing whether recording stopped or deferred.
+        """
+
+        return self.input_service.stop_recording(owner="user")
+
+    def start_task_recording(self) -> str:
+        """Assert task-owned input recording using the active session directory.
+
+        Returns:
+            Absolute path to the active input-recording directory.
+        """
+
+        return self.input_service.start_recording(
+            owner="task",
+            task_dir=self.session_info["dir_name"],
+        )
+
+    def stop_task_recording(self) -> dict[str, object]:
+        """Clear task-owned input-recording demand.
+
+        Returns:
+            Status dictionary describing whether recording stopped or remained active.
+        """
+
+        return self.input_service.stop_recording(owner="task")
 
     ###############################################################################################
     # callbacks
     ###############################################################################################
     def left_entry(self):
-        event = self._push_event("left_entry")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("left_entry")
 
     def center_entry(self):
-        event = self._push_event("center_entry")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("center_entry")
 
     def right_entry(self):
-        event = self._push_event("right_entry")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("right_entry")
 
     def left_exit(self):
-        event = self._push_event("left_exit")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("left_exit")
 
     def center_exit(self):
-        event = self._push_event("center_exit")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("center_exit")
 
     def right_exit(self):
-        event = self._push_event("right_exit")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("right_exit")
 
     def treadmill_1_entry(self):
-        event = self._push_event("treadmill_1_entry")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("treadmill_1_entry")
 
     def treadmill_1_exit(self):
-        event = self._push_event("treadmill_1_exit")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("treadmill_1_exit")
 
     def treadmill_2_entry(self):
-        event = self._push_event("treadmill_2_entry")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("treadmill_2_entry")
 
     def treadmill_2_exit(self):
-        event = self._push_event("treadmill_2_exit")
-        self.interact_list.append((event.timestamp, event.name))
-        logging.info(";%s;[action];%s", event.timestamp, event.name)
+        self._handle_input_event("treadmill_2_exit")
 
     # def reserved_rx1_pressed(self):
     #     self.event_list.append("reserved_rx1_pressed")

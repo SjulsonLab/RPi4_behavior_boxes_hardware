@@ -10,6 +10,11 @@ class _BaseDevice:
         self.pin = int(pin)
 
 
+class _RotaryChannel(_BaseDevice):
+    def __init__(self, pin: int) -> None:
+        super().__init__(pin)
+
+
 class _BaseOutputDevice(_BaseDevice):
     def __init__(self, pin: int, device_type: str) -> None:
         super().__init__(pin)
@@ -175,6 +180,60 @@ class Button(_BaseDevice):
             if not self._active:
                 return True
             return self._cond.wait_for(lambda: not self._active, timeout=timeout)
+
+    def close(self) -> None:
+        return None
+
+
+class RotaryEncoder:
+    """Minimal mock rotary encoder supporting step changes and callbacks."""
+
+    def __init__(
+        self,
+        a: int,
+        b: int,
+        *,
+        max_steps: int = 0,
+        wrap: bool = False,
+    ) -> None:
+        self.a = _RotaryChannel(a)
+        self.b = _RotaryChannel(b)
+        self.max_steps = int(max_steps)
+        self.wrap = bool(wrap)
+        self.when_rotated = None
+        self.when_rotated_clockwise = None
+        self.when_rotated_counter_clockwise = None
+        self.steps = 0
+        REGISTRY.register_device(
+            pin=self.a.pin,
+            device=self,
+            direction="input",
+            device_type="rotary_encoder",
+            initial_value=0,
+        )
+        REGISTRY.register_device(
+            pin=self.b.pin,
+            device=self,
+            direction="input",
+            device_type="rotary_encoder",
+            initial_value=0,
+        )
+
+    @property
+    def value(self) -> int:
+        return int(self.steps)
+
+    def rotate(self, steps: int) -> None:
+        step_delta = int(steps)
+        if step_delta == 0:
+            return
+        self.steps += step_delta
+        if callable(self.when_rotated):
+            self.when_rotated()
+        if step_delta > 0 and callable(self.when_rotated_clockwise):
+            self.when_rotated_clockwise()
+        if step_delta < 0 and callable(self.when_rotated_counter_clockwise):
+            self.when_rotated_counter_clockwise()
 
     def close(self) -> None:
         return None

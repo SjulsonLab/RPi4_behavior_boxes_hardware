@@ -49,6 +49,7 @@ if not USING_MOCK_BACKEND:
         DigitalOutputDevice as _GPIOZeroDigitalOutputDevice,
         LED as _GPIOZeroLED,
         PWMLED as _GPIOZeroPWMLED,
+        RotaryEncoder as _GPIOZeroRotaryEncoder,
     )
 
     def register_pin_label(pin: int, label: str, direction=None) -> None:
@@ -71,6 +72,7 @@ else:
             DigitalOutputDevice as _GPIOZeroDigitalOutputDevice,
             LED as _GPIOZeroLED,
             PWMLED as _GPIOZeroPWMLED,
+            RotaryEncoder as _GPIOZeroRotaryEncoder,
         )
         from box_runtime.mock_hw.registry import REGISTRY, register_pin_label, set_visual_stim_state
         from box_runtime.mock_hw.server import ensure_server_running
@@ -80,6 +82,7 @@ else:
             DigitalOutputDevice as _GPIOZeroDigitalOutputDevice,
             LED as _GPIOZeroLED,
             PWMLED as _GPIOZeroPWMLED,
+            RotaryEncoder as _GPIOZeroRotaryEncoder,
         )
         from box_runtime.mock_hw.registry import REGISTRY, register_pin_label, set_visual_stim_state
         from box_runtime.mock_hw.server import ensure_server_running
@@ -115,3 +118,10 @@ class Button(_GPIOZeroButton):
     def __init__(self, pin, *args, **kwargs):
         _validate_pin(pin)
         super().__init__(pin, *args, **kwargs)
+
+
+class RotaryEncoder(_GPIOZeroRotaryEncoder):
+    def __init__(self, a, b, *args, **kwargs):
+        _validate_pin(a)
+        _validate_pin(b)
+        super().__init__(a, b, *args, **kwargs)
