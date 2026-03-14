@@ -2,7 +2,7 @@
 
 Last updated: 2026-03-08
 Repo: `RPi4_behavior_boxes_hardware`
-Primary branch in progress: `rpgtest`
+Primary branch in progress: `main`
 
 ## Purpose
 Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GPIO mapping and a non-Pi mock hardware mode.
@@ -109,11 +109,10 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `lick_1`: 26
 - `lick_2`: 27
 - `lick_3`: 15
-- `sound_1`: 23
-- `sound_2`: 24
-- `sound_3`: 9
-- `sound_4`: 10
 - Reserved / unused for BehavBox: 5, 6, 11, 12
+- Legacy sound-board GPIO pins remain present on some hardware drawings, but the
+  supported runtime no longer owns them. Sound playback now uses the direct USB
+  audio subsystem under `box_runtime/audio/`.
 - Supported user-expansion path:
 - `BehavBox.configure_user_output(label=...)` reserves GPIO4 as a user-controlled digital output.
 - `BehavBox.configure_user_input(label=..., pull_up=..., active_state=...)` reserves GPIO4 as a user-controlled digital input.
@@ -149,6 +148,27 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - DRM bring-up target: Pi 4B, 64-bit Bookworm, 60 Hz, console-only
 - Final validation target: fresh 64-bit Trixie on Pi 4B
 - Pi 5 is follow-up validation, not guaranteed by the first pass
+
+## Audio Runtime
+- Direct audio playback now lives under `box_runtime/audio/`.
+- Public `BehavBox` audio methods:
+- `import_wav_file(...)`
+- `load_sound(name)`
+- `clear_sounds()`
+- `play_sound(name, side=..., gain_db=..., duration_s=...)`
+- `stop_sound()`
+- `start_sound_calibration(...)`
+- `stop_sound_calibration()`
+- `measure_sound_latency(...)`
+- Canonical cue directories:
+- tracked cues: `box_runtime/audio/sounds/`
+- gitignored raw sources: `box_runtime/audio/local_source_wavs/`
+- gitignored bench cues: `box_runtime/audio/local_sounds/`
+- Canonical cues are mono `48000 Hz` WAV files normalized to a white-noise RMS
+  reference during import.
+- Runtime playback is stereo `48000 Hz` signed 16-bit PCM, with side routing
+  (`left`, `right`, `both`), duration override, looping, early stop, and
+  deferred significant-clipping warnings.
 
 ## Commands
 - `cd /Users/lukesjulson/codex/RPi4_refactor/targets/RPi4_behavior_boxes_hardware`

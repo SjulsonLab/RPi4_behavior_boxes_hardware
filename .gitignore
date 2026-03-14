@@ -215,6 +215,8 @@ irig_decoding/data/
 temp/
 tmp_task_runs/
 sample_tasks/
+box_runtime/audio/local_source_wavs/
+box_runtime/audio/local_sounds/
 *.asv
 *.m~
 *.mex*
