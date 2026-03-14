@@ -300,71 +300,71 @@ def test_manual_and_monitor_pages_expose_expected_controls():
     assert "Manual Start" not in monitor_html
 
 
-def test_behavbox_video_methods_use_camera_client(monkeypatch):
+def test_behavbox_video_methods_delegate_to_local_camera_runtime(monkeypatch):
     calls = []
     original_cwd = os.getcwd()
 
-    class FakeCameraClient:
-        def __init__(self, host, port=8000, remote_storage_subdir="behvideos"):
-            calls.append(("init", host, port, remote_storage_subdir))
+    class FakeCameraManager:
+        def __init__(self, session_info, *, state_callback=None, recorder_factory=None, preview_sink_factory=None):
+            calls.append(("init", tuple(session_info.get("camera_ids", ["camera0"]))))
 
-        def start_recording(self, **payload):
-            calls.append(("start", payload))
+        def prepare(self):
+            calls.append(("prepare", None))
 
-        def stop_recording(self, owner="automated"):
-            calls.append(("stop", owner))
+        def start_recording(self, camera_id="camera0", owner="automated"):
+            calls.append(("start_recording", camera_id, owner))
 
-        def offload_session(self, session_id, destination_root):
-            calls.append(("offload", session_id, destination_root))
+        def stop_recording(self, camera_id="camera0"):
+            calls.append(("stop_recording", camera_id))
 
-    monkeypatch.setattr("box_runtime.behavior.behavbox.CameraClient", FakeCameraClient)
+        def close(self):
+            calls.append(("close", None))
+
+    monkeypatch.setattr("box_runtime.behavior.behavbox.CameraManager", FakeCameraManager)
 
     with tempfile.TemporaryDirectory() as tmp:
         try:
             info = _session_info(tmp)
+            info["camera_enabled"] = True
+            info["camera_ids"] = ["camera0"]
             box = BehavBox(info)
             box.prepare_session()
             box.video_start()
             box.video_stop()
+            box.close()
         finally:
             os.chdir(original_cwd)
 
-    assert ("init", "127.0.0.1", 8000, "behvideos") in calls
-    assert any(item[0] == "start" for item in calls)
-    assert ("offload", "test_session", f"{tmp}/") in calls
+    assert ("init", ("camera0",)) in calls
+    assert ("prepare", None) in calls
+    assert ("start_recording", "camera0", "automated") in calls
+    assert ("stop_recording", "camera0") in calls
 
 
-def test_behavbox_respects_camera_host_override(monkeypatch):
-    calls = []
-    original_cwd = os.getcwd()
+def test_behavbox_camera_ids_allow_future_second_camera(monkeypatch):
+    observed = {}
 
-    class FakeCameraClient:
-        def __init__(self, host, port=8000, remote_storage_subdir="behvideos"):
-            calls.append(("init", host, port, remote_storage_subdir))
+    class FakeCameraManager:
+        def __init__(self, session_info, *, state_callback=None, recorder_factory=None, preview_sink_factory=None):
+            observed["camera_ids"] = tuple(session_info.get("camera_ids", []))
 
-        def start_recording(self, **payload):
-            calls.append(("start", payload))
+        def prepare(self):
+            return None
 
-        def stop_recording(self, owner="automated"):
-            calls.append(("stop", owner))
+        def close(self):
+            return None
 
-        def offload_session(self, session_id, destination_root):
-            calls.append(("offload", session_id, destination_root))
-
-    monkeypatch.setattr("box_runtime.behavior.behavbox.CameraClient", FakeCameraClient)
+    monkeypatch.setattr("box_runtime.behavior.behavbox.CameraManager", FakeCameraManager)
 
     with tempfile.TemporaryDirectory() as tmp:
-        try:
-            info = _session_info(tmp)
-            info["camera_host"] = "10.0.0.99"
-            box = BehavBox(info)
-            box.prepare_session()
-            box.video_start()
-            box.video_stop()
-        finally:
-            os.chdir(original_cwd)
+        info = _session_info(tmp)
+        info["camera_enabled"] = True
+        info["camera_ids"] = ["camera0", "camera1"]
+        box = BehavBox(info)
+        box.prepare_session()
+        box.close()
 
-    assert ("init", "10.0.0.99", 8000, "behvideos") in calls
+    assert observed["camera_ids"] == ("camera0", "camera1")
 
 
 def test_camera_client_offload_session_creates_single_session_directory(monkeypatch):
