@@ -222,7 +222,7 @@ def test_camera_manager_missing_hardware_fails_cleanly() -> None:
             manager.prepare()
 
 
-def test_behavbox_validate_media_config_rejects_visual_preview_connector_conflict() -> None:
+def test_behavbox_validate_media_config_rejects_preview_connector_other_than_hdmi_a_1() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         box = BehavBox(
             _session_info(
@@ -234,7 +234,7 @@ def test_behavbox_validate_media_config_rejects_visual_preview_connector_conflic
             )
         )
 
-        with pytest.raises(ValueError, match="HDMI-A-2"):
+        with pytest.raises(ValueError, match="HDMI-A-1"):
             box.validate_media_config()
 
 

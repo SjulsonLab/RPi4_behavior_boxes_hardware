@@ -67,10 +67,11 @@ class _FrameWriter:
 
 
 class Picamera2Recorder:
-    """Real camera recorder used by the HTTP service on Raspberry Pi.
+    """Real camera recorder used by the local and HTTP camera runtimes.
 
     Data contracts:
     - storage_root: directory containing session subdirectories
+    - camera_num: zero-based camera index accepted by Picamera2
     - session_state.json: records state, owner, fps, bitrate_bps, and attempt count
     - raw attempt files: H.264 elementary stream + append-only frame TSV
     """
@@ -78,11 +79,13 @@ class Picamera2Recorder:
     DEFAULT_BITRATE_BPS = 8_000_000
     DEFAULT_FPS = 30.0
 
-    def __init__(self, storage_root: Path):
+    def __init__(self, storage_root: Path, *, camera_num: int = 0, camera_id: str | None = None):
         if Picamera2 is None:
             raise RuntimeError("Picamera2 runtime is unavailable on this host")
         self.storage_root = Path(storage_root)
         self.storage_root.mkdir(parents=True, exist_ok=True)
+        self.camera_num = int(camera_num)
+        self.camera_id = camera_id or f"camera{self.camera_num}"
         self.lock = threading.RLock()
         self.current_session_dir: Path | None = None
         self.current_owner: str | None = None
@@ -94,7 +97,7 @@ class Picamera2Recorder:
         self._recording_encoder = None
         self._stream_output = _StreamingOutput()
 
-        self.picam2 = Picamera2()
+        self.picam2 = Picamera2(camera_num=self.camera_num)
         self._configure_preview_pipeline()
 
     def _configure_preview_pipeline(self) -> None:
@@ -240,9 +243,28 @@ class Picamera2Recorder:
     def current_config(self) -> dict[str, Any]:
         config = self.picam2.camera_configuration()
         return {
+            "camera_id": self.camera_id,
+            "camera_num": self.camera_num,
             "main_size": tuple(config["main"]["size"]),
             "frame_rate": float(config["controls"]["FrameRate"]),
         }
+
+    def close(self) -> None:
+        """Close the underlying Picamera2 device and preview encoder."""
+
+        with self.lock:
+            try:
+                self.stop()
+            except Exception:
+                pass
+            try:
+                self.picam2.stop_encoder(self._preview_encoder)
+            except Exception:
+                pass
+            try:
+                self.picam2.stop()
+            except Exception:
+                pass
 
     def configure(self, mode: dict[str, Any]) -> None:
         with self.lock:

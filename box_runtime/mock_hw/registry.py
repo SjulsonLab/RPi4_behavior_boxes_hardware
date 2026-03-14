@@ -39,6 +39,7 @@ class PinRegistry:
                 "current_cue_name": None,
                 "last_cue_name": None,
             },
+            "camera": {},
         }
 
     def reset(self) -> None:
@@ -75,6 +76,7 @@ class PinRegistry:
                     "current_cue_name": None,
                     "last_cue_name": None,
                 },
+                "camera": {},
             }
 
     def register_device(
@@ -325,3 +327,7 @@ def set_task_state(source: str = "code", **values) -> None:
 
 def set_audio_state(source: str = "code", **values) -> None:
     REGISTRY.set_runtime_state("audio", source=source, **values)
+
+
+def set_camera_state(source: str = "code", **values) -> None:
+    REGISTRY.set_runtime_state("camera", source=source, **values)

@@ -22,7 +22,6 @@ import json
 from pathlib import Path
 
 import numpy as np
-import scipy.io, pickle
 
 import logging
 from colorama import Fore, Style
@@ -31,6 +30,7 @@ from typing import Callable, Optional
 from box_runtime.behavior.gpio_backend import (
     is_raspberry_pi,
     set_audio_state,
+    set_camera_state,
     set_session_state,
     set_task_state,
     set_visual_stim_state,
@@ -41,7 +41,8 @@ from box_runtime.io_manifest import load_box_profile
 from box_runtime.io_recording import SharedIoRecorder
 from box_runtime.input import InputService
 from box_runtime.output import OutputService
-from box_runtime.video_recording.camera_client import CameraClient, CameraClientError
+from box_runtime.video_recording.local_camera_runtime import CameraManager
+from box_runtime.visual_stimuli.visual_runtime.drm_runtime import query_display_config
 
 try:
     from box_runtime.behavior import ADS1x15
@@ -80,6 +81,7 @@ class BehavBox(object):
         session_info,
         *,
         sound_runtime_factory: Optional[Callable[["BehavBox"], SoundRuntime]] = None,
+        camera_manager_factory: Optional[Callable[["BehavBox"], CameraManager]] = None,
         clock: Optional[Callable[[], float]] = None,
     ):
         """Construct one BehavBox appliance wrapper without starting a session.
@@ -89,6 +91,8 @@ class BehavBox(object):
                 are expected under ``dir_name`` and ``external_storage``.
             sound_runtime_factory: Optional factory returning the long-lived
                 ``SoundRuntime`` instance for this box.
+            camera_manager_factory: Optional factory returning the local
+                one-Pi ``CameraManager`` instance for this box.
             clock: Optional zero-argument wall-clock callable returning POSIX
                 seconds as ``float``.
         """
@@ -96,6 +100,7 @@ class BehavBox(object):
         self.session_info = session_info
         self._clock = clock or time.time
         self._sound_runtime_factory = sound_runtime_factory
+        self._camera_manager_factory = camera_manager_factory
         self._lifecycle_state = "created"
         self._session_started_at_s: Optional[float] = None
         self._session_stopped_at_s: Optional[float] = None
@@ -103,7 +108,6 @@ class BehavBox(object):
         self._runtime_events: list[dict[str, object]] = []
         self._logging_configured = False
         self._is_closed = False
-        self._camera_client = None
         self.runtime_status = {
             "session": {
                 "active": False,
@@ -125,6 +129,7 @@ class BehavBox(object):
                 "current_cue_name": None,
                 "last_cue_name": None,
             },
+            "camera": {},
         }
         self.event_list = deque()
         self.interact_list = []
@@ -136,6 +141,7 @@ class BehavBox(object):
         self.output_service = None
         self.io_recorder = None
         self.visualstim = None
+        self.camera_manager = None
         self.ADC = None
         self.keyboard_active = False
         self.main_display = None
@@ -187,8 +193,6 @@ class BehavBox(object):
             except Exception:
                 self.IP_address = "127.0.0.1"
 
-        # Default to the local camera service on the same Pi. Older two-Pi
-        # deployments can still override this explicitly in session_info.
         self.IP_address_video = str(self.session_info.get("camera_host", "127.0.0.1"))
         self.camera_service_port = int(os.environ.get("CAMERA_SERVICE_PORT", "8000"))
 
@@ -235,11 +239,83 @@ class BehavBox(object):
             set_task_state(**values)
         elif section == "audio":
             set_audio_state(**values)
+        elif section == "camera":
+            set_camera_state(**values)
 
     def _handle_audio_runtime_state(self, payload: dict[str, object]) -> None:
         """Receive audio-runtime state updates from the playback layer."""
 
         self.publish_runtime_state("audio", **payload)
+
+    def _handle_camera_runtime_state(self, payload: dict[str, object]) -> None:
+        """Receive per-camera runtime-state updates from the camera manager."""
+
+        self.publish_runtime_state("camera", **payload)
+
+    def _build_camera_manager(self) -> CameraManager | None:
+        """Create the local one-Pi camera manager when camera support is enabled."""
+
+        if not bool(self.session_info.get("camera_enabled", False)):
+            self._handle_camera_runtime_state({})
+            return None
+        if self._camera_manager_factory is not None:
+            return self._camera_manager_factory(self)
+        return CameraManager(
+            self.session_info,
+            state_callback=self._handle_camera_runtime_state,
+        )
+
+    def validate_media_config(self) -> None:
+        """Validate one-Pi visual and local camera preview configuration.
+
+        Raises:
+            ValueError: If the requested display topology is unsupported or
+                connector discovery fails for the visual stimulus display.
+        """
+
+        visual_enabled = bool(self.session_info.get("visual_stimulus", False))
+        visual_connector = str(self.session_info.get("visual_display_connector", "HDMI-A-2")).strip() or "HDMI-A-2"
+        if visual_enabled and visual_connector != "HDMI-A-2":
+            raise ValueError("Visual stimulus must use HDMI-A-2 in the supported one-Pi topology.")
+
+        preview_modes = self.session_info.get(
+            "camera_preview_modes",
+            self.session_info.get("camera_preview_mode", "off"),
+        )
+        camera_ids = self.session_info.get("camera_ids", ["camera0"])
+        if isinstance(camera_ids, str):
+            camera_ids = [camera_ids]
+        preview_camera_ids = []
+        for camera_id in camera_ids:
+            preview_mode = (
+                str(preview_modes.get(camera_id, "off")).strip().lower()
+                if isinstance(preview_modes, dict)
+                else str(preview_modes).strip().lower()
+            )
+            if preview_mode == "drm_local":
+                preview_camera_ids.append(str(camera_id))
+        if len(preview_camera_ids) > 1:
+            raise ValueError("Only one drm_local camera preview is supported in the current one-Pi topology.")
+        if preview_camera_ids:
+            preview_connector = str(self.session_info.get("camera_preview_connector", "HDMI-A-1")).strip() or "HDMI-A-1"
+            if preview_connector != "HDMI-A-1":
+                raise ValueError("Local camera preview must use HDMI-A-1 in the supported one-Pi topology.")
+            if visual_enabled and preview_connector == visual_connector:
+                raise ValueError("Visual stimulus and local camera preview cannot share the same DRM connector.")
+
+        if visual_enabled:
+            visual_backend = str(
+                self.session_info.get(
+                    "visual_display_backend",
+                    self.session_info.get("visual_backend", "drm" if is_raspberry_pi() else "fake"),
+                )
+            ).lower()
+            query_display_config(
+                backend=visual_backend,
+                requested_resolution_px=None,
+                requested_refresh_hz=self.session_info.get("visual_display_refresh_hz"),
+                requested_connector=visual_connector,
+            )
 
     def _prepare_visual_runtime(self) -> None:
         visual_enabled = bool(self.session_info.get("visual_stimulus", False))
@@ -314,35 +390,49 @@ class BehavBox(object):
         """Prepare all long-lived runtime resources for one upcoming session."""
 
         self._require_lifecycle("created")
-        self._configure_logging()
-        self._prepared_session_dir = Path(self.session_info["dir_name"])
-        self.sound_runtime = self._build_sound_runtime()
-        self.io_recorder = SharedIoRecorder(self.session_info)
-        self.output_service = OutputService(self, self.session_info, self.box_manifest, self.io_recorder)
-        self.input_service = InputService(self, self.session_info, self.box_manifest, self.io_recorder)
-        self._prepare_visual_runtime()
-        self._prepare_adc()
-        self._prepare_keyboard()
-        self._runtime_events.append({"name": "session_prepared", "timestamp": self._clock()})
-        self._lifecycle_state = "prepared"
-        self._is_closed = False
-        self.publish_runtime_state(
-            "session",
-            active=False,
-            lifecycle_state="prepared",
-            box_name=self.session_info.get("box_name"),
-        )
+        try:
+            self._configure_logging()
+            self._prepared_session_dir = Path(self.session_info["dir_name"])
+            self.validate_media_config()
+            self.sound_runtime = self._build_sound_runtime()
+            self.io_recorder = SharedIoRecorder(self.session_info)
+            self.output_service = OutputService(self, self.session_info, self.box_manifest, self.io_recorder)
+            self.input_service = InputService(self, self.session_info, self.box_manifest, self.io_recorder)
+            self.camera_manager = self._build_camera_manager()
+            if self.camera_manager is not None:
+                self.camera_manager.prepare()
+            self._prepare_visual_runtime()
+            self._prepare_adc()
+            self._prepare_keyboard()
+            self._runtime_events.append({"name": "session_prepared", "timestamp": self._clock()})
+            self._lifecycle_state = "prepared"
+            self._is_closed = False
+            self.publish_runtime_state(
+                "session",
+                active=False,
+                lifecycle_state="prepared",
+                box_name=self.session_info.get("box_name"),
+            )
+        except Exception:
+            self.close()
+            raise
 
     def start_session(self) -> None:
         """Transition the appliance from prepared to active session state."""
 
         self._require_lifecycle("prepared")
         self.start_task_recording()
-        self._session_started_at_s = self._clock()
-        self._runtime_events.append({"name": "session_started", "timestamp": self._session_started_at_s})
-        self._handle_input_event("session_started", record_interaction=False, log_category="configuration")
-        self._lifecycle_state = "running"
-        self.publish_runtime_state("session", active=True, lifecycle_state="running")
+        try:
+            if self.camera_manager is not None:
+                self.camera_manager.start_session(owner="automated")
+            self._session_started_at_s = self._clock()
+            self._runtime_events.append({"name": "session_started", "timestamp": self._session_started_at_s})
+            self._handle_input_event("session_started", record_interaction=False, log_category="configuration")
+            self._lifecycle_state = "running"
+            self.publish_runtime_state("session", active=True, lifecycle_state="running")
+        except Exception:
+            self.stop_task_recording()
+            raise
 
     def poll_runtime(self) -> list[BehaviorEvent]:
         """Run lightweight non-task-specific runtime work and drain current events."""
@@ -358,6 +448,8 @@ class BehavBox(object):
         """Leave the active session state and stop task-owned recording."""
 
         self._require_lifecycle("running")
+        if self.camera_manager is not None:
+            self.camera_manager.stop_session()
         self.stop_task_recording()
         self.stop_sound()
         self._session_stopped_at_s = self._clock()
@@ -704,6 +796,9 @@ class BehavBox(object):
         if getattr(self, "sound_runtime", None) is not None:
             self.sound_runtime.close()
             self.sound_runtime = None
+        if getattr(self, "camera_manager", None) is not None:
+            self.camera_manager.close()
+            self.camera_manager = None
         if getattr(self, "visualstim", None) is not None and hasattr(self.visualstim, "close"):
             try:
                 self.visualstim.close()
@@ -789,92 +884,49 @@ class BehavBox(object):
                         self.right_exit()
 
     ###############################################################################################
-    # methods to start and stop video
-    # These work with fake video files but haven't been tested with real ones
+    # methods to start and stop local camera recording / preview
     ###############################################################################################
-    def video_start(self):
-        """Start the configured camera session over the HTTP camera service.
+    def start_camera_recording(self, camera_id: str = "camera0") -> None:
+        """Start one local camera recording by semantic camera identifier.
 
-        Returns:
-            None.
+        Args:
+            camera_id: Camera identifier string such as ``"camera0"``.
         """
 
-        if CameraClient is None:
-            raise RuntimeError("CameraClient is unavailable; camera HTTP control cannot start")
-        IP_address_video = self.IP_address_video
-        basename = self.session_info['basename']
-        base_dir = self.session_info['external_storage'] + '/'
-        hd_dir = base_dir + basename
-        os.mkdir(hd_dir)
+        if self.camera_manager is None:
+            raise RuntimeError("Camera runtime is unavailable before prepare_session().")
+        self.camera_manager.start_recording(camera_id=camera_id, owner="automated")
 
-        print(Fore.YELLOW + "Starting camera session via HTTP service.\n" + Style.RESET_ALL)
-        task_recording_started = False
-        try:
-            self.start_task_recording()
-            task_recording_started = True
-            client = CameraClient(IP_address_video, port=self.camera_service_port)
+    def stop_camera_recording(self, camera_id: str = "camera0") -> None:
+        """Stop one local camera recording by semantic camera identifier."""
 
-            print(Fore.GREEN + "\nStart Recording!" + Style.RESET_ALL)
-            client.start_recording(
-                session_id=basename,
-                owner="automated",
-                duration_s=0,
-            )
-            self._camera_client = client
+        if self.camera_manager is None:
+            raise RuntimeError("Camera runtime is unavailable before prepare_session().")
+        self.camera_manager.stop_recording(camera_id=camera_id)
 
-            # start initiating the dumping of the session information when available
-            scipy.io.savemat(hd_dir + "/" + basename + '_session_info.mat', {'session_info': self.session_info})
-            print("dumping session_info")
-            pickle.dump(self.session_info, open(hd_dir + "/" + basename + '_session_info.pkl', "wb"))
+    def start_camera_preview(self, camera_id: str = "camera0") -> None:
+        """Start one local camera preview by semantic camera identifier."""
 
-        except CameraClientError as e:
-            if task_recording_started:
-                self.stop_task_recording()
-            print(e)
-            raise
-        except Exception as e:
-            if task_recording_started:
-                self.stop_task_recording()
-            print(e)
+        if self.camera_manager is None:
+            raise RuntimeError("Camera runtime is unavailable before prepare_session().")
+        self.camera_manager.start_preview(camera_id=camera_id)
+
+    def stop_camera_preview(self, camera_id: str = "camera0") -> None:
+        """Stop one local camera preview by semantic camera identifier."""
+
+        if self.camera_manager is None:
+            raise RuntimeError("Camera runtime is unavailable before prepare_session().")
+        self.camera_manager.stop_preview(camera_id=camera_id)
+
+    def video_start(self):
+        """Compatibility wrapper that starts the default local camera recording."""
+
+        self.start_camera_recording("camera0")
 
     def video_stop(self):
-        """Stop the current camera session and offload it to external storage.
+        """Compatibility wrapper that stops the default local camera recording."""
 
-        Returns:
-            None.
-        """
-
-        # Get the basename from the session information
-        basename = self.session_info['basename']
-        # Get the ip address for the box video:
-        IP_address_video = self.IP_address_video
-        try:
-            client = getattr(self, "_camera_client", None)
-            if client is None:
-                client = CameraClient(IP_address_video, port=self.camera_service_port)
-            client.stop_recording(owner="automated")
-            time.sleep(1)
-            time.sleep(2)
-            hostname = socket.gethostname()
-            print("Moving video files from " + hostname + "video to " + hostname + ":")
-
-            # Create a directory for storage on the hard drive mounted on the box behavior
-            base_dir = self.session_info['external_storage'] + '/'
-            hd_dir = base_dir + basename
-
-            scipy.io.savemat(hd_dir + "/" + basename + '_session_info.mat', {'session_info': self.session_info})
-            print("dumping session_info")
-            pickle.dump(self.session_info, open(hd_dir + "/" + basename + '_session_info.pkl', "wb"))
-
-            client.offload_session(basename, base_dir)
-            print("camera session offload finished!")
-        except CameraClientError as e:
-            print(e)
-            raise
-        except Exception as e:
-            print(e)
-        finally:
-            self.stop_task_recording()
+        self.stop_camera_recording("camera0")
 
     def start_recording(self) -> str:
         """Start standalone input recording under user ownership.

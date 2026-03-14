@@ -9,6 +9,7 @@ from pathlib import Path
 import time
 from typing import Any
 
+from box_runtime.behavior.gpio_backend import is_raspberry_pi
 from box_runtime.visual_stimuli.visual_runtime import (
     VisualStimRuntime,
     compile_grating,
@@ -56,7 +57,8 @@ class VisualStim:
     Args:
         session_info: Mapping containing at least ``vis_gratings`` and
             ``gray_level``. ``vis_gratings`` is a list of YAML spec file paths.
-            Optional keys are ``visual_backend``, ``visual_display_resolution_px``,
+            Optional keys are ``visual_display_backend`` (preferred legacy
+            fallback: ``visual_backend``), ``visual_display_resolution_px``,
             ``visual_display_refresh_hz``, ``visual_display_degrees_subtended``,
             and ``visual_display_connector``.
 
@@ -71,14 +73,20 @@ class VisualStim:
         self._compiled_stimuli: dict[str, Any] = {}
         self._alias_map: dict[str, str] = {}
 
-        backend_name = str(session_info.get("visual_backend", "drm")).lower()
+        default_backend = "drm" if is_raspberry_pi() else "fake"
+        backend_name = str(
+            session_info.get(
+                "visual_display_backend",
+                session_info.get("visual_backend", default_backend),
+            )
+        ).lower()
         requested_resolution = _normalize_resolution(session_info.get("visual_display_resolution_px"))
         requested_refresh_hz = _normalize_positive_float(
             session_info.get("visual_display_refresh_hz"),
             default=None,
         )
         requested_connector = _normalize_connector_name(
-            session_info.get("visual_display_connector", os.environ.get("VISUAL_STIM_CONNECTOR", "HDMI-A-1"))
+            session_info.get("visual_display_connector", os.environ.get("VISUAL_STIM_CONNECTOR", "HDMI-A-2"))
         )
         self._default_degrees_subtended = _normalize_positive_float(
             session_info.get("visual_display_degrees_subtended"),
