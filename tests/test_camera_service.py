@@ -150,6 +150,13 @@ def test_finalize_clean_session_emits_single_mp4_and_tsv():
 
         assert (session_dir / "session.mp4").exists()
         assert (session_dir / "session.tsv").exists()
+        session_tsv_lines = (session_dir / "session.tsv").read_text(encoding="utf-8").splitlines()
+        assert session_tsv_lines[0] == "frame_index\tutc_s"
+        assert session_tsv_lines[1:] == [
+            "0\t1700000000.000",
+            "1\t1700000000.000",
+            "2\t1700000000.000",
+        ]
         manifest = load_manifest(session_dir / "session_manifest.json")
         assert manifest["clean_session"] is True
         assert manifest["attempt_count"] == 1
@@ -182,6 +189,18 @@ def test_finalize_crashed_session_emits_attempt_outputs_and_gap_manifest():
         assert (session_dir / "attempt_001.tsv").exists()
         assert (session_dir / "attempt_002.mp4").exists()
         assert (session_dir / "attempt_002.tsv").exists()
+        attempt_001_lines = (session_dir / "attempt_001.tsv").read_text(encoding="utf-8").splitlines()
+        attempt_002_lines = (session_dir / "attempt_002.tsv").read_text(encoding="utf-8").splitlines()
+        assert attempt_001_lines == [
+            "frame_index\tutc_s",
+            "0\t0.000",
+            "1\t0.000",
+        ]
+        assert attempt_002_lines == [
+            "frame_index\tutc_s",
+            "0\t0.004",
+            "1\t0.004",
+        ]
         assert not (session_dir / "session.mp4").exists()
         manifest = load_manifest(session_dir / "session_manifest.json")
         assert manifest["clean_session"] is False
