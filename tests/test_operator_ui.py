@@ -339,8 +339,9 @@ def test_operator_routes_and_page_contract(tmp_path: Path) -> None:
     controller = _FakeOperatorController()
 
     with _temporary_server(controller) as base_url:
-        debug_html = _json_request(f"{base_url}/")
-        operator_html = _json_request(f"{base_url}/operator")
+        operator_html = _json_request(f"{base_url}/")
+        debug_html = _json_request(f"{base_url}/debug")
+        operator_css = _json_request(f"{base_url}/operator.css")
         operator_state = _json_request(f"{base_url}/api/operator/state")
         armed = _json_request(
             f"{base_url}/api/operator/arm",
@@ -350,17 +351,28 @@ def test_operator_routes_and_page_contract(tmp_path: Path) -> None:
         started = _json_request(f"{base_url}/api/operator/start", method="POST", payload={})
         stopped = _json_request(f"{base_url}/api/operator/stop", method="POST")
 
-    assert "BehavBox Mock Hardware" in debug_html
-    assert 'href="/operator"' in debug_html
     assert "BehavBox Operator Console" in operator_html
-    assert 'href="/"' in operator_html
+    assert 'href="/debug"' in operator_html
     assert "Arm Session" in operator_html
     assert "Start Task" in operator_html
     assert "Stop Session" in operator_html
     assert "Fake mouse" in operator_html
     assert "performance-plot" in operator_html
+    assert 'class="plot-shell"' in operator_html
+    assert 'class="panel state-panel"' in operator_html
+    assert 'class="state-block state-log"' in operator_html
     assert "camera-slot" in operator_html
     assert "button data-label=" not in operator_html
+    assert ".plot-shell" in operator_css
+    assert "height: 320px;" in operator_css
+    assert ".state-log" in operator_css
+    assert "max-height: 240px;" in operator_css
+    assert "overflow-y: auto;" in operator_css
+    assert operator_html.index("Session Control") < operator_html.index("Camera Views")
+    assert operator_html.index("Camera Views") < operator_html.index("Runtime Summary")
+    assert operator_html.index("Event Summary") < operator_html.index("Operator State")
+    assert "BehavBox Mock Hardware" in debug_html
+    assert 'href="/"' in debug_html
     assert operator_state["status"] == "idle"
     assert armed["status"] == "armed"
     assert armed["fake_mouse"]["enabled"] is True

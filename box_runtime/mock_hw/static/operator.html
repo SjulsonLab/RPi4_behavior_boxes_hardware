@@ -14,8 +14,8 @@
       <p id="operator-status-line" class="subtitle">Connecting to runtime...</p>
     </div>
     <nav class="topnav">
-      <a href="/">Debug hardware page</a>
-      <a href="/operator" aria-current="page">Operator console</a>
+      <a href="/debug">Debug hardware page</a>
+      <a href="/" aria-current="page">Operator console</a>
     </nav>
   </header>
 
@@ -52,7 +52,17 @@
           <button id="stop-session" type="button" class="secondary">Stop Session</button>
         </div>
       </form>
-      <pre id="operator-run-state" class="state-block"></pre>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Camera Views</h2>
+        <p class="hint">Per-camera preview panels can be shown or hidden independently.</p>
+      </div>
+      <div id="camera-grid" class="camera-grid">
+        <article class="camera-slot" data-camera-id="camera0"></article>
+        <article class="camera-slot" data-camera-id="camera1"></article>
+      </div>
     </section>
 
     <section class="panel">
@@ -71,17 +81,8 @@
       <div class="panel-header">
         <h2>Performance</h2>
       </div>
-      <canvas id="performance-plot" width="800" height="280"></canvas>
-    </section>
-
-    <section class="panel">
-      <div class="panel-header">
-        <h2>Camera Views</h2>
-        <p class="hint">Per-camera preview panels can be shown or hidden independently.</p>
-      </div>
-      <div id="camera-grid" class="camera-grid">
-        <article class="camera-slot" data-camera-id="camera0"></article>
-        <article class="camera-slot" data-camera-id="camera1"></article>
+      <div class="plot-shell">
+        <canvas id="performance-plot"></canvas>
       </div>
     </section>
 
@@ -101,6 +102,14 @@
         </thead>
         <tbody id="event-log"></tbody>
       </table>
+    </section>
+
+    <section class="panel state-panel">
+      <div class="panel-header">
+        <h2>Operator State</h2>
+        <p class="hint">Live controller state for debugging and inspection.</p>
+      </div>
+      <pre id="operator-run-state" class="state-block state-log"></pre>
     </section>
   </main>
 

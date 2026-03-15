@@ -93,12 +93,18 @@ def make_handler(registry, static_dir: str, operator_controller=None):
                 self._send_json(registry.get_events(limit=limit))
                 return
 
+            if parsed.path == "/debug":
+                self._send_static("/index.html")
+                return
+
             if parsed.path == "/operator":
-                self._send_static("/operator.html")
+                self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+                self.send_header("Location", "/")
+                self.end_headers()
                 return
 
             if parsed.path == "/":
-                self._send_static("/index.html")
+                self._send_static("/operator.html")
                 return
 
             if os.path.splitext(parsed.path)[1] in CONTENT_TYPES:
