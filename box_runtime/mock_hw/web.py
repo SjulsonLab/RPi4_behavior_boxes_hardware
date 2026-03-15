@@ -109,7 +109,7 @@ def make_handler(registry, static_dir: str, operator_controller=None):
 
         def do_POST(self):
             parsed = urlparse(self.path)
-            if parsed.path == "/api/operator/start":
+            if parsed.path == "/api/operator/arm":
                 if operator_controller is None:
                     self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
                     return
@@ -118,19 +118,33 @@ def make_handler(registry, static_dir: str, operator_controller=None):
                     session_tag = str(body.get("session_tag", "")).strip()
                     max_trials = int(body.get("max_trials"))
                     max_duration_s = float(body.get("max_duration_s"))
+                    fake_mouse_enabled = bool(body.get("fake_mouse_enabled", False))
+                    fake_mouse_seed = body.get("fake_mouse_seed")
                 except (TypeError, ValueError):
                     self._send_json({"error": "session_tag, max_trials, and max_duration_s are required"}, status=HTTPStatus.BAD_REQUEST)
                     return
                 try:
                     self._send_json(
-                        operator_controller.start_run(
+                        operator_controller.arm_run(
                             session_tag=session_tag,
                             max_trials=max_trials,
                             max_duration_s=max_duration_s,
+                            fake_mouse_enabled=fake_mouse_enabled,
+                            fake_mouse_seed=fake_mouse_seed,
                         )
                     )
                 except ValueError as exc:
                     self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                except RuntimeError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+                return
+
+            if parsed.path == "/api/operator/start":
+                if operator_controller is None:
+                    self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                try:
+                    self._send_json(operator_controller.start_run())
                 except RuntimeError as exc:
                     self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
                 return

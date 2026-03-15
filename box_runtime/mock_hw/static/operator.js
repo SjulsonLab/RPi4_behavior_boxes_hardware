@@ -1,14 +1,17 @@
 const operatorStatusLine = document.getElementById('operator-status-line');
 const runStatusPill = document.getElementById('run-status-pill');
 const operatorRunState = document.getElementById('operator-run-state');
+const performancePlotEl = document.getElementById('performance-plot');
 const sessionStatusEl = document.getElementById('session-status');
 const taskStatusEl = document.getElementById('task-status');
 const audioStatusEl = document.getElementById('audio-status');
 const visualStatusEl = document.getElementById('visual-status');
 const eventLogEl = document.getElementById('event-log');
 const cameraGridEl = document.getElementById('camera-grid');
-const startForm = document.getElementById('start-form');
+const armForm = document.getElementById('arm-form');
+const startTaskButton = document.getElementById('start-task');
 const stopButton = document.getElementById('stop-session');
+let performanceChart = null;
 
 const previewVisibility = {
   camera0: true,
@@ -39,6 +42,12 @@ function setRunState(state) {
   runStatusPill.className = `status-pill ${statusClass(state.status)}`;
   runStatusPill.textContent = state.status;
   operatorRunState.textContent = JSON.stringify(state, null, 2);
+  const armDisabled = !['idle', 'completed', 'error'].includes(state.status);
+  const startDisabled = state.status !== 'armed';
+  const stopDisabled = !['armed', 'starting', 'running', 'stopping'].includes(state.status);
+  document.getElementById('arm-session').disabled = armDisabled;
+  startTaskButton.disabled = startDisabled;
+  stopButton.disabled = stopDisabled;
 }
 
 function renderCard(el, title, active, lines) {
@@ -88,6 +97,79 @@ function renderRuntime(state) {
   ]);
 
   renderCameras(runtime.camera || {});
+  renderPlot(runtime.plot || { trial_outcomes: [], rates: {}, counts: {} });
+}
+
+function renderPlot(plotState) {
+  const outcomes = Array.isArray(plotState.trial_outcomes) ? plotState.trial_outcomes : [];
+  const labels = outcomes.map((entry) => `T${(entry.trial_index ?? 0) + 1}`);
+  const outcomeValues = outcomes.map((entry) => {
+    if (entry.outcome === 'hit') return 1;
+    if (entry.outcome === 'correct_reject') return 0.75;
+    if (entry.outcome === 'miss') return 0.25;
+    if (entry.outcome === 'false_alarm') return 0;
+    return null;
+  });
+  const hitRate = plotState.rates?.hit_rate;
+  const falseAlarmRate = plotState.rates?.false_alarm_rate;
+  const rateLabels = labels.length > 0 ? labels : ['No trials yet'];
+  const hitLine = rateLabels.map(() => hitRate);
+  const faLine = rateLabels.map(() => falseAlarmRate);
+
+  if (typeof Chart === 'undefined') {
+    const ctx = performancePlotEl.getContext('2d');
+    ctx.clearRect(0, 0, performancePlotEl.width, performancePlotEl.height);
+    ctx.font = '16px IBM Plex Sans';
+    ctx.fillText('Chart library unavailable', 24, 40);
+    return;
+  }
+
+  if (performanceChart === null) {
+    performanceChart = new Chart(performancePlotEl, {
+      type: 'line',
+      data: {
+        labels: rateLabels,
+        datasets: [
+          {
+            label: 'Outcome timeline',
+            data: outcomeValues.length > 0 ? outcomeValues : [null],
+            borderColor: '#8a4b14',
+            backgroundColor: 'rgba(138, 75, 20, 0.12)',
+            tension: 0.25,
+          },
+          {
+            label: 'Hit rate',
+            data: hitLine,
+            borderColor: '#0f7a43',
+            tension: 0.2,
+          },
+          {
+            label: 'False-alarm rate',
+            data: faLine,
+            borderColor: '#9a3412',
+            tension: 0.2,
+          },
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        scales: {
+          y: {
+            min: 0,
+            max: 1,
+          },
+        },
+      },
+    });
+    return;
+  }
+
+  performanceChart.data.labels = rateLabels;
+  performanceChart.data.datasets[0].data = outcomeValues.length > 0 ? outcomeValues : [null];
+  performanceChart.data.datasets[1].data = hitLine;
+  performanceChart.data.datasets[2].data = faLine;
+  performanceChart.update('none');
 }
 
 function previewMarkup(cameraId, camera) {
@@ -225,15 +307,27 @@ async function refresh() {
   }
 }
 
-startForm.addEventListener('submit', async (event) => {
+armForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   const payload = {
     session_tag: document.getElementById('session-tag').value.trim(),
     max_trials: Number.parseInt(document.getElementById('max-trials').value, 10),
     max_duration_s: Number.parseFloat(document.getElementById('max-duration-s').value),
+    fake_mouse_enabled: document.getElementById('fake-mouse-enabled').checked,
+    fake_mouse_seed: Number.parseInt(document.getElementById('fake-mouse-seed').value, 10),
   };
   try {
-    const state = await postJson('/api/operator/start', payload);
+    const state = await postJson('/api/operator/arm', payload);
+    setRunState(state);
+    await refresh();
+  } catch (err) {
+    operatorStatusLine.textContent = `Arm failed: ${err.message}`;
+  }
+});
+
+startTaskButton.addEventListener('click', async () => {
+  try {
+    const state = await postJson('/api/operator/start', {});
     setRunState(state);
     await refresh();
   } catch (err) {

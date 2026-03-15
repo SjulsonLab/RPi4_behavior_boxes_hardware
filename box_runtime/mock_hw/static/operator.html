@@ -25,7 +25,7 @@
         <h2>Session Control</h2>
         <span id="run-status-pill" class="status-pill off">idle</span>
       </div>
-      <form id="start-form" class="launch-form">
+      <form id="arm-form" class="launch-form">
         <label>
           Session tag
           <input id="session-tag" name="session_tag" value="operator_session" autocomplete="off">
@@ -38,8 +38,17 @@
           Max duration (s)
           <input id="max-duration-s" name="max_duration_s" type="number" min="1" step="1" value="600">
         </label>
+        <label class="checkbox-row">
+          Fake mouse
+          <input id="fake-mouse-enabled" name="fake_mouse_enabled" type="checkbox">
+        </label>
+        <label>
+          Fake mouse seed
+          <input id="fake-mouse-seed" name="fake_mouse_seed" type="number" step="1" value="0">
+        </label>
         <div class="launch-actions">
-          <button id="start-session" type="submit">Start Session</button>
+          <button id="arm-session" type="submit">Arm Session</button>
+          <button id="start-task" type="button" class="secondary">Start Task</button>
           <button id="stop-session" type="button" class="secondary">Stop Session</button>
         </div>
       </form>
@@ -56,6 +65,13 @@
         <article id="audio-status" class="card"></article>
         <article id="visual-status" class="card"></article>
       </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Performance</h2>
+      </div>
+      <canvas id="performance-plot" width="800" height="280"></canvas>
     </section>
 
     <section class="panel">
@@ -88,6 +104,7 @@
     </section>
   </main>
 
+  <script src="/vendor/chart.umd.min.js"></script>
   <script src="/operator.js"></script>
 </body>
 </html>

@@ -63,17 +63,37 @@ class _FakeBox:
 
 
 class _BlockingRunner:
-    """Runner double that stays alive until stop is requested."""
+    """Runner double that stays armed until start, then runs until stopped."""
 
     instances = []
 
-    def __init__(self, box, task, task_config=None):
+    def __init__(self, box, task, task_config=None, step_hooks=None):
         self.box = box
         self.task = task
         self.task_config = {} if task_config is None else dict(task_config)
+        self.step_hooks = [] if step_hooks is None else list(step_hooks)
         self.stop_calls = []
         self.stop_event = threading.Event()
+        self.prepare_calls = 0
+        self.start_calls = 0
+        self.finalize_calls = 0
+        self.started = False
         _BlockingRunner.instances.append(self)
+
+    def prepare(self):
+        self.prepare_calls += 1
+        return {"phase": "armed"}
+
+    def start(self):
+        self.start_calls += 1
+        self.started = True
+
+    def step(self):
+        return not self.stop_event.is_set()
+
+    def finalize(self):
+        self.finalize_calls += 1
+        return {"status": "completed", "stop_calls": list(self.stop_calls)}
 
     def run(self):
         self.stop_event.wait(timeout=2)
@@ -89,14 +109,29 @@ class _InstantRunner:
 
     instances = []
 
-    def __init__(self, box, task, task_config=None):
+    def __init__(self, box, task, task_config=None, step_hooks=None):
         self.box = box
         self.task = task
         self.task_config = {} if task_config is None else dict(task_config)
+        self.step_hooks = [] if step_hooks is None else list(step_hooks)
         self.stop_calls = []
+        self.prepare_calls = 0
+        self.start_calls = 0
+        self.finalize_calls = 0
         _InstantRunner.instances.append(self)
 
-    def run(self):
+    def prepare(self):
+        self.prepare_calls += 1
+        return {"phase": "armed"}
+
+    def start(self):
+        self.start_calls += 1
+
+    def step(self):
+        return False
+
+    def finalize(self):
+        self.finalize_calls += 1
         return {"status": "completed"}
 
     def stop(self, reason: str = "manual") -> None:
@@ -128,38 +163,58 @@ def test_operator_controller_is_idle_before_launch(tmp_path: Path) -> None:
 
     assert state["status"] == "idle"
     assert state["run_active"] is False
+    assert state["run_armed"] is False
     assert state["session_tag"] is None
     assert state["output_root"] == str(tmp_path / "operator_runs")
 
 
-def test_operator_controller_start_uses_dedicated_output_root_and_rejects_concurrent_start(tmp_path: Path) -> None:
+def test_operator_controller_arm_prepares_without_starting_and_rejects_concurrent_arm(tmp_path: Path) -> None:
     _BlockingRunner.instances.clear()
     controller = _build_controller(tmp_path, _BlockingRunner)
 
-    started = controller.start_run(
+    armed = controller.arm_run(
         session_tag="bench_run_a",
         max_trials=7,
         max_duration_s=90.0,
+        fake_mouse_enabled=True,
+        fake_mouse_seed=17,
     )
 
-    assert started["status"] in {"starting", "running"}
+    assert armed["status"] == "armed"
+    assert armed["run_armed"] is True
+    assert armed["run_active"] is False
+    assert armed["fake_mouse"]["enabled"] is True
+    assert armed["fake_mouse"]["seed"] == 17
     runner = _BlockingRunner.instances[-1]
+    assert runner.prepare_calls == 1
+    assert runner.start_calls == 0
     assert Path(runner.box.session_info["external_storage"]) == tmp_path / "operator_runs"
     assert Path(runner.box.session_info["dir_name"]).parent == tmp_path / "operator_runs"
-    assert runner.task_config == {"max_trials": 7, "max_duration_s": 90.0}
+    assert runner.task_config["max_trials"] == 7
+    assert runner.task_config["max_duration_s"] == 90.0
+    assert runner.task_config["fake_mouse_enabled"] is True
+    assert runner.task_config["fake_mouse_seed"] == 17
 
     with pytest.raises(RuntimeError, match="already active"):
-        controller.start_run(session_tag="bench_run_b", max_trials=5, max_duration_s=60.0)
+        controller.arm_run(session_tag="bench_run_b", max_trials=5, max_duration_s=60.0)
 
     controller.stop_run()
     _wait_for_status(controller, "completed")
 
 
-def test_operator_controller_stop_requests_graceful_runner_stop(tmp_path: Path) -> None:
+def test_operator_controller_start_from_armed_transitions_to_running(tmp_path: Path) -> None:
     _BlockingRunner.instances.clear()
     controller = _build_controller(tmp_path, _BlockingRunner)
-    controller.start_run(session_tag="bench_run_stop", max_trials=4, max_duration_s=30.0)
+    controller.arm_run(session_tag="bench_run_stop", max_trials=4, max_duration_s=30.0)
     runner = _BlockingRunner.instances[-1]
+
+    started = controller.start_run()
+
+    assert started["status"] in {"starting", "running"}
+    deadline = time.time() + 1.0
+    while time.time() < deadline and runner.start_calls == 0:
+        time.sleep(0.01)
+    assert runner.start_calls == 1
 
     stopping = controller.stop_run()
 
@@ -169,14 +224,30 @@ def test_operator_controller_stop_requests_graceful_runner_stop(tmp_path: Path) 
     assert completed["stop_reason"] == "operator_stop"
 
 
+def test_operator_controller_stop_from_armed_tears_down_without_task_start(tmp_path: Path) -> None:
+    _BlockingRunner.instances.clear()
+    controller = _build_controller(tmp_path, _BlockingRunner)
+    controller.arm_run(session_tag="bench_run_cancel", max_trials=3, max_duration_s=20.0)
+    runner = _BlockingRunner.instances[-1]
+
+    completed = controller.stop_run()
+
+    assert completed["status"] == "completed"
+    assert runner.start_calls == 0
+    assert runner.finalize_calls == 0
+    assert completed["stop_reason"] == "operator_stop"
+
+
 def test_operator_controller_state_transitions_include_completed(tmp_path: Path) -> None:
     _InstantRunner.instances.clear()
     controller = _build_controller(tmp_path, _InstantRunner)
 
-    controller.start_run(session_tag="bench_run_finish", max_trials=3, max_duration_s=20.0)
+    controller.arm_run(session_tag="bench_run_finish", max_trials=3, max_duration_s=20.0)
+    controller.start_run()
     completed = _wait_for_status(controller, "completed")
 
     assert completed["run_active"] is False
+    assert completed["run_armed"] is False
     assert completed["final_task_state"] == {"status": "completed"}
     assert completed["error_message"] is None
 
@@ -188,6 +259,7 @@ class _FakeOperatorController:
         self._state = {
             "status": "idle",
             "run_active": False,
+            "run_armed": False,
             "session_tag": None,
             "protocol_name": "head_fixed_gonogo",
             "max_trials": None,
@@ -199,25 +271,32 @@ class _FakeOperatorController:
             "stop_reason": None,
             "error_message": None,
             "final_task_state": None,
+            "fake_mouse": {"enabled": False, "seed": None},
         }
 
     def state(self):
         return dict(self._state)
 
-    def start_run(self, session_tag: str, max_trials: int, max_duration_s: float):
+    def arm_run(self, session_tag: str, max_trials: int, max_duration_s: float, fake_mouse_enabled: bool = False, fake_mouse_seed=None):
         self._state.update(
             {
-                "status": "running",
-                "run_active": True,
+                "status": "armed",
+                "run_active": False,
+                "run_armed": True,
                 "session_tag": session_tag,
                 "max_trials": int(max_trials),
                 "max_duration_s": float(max_duration_s),
+                "fake_mouse": {"enabled": bool(fake_mouse_enabled), "seed": fake_mouse_seed},
             }
         )
         return self.state()
 
+    def start_run(self):
+        self._state.update({"status": "running", "run_active": True, "run_armed": False})
+        return self.state()
+
     def stop_run(self):
-        self._state.update({"status": "completed", "run_active": False, "stop_reason": "operator_stop"})
+        self._state.update({"status": "completed", "run_active": False, "run_armed": False, "stop_reason": "operator_stop"})
         return self.state()
 
 
@@ -226,14 +305,21 @@ def test_operator_routes_and_page_contract(tmp_path: Path) -> None:
     set_session_state(active=True, lifecycle_state="running", protocol_name="head_fixed_gonogo", box_name="test_box")
     set_task_state(
         protocol_name="head_fixed_gonogo",
-        phase="stimulus",
-        trial_index=1,
-        trial_type="go",
-        completed_trials=1,
+        phase=None,
+        trial_index=None,
+        trial_type=None,
+        completed_trials=0,
         max_trials=5,
-        stimulus_active=True,
+        stimulus_active=False,
     )
     set_audio_state(active=True, current_cue_name="gonogo_go", last_cue_name="gonogo_go")
+    REGISTRY.set_runtime_state(
+        "plot",
+        kind="gonogo_performance",
+        trial_outcomes=[],
+        counts={"completed_trials": 0, "hits": 0, "misses": 0, "false_alarms": 0, "correct_rejects": 0},
+        rates={"hit_rate": None, "false_alarm_rate": None},
+    )
     set_camera_state(
         camera0={
             "camera_id": "camera0",
@@ -256,22 +342,28 @@ def test_operator_routes_and_page_contract(tmp_path: Path) -> None:
         debug_html = _json_request(f"{base_url}/")
         operator_html = _json_request(f"{base_url}/operator")
         operator_state = _json_request(f"{base_url}/api/operator/state")
-        started = _json_request(
-            f"{base_url}/api/operator/start",
+        armed = _json_request(
+            f"{base_url}/api/operator/arm",
             method="POST",
-            payload={"session_tag": "operator_ui_test", "max_trials": 6, "max_duration_s": 120.0},
+            payload={"session_tag": "operator_ui_test", "max_trials": 6, "max_duration_s": 120.0, "fake_mouse_enabled": True, "fake_mouse_seed": 11},
         )
+        started = _json_request(f"{base_url}/api/operator/start", method="POST", payload={})
         stopped = _json_request(f"{base_url}/api/operator/stop", method="POST")
 
     assert "BehavBox Mock Hardware" in debug_html
     assert 'href="/operator"' in debug_html
     assert "BehavBox Operator Console" in operator_html
     assert 'href="/"' in operator_html
-    assert "Start Session" in operator_html
+    assert "Arm Session" in operator_html
+    assert "Start Task" in operator_html
     assert "Stop Session" in operator_html
+    assert "Fake mouse" in operator_html
+    assert "performance-plot" in operator_html
     assert "camera-slot" in operator_html
     assert "button data-label=" not in operator_html
     assert operator_state["status"] == "idle"
+    assert armed["status"] == "armed"
+    assert armed["fake_mouse"]["enabled"] is True
     assert started["status"] == "running"
     assert started["session_tag"] == "operator_ui_test"
     assert stopped["status"] == "completed"

@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from sample_tasks.head_fixed_gonogo.session_config import build_session_info
+from sample_tasks.head_fixed_gonogo.fake_mouse import build_fake_mouse_step_hook
+from sample_tasks.head_fixed_gonogo.plot_state import build_plot_step_hook
 
 
 _SAFE_SESSION_TAG = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -50,9 +52,11 @@ class OperatorRunController:
         self._lock = threading.RLock()
         self._active_runner: Any | None = None
         self._active_thread: threading.Thread | None = None
+        self._poll_interval_s = 0.01
         self._state: dict[str, Any] = {
             "status": "idle",
             "run_active": False,
+            "run_armed": False,
             "session_tag": None,
             "protocol_name": "head_fixed_gonogo",
             "max_trials": None,
@@ -64,6 +68,10 @@ class OperatorRunController:
             "stop_reason": None,
             "error_message": None,
             "final_task_state": None,
+            "fake_mouse": {
+                "enabled": False,
+                "seed": None,
+            },
         }
 
     def state(self) -> dict[str, Any]:
@@ -72,8 +80,16 @@ class OperatorRunController:
         with self._lock:
             return dict(self._state)
 
-    def start_run(self, *, session_tag: str, max_trials: int, max_duration_s: float) -> dict[str, Any]:
-        """Launch one operator-controlled task run.
+    def arm_run(
+        self,
+        *,
+        session_tag: str,
+        max_trials: int,
+        max_duration_s: float,
+        fake_mouse_enabled: bool = False,
+        fake_mouse_seed: int | None = None,
+    ) -> dict[str, Any]:
+        """Prepare one operator-controlled task run without starting it.
 
         Args:
             session_tag: Filesystem-safe run basename string.
@@ -91,9 +107,11 @@ class OperatorRunController:
             raise ValueError("max_trials must be positive")
         if float(max_duration_s) <= 0:
             raise ValueError("max_duration_s must be positive")
+        if fake_mouse_seed is not None:
+            fake_mouse_seed = int(fake_mouse_seed)
 
         with self._lock:
-            if self._state["status"] in {"starting", "running", "stopping"}:
+            if self._state["status"] in {"arming", "armed", "starting", "running", "stopping"}:
                 raise RuntimeError("operator run is already active")
 
             self.output_root.mkdir(parents=True, exist_ok=True)
@@ -101,37 +119,68 @@ class OperatorRunController:
             task_config = {
                 "max_trials": int(max_trials),
                 "max_duration_s": float(max_duration_s),
+                "fake_mouse_enabled": bool(fake_mouse_enabled),
+                "fake_mouse_seed": fake_mouse_seed,
             }
             box_factory = self._resolve_box_factory()
             runner_factory = self._resolve_runner_factory()
             task_module = self._resolve_task_module()
             self._state["protocol_name"] = str(getattr(task_module, "PROTOCOL_NAME", "head_fixed_gonogo"))
+            step_hooks = [build_plot_step_hook(history_limit=64)]
+            if bool(fake_mouse_enabled):
+                step_hooks.insert(0, build_fake_mouse_step_hook(seed=fake_mouse_seed or 0))
             box = box_factory(session_info)
             runner = runner_factory(
                 box=box,
                 task=task_module,
                 task_config=task_config,
+                step_hooks=step_hooks,
             )
+            self._state["status"] = "arming"
+            runner.prepare()
             self._active_runner = runner
-            self._active_thread = threading.Thread(
-                target=self._run_runner,
-                args=(runner,),
-                daemon=True,
-            )
             self._state.update(
                 {
-                    "status": "starting",
-                    "run_active": True,
+                    "status": "armed",
+                    "run_active": False,
+                    "run_armed": True,
                     "session_tag": clean_tag,
                     "max_trials": int(max_trials),
                     "max_duration_s": float(max_duration_s),
                     "active_run_dir": str(session_info["dir_name"]),
-                    "started_at_s": float(self._clock()),
+                    "started_at_s": None,
                     "stopped_at_s": None,
                     "stop_reason": None,
                     "error_message": None,
                     "final_task_state": None,
+                    "fake_mouse": {
+                        "enabled": bool(fake_mouse_enabled),
+                        "seed": fake_mouse_seed,
+                    },
                 }
+            )
+            return dict(self._state)
+
+    def start_run(self) -> dict[str, Any]:
+        """Start one already-armed operator run."""
+
+        with self._lock:
+            if self._active_runner is None or self._state["status"] != "armed":
+                raise RuntimeError("no armed operator run")
+            if self._active_thread is not None and self._active_thread.is_alive():
+                raise RuntimeError("operator run is already active")
+            self._state.update(
+                {
+                    "status": "starting",
+                    "run_active": True,
+                    "run_armed": False,
+                    "started_at_s": float(self._clock()),
+                }
+            )
+            self._active_thread = threading.Thread(
+                target=self._execute_runner,
+                args=(self._active_runner,),
+                daemon=True,
             )
             self._active_thread.start()
             return dict(self._state)
@@ -140,11 +189,29 @@ class OperatorRunController:
         """Request graceful stop/finalization of the active operator run."""
 
         with self._lock:
-            if self._active_runner is None or self._state["status"] not in {"starting", "running"}:
+            if self._active_runner is None or self._state["status"] not in {"armed", "starting", "running"}:
                 raise RuntimeError("no active operator run")
-            self._state["status"] = "stopping"
-            self._state["stop_reason"] = "operator_stop"
             runner = self._active_runner
+            status = self._state["status"]
+            self._state["stop_reason"] = "operator_stop"
+        if status == "armed":
+            if hasattr(runner, "box") and hasattr(runner.box, "close"):
+                runner.box.close()
+            with self._lock:
+                self._state.update(
+                    {
+                        "status": "completed",
+                        "run_active": False,
+                        "run_armed": False,
+                        "stopped_at_s": float(self._clock()),
+                    }
+                )
+                self._active_runner = None
+                self._active_thread = None
+            return self.state()
+
+        with self._lock:
+            self._state["status"] = "stopping"
         runner.stop(reason="operator_stop")
         return self.state()
 
@@ -153,7 +220,7 @@ class OperatorRunController:
 
         try:
             current = self.state()
-            if current["status"] in {"starting", "running"}:
+            if current["status"] in {"armed", "starting", "running"}:
                 self.stop_run()
         except RuntimeError:
             pass
@@ -163,20 +230,24 @@ class OperatorRunController:
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(float(timeout_s), 0.0))
 
-    def _run_runner(self, runner: Any) -> None:
-        """Execute one TaskRunner-compatible object and capture terminal state."""
+    def _execute_runner(self, runner: Any) -> None:
+        """Execute one already-armed TaskRunner-compatible object."""
 
         with self._lock:
             if self._state["status"] == "starting":
                 self._state["status"] = "running"
         try:
-            final_task_state = runner.run()
+            runner.start()
+            while runner.step():
+                time.sleep(self._poll_interval_s)
+            final_task_state = runner.finalize()
         except Exception as exc:
             with self._lock:
                 self._state.update(
                     {
                         "status": "error",
                         "run_active": False,
+                        "run_armed": False,
                         "stopped_at_s": float(self._clock()),
                         "error_message": str(exc),
                         "final_task_state": None,
@@ -194,6 +265,7 @@ class OperatorRunController:
                 {
                     "status": final_status,
                     "run_active": False,
+                    "run_armed": False,
                     "stopped_at_s": float(self._clock()),
                     "final_task_state": final_task_state,
                     "error_message": None,
