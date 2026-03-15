@@ -63,9 +63,8 @@ In the ``head_fixed`` profile:
 - GPIO13 and GPIO16 are owned by ``gpiozero.RotaryEncoder`` as
   ``treadmill_1`` and ``treadmill_2``
 
-The encoder sign convention is provisional in version 1. If the physical wheel
-direction is reversed relative to the software convention, the runtime should
-correct this through configuration rather than by changing file formats.
+The treadmill artifact is still written independently of any structured task
+framework.
 
 Freely Moving Inputs
 --------------------
@@ -85,8 +84,8 @@ Trigger Input and User GPIO
 ---------------------------
 
 GPIO23 is the dedicated ``trigger_in`` input and records rising and falling
-edges. In version 1 it does not trigger task behavior
-directly; it only produces input events and log records.
+edges. In version 1 it does not trigger task behavior directly; it only
+produces input events and log records.
 
 GPIO4 is no longer the default trigger. It is treated as a generic
 user-configurable line that can be claimed later as either an input or an
@@ -115,6 +114,21 @@ The recording rules are:
 - if the user started recording, recording continues beyond task end
 - if the user requests stop during a task, the runtime warns that recording
   will continue until the task ends and then stop automatically
+
+BehavBox Recording Methods
+--------------------------
+
+The current ``BehavBox`` surface exposes:
+
+- ``start_recording()``
+- ``stop_recording()``
+- ``start_task_recording()``
+- ``stop_task_recording()``
+- ``configure_user_output()``
+- ``configure_user_input()``
+
+The first two are for standalone user-owned input recording. The task variants
+tie recording to the active session directory in ``session_info["dir_name"]``.
 
 Output Locations
 ----------------
@@ -163,7 +177,7 @@ The treadmill artifact is a fixed-bin tab-separated value (TSV) file with:
 - column 2: signed running speed in centimeters per second
 
 Each row represents speed over the preceding time bin. The default sampling
-rate is ``30 Hz``, but this should remain user-configurable.
+rate is ``30 Hz`` and remains user-configurable.
 
 Legacy Compatibility
 --------------------
@@ -176,17 +190,13 @@ The refactor preserves these compatibility requirements:
 - alias labels such as ``lick_3`` and board names such as ``IR_rx1`` remain
   usable in mock/manual control surfaces
 
-Planned Public Surface
-----------------------
+API Reference
+-------------
 
-The input service exposes a small recording-oriented surface through
-``BehavBox`` and a shared recorder:
+.. autoclass:: box_runtime.behavior.behavbox.BehavBox
+   :members: configure_user_output, configure_user_input, start_recording, stop_recording, start_task_recording, stop_task_recording
+   :member-order: bysource
+   :no-index:
 
-- ``start_recording(...)``
-- ``stop_recording(...)``
-- task-aware recording hooks or equivalents
-- generic GPIO4 user-input claiming
-
-``BehavBox`` is now the composition layer over manifest-driven input and output
-services rather than directly wiring lick, beam-break, trigger, treadmill, and
-reward GPIO devices itself.
+.. automodule:: box_runtime.input.service
+   :members: InputService

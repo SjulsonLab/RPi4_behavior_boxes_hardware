@@ -1,14 +1,19 @@
 BehavBox Hardware Documentation
 ===============================
 
-This documentation covers the supported runtime interfaces for the Raspberry Pi
-behavior boxes, with emphasis on the direct audio subsystem that replaces the
-legacy general-purpose input/output (GPIO) sound-trigger pins.
+This documentation covers the currently supported user-facing runtime surfaces
+on the ``main`` branch of the Raspberry Pi (RPi) behavior-box hardware
+repository.
+
+These pages document what users can test now. Planning documents that describe
+future lifecycle refactors or additional sample tasks live elsewhere in the
+repository and are not treated here as implemented behavior.
 
 .. toctree::
    :maxdepth: 2
    :caption: Contents
 
+   overview
    audio
    camera
    input

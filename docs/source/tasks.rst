@@ -153,7 +153,7 @@ Run the current sample task locally:
 
 .. code-block:: bash
 
-   cd /Users/lukesjulson/codex/RPi4_refactor/targets/RPi4_behavior_boxes_hardware_rpgtest
+   cd /Users/lukesjulson/codex/RPi4_refactor/targets/RPi4_behavior_boxes_hardware
    uv run python -m sample_tasks.head_fixed_gonogo.run --max-trials 5 --max-duration-s 600
 
 Then open the mock web UI:

@@ -6,9 +6,8 @@ Overview
 
 The BehavBox audio subsystem replaces the old GPIO-triggered sound-board path
 with direct Universal Serial Bus (USB) audio playback through Advanced Linux
-Sound Architecture (ALSA). Users interact with audio through the
-``BehavBox`` methods documented below; tasks do not need to talk to ALSA
-directly.
+Sound Architecture (ALSA). Users interact with audio through the ``BehavBox``
+methods documented below; tasks do not need to talk to ALSA directly.
 
 Version 1 is built around these decisions:
 
@@ -210,15 +209,29 @@ Current Bench Notes
 On the Raspberry Pi 5 bench box with the Sabrent adapter and loopback cable:
 
 - direct ALSA playback is working
-- the installed ``python3-alsaaudio`` capture path is broken under Python 3.11
-  on Debian Bookworm
-- the current measurement code falls back to a streaming ``arecord`` capture
-  path for loopback analysis
-- recent bench measurements produced a stable loopback estimate around
-  ``121.94 ms`` for the tested white-noise cue
+- native ``pyalsaaudio`` capture is working when an upstream build is installed
+  in an isolated virtual environment
+- the Debian Bookworm ``python3-alsaaudio`` package remains problematic under
+  Python 3.11 on the bench box and should not be treated as the validated path
+- recent loopback measurements using the working native path produced roughly
+  ``4.48 ms`` after warm-up, with one first-run outlier near ``9.81 ms``
 
-That number is a software-plus-device-loopback measurement, not a claim about
-animal-perceived loudness timing at the speaker.
+Those values are software loopback measurements through the tested Sabrent path.
+They are far more representative than the earlier ``121.94 ms`` fallback result,
+which was dominated by the ``arecord`` workaround and should not be treated as
+representative low-latency performance.
+
+Bench Environment Note
+----------------------
+
+The validated bench configuration currently uses an isolated Python virtual
+environment on the Raspberry Pi rather than Debian's packaged
+``python3-alsaaudio`` module.
+
+That is an operational deviation, not a user-facing audio API change. Users who
+are only calling ``BehavBox`` methods do not need to interact with ALSA
+directly, but box setup should follow the validated installation notes when
+audio latency measurement matters.
 
 API Reference
 -------------
@@ -232,3 +245,6 @@ API Reference
 
 .. automodule:: box_runtime.audio.runtime
    :members: SoundRuntime
+
+.. automodule:: box_runtime.audio.latency
+   :members: LoopbackMeasurement, PyAlsaCaptureDevice, estimate_loopback_latency_samples, measure_loopback_latency
