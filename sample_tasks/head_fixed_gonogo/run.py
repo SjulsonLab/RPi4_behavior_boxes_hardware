@@ -4,50 +4,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import time
 from pathlib import Path
 
 from box_runtime.behavior.behavbox import BehavBox
 from box_runtime.mock_hw.server import ensure_server_running
 from sample_tasks.common.runner import TaskRunner
+from sample_tasks.head_fixed_gonogo.session_config import build_session_info
 from sample_tasks.head_fixed_gonogo import task as gonogo_task
-
-
-def _build_session_info(output_root: Path, session_tag: str) -> dict:
-    """Build one runnable session configuration for the sample task.
-
-    Args:
-    - ``output_root``: Directory under which the session directory is created.
-    - ``session_tag``: Human-readable session basename.
-
-    Returns:
-    - ``session_info``: mapping consumed by ``BehavBox``.
-    """
-
-    timestamp = time.strftime("%Y-%m-%d_%H%M%S")
-    session_dir = output_root / session_tag
-    return {
-        "external_storage": str(output_root),
-        "basename": session_tag,
-        "dir_name": str(session_dir),
-        "mouse_name": "mock_mouse",
-        "datetime": timestamp,
-        "box_name": "head_fixed_gonogo",
-        "reward_size": 50,
-        "key_reward_amount": 50,
-        "calibration_coefficient": {
-            "1": [0.0, 0.01],
-            "2": [0.0, 0.01],
-            "3": [0.0, 0.01],
-            "4": [0.0, 0.01],
-        },
-        "air_duration": 0.01,
-        "vacuum_duration": 0.01,
-        "visual_stimulus": False,
-        "treadmill": False,
-        "box_profile": "head_fixed",
-        "mock_audio": True,
-    }
 
 
 def main() -> int:
@@ -69,7 +32,7 @@ def main() -> int:
 
     output_root = Path(args.output_root).resolve()
     output_root.mkdir(parents=True, exist_ok=True)
-    session_info = _build_session_info(output_root, args.session_tag)
+    session_info = build_session_info(output_root, args.session_tag)
     mock_url = ensure_server_running()
     print(f"Mock hardware UI: {mock_url}")
     print("Use the generic mock UI and pulse lick_3 to send the center response.")

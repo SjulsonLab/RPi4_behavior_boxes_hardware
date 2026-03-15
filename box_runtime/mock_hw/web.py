@@ -12,7 +12,7 @@ CONTENT_TYPES = {
 }
 
 
-def make_handler(registry, static_dir: str):
+def make_handler(registry, static_dir: str, operator_controller=None):
     class MockWebHandler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             return
@@ -75,6 +75,13 @@ def make_handler(registry, static_dir: str):
                 self._send_json(registry.get_state())
                 return
 
+            if parsed.path == "/api/operator/state":
+                if operator_controller is None:
+                    self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                self._send_json(operator_controller.state())
+                return
+
             if parsed.path == "/api/events":
                 query = parse_qs(parsed.query)
                 limit = 200
@@ -86,7 +93,15 @@ def make_handler(registry, static_dir: str):
                 self._send_json(registry.get_events(limit=limit))
                 return
 
-            if parsed.path in ("/", "/index.html", "/app.js", "/style.css"):
+            if parsed.path == "/operator":
+                self._send_static("/operator.html")
+                return
+
+            if parsed.path == "/":
+                self._send_static("/index.html")
+                return
+
+            if os.path.splitext(parsed.path)[1] in CONTENT_TYPES:
                 self._send_static(parsed.path)
                 return
 
@@ -94,6 +109,42 @@ def make_handler(registry, static_dir: str):
 
         def do_POST(self):
             parsed = urlparse(self.path)
+            if parsed.path == "/api/operator/start":
+                if operator_controller is None:
+                    self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                try:
+                    body = self._read_json()
+                    session_tag = str(body.get("session_tag", "")).strip()
+                    max_trials = int(body.get("max_trials"))
+                    max_duration_s = float(body.get("max_duration_s"))
+                except (TypeError, ValueError):
+                    self._send_json({"error": "session_tag, max_trials, and max_duration_s are required"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    self._send_json(
+                        operator_controller.start_run(
+                            session_tag=session_tag,
+                            max_trials=max_trials,
+                            max_duration_s=max_duration_s,
+                        )
+                    )
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                except RuntimeError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+                return
+
+            if parsed.path == "/api/operator/stop":
+                if operator_controller is None:
+                    self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                try:
+                    self._send_json(operator_controller.stop_run())
+                except RuntimeError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+                return
+
             if parsed.path.startswith("/api/input/"):
                 endpoint_prefix = "/api/input/"
                 registry_method = "input"

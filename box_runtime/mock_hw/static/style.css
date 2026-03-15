@@ -25,6 +25,34 @@ header {
   background: #fff;
 }
 
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.page-nav {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.page-nav a {
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid #d0d5dd;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #fff;
+}
+
+.page-nav a[aria-current="page"] {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
 h1 { margin: 0 0 6px 0; font-size: 1.3rem; }
 h2 { margin: 0 0 10px 0; font-size: 1.1rem; }
 
@@ -112,4 +140,5 @@ th { background: #f9fafb; color: #475467; }
 @media (max-width: 640px) {
   main { padding: 12px; }
   .grid { grid-template-columns: 1fr; }
+  .header-row { flex-direction: column; }
 }

@@ -232,6 +232,8 @@ class LocalCameraRuntime:
             "preview_active": self.is_preview_active,
             "preview_mode": self.preview_mode,
             "preview_connector": self.preview_connector if self.preview_mode == "drm_local" else None,
+            "preview_available": False,
+            "preview_url": None,
             "storage_root": str(self.storage_root),
         }
 
