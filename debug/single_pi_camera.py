@@ -36,7 +36,7 @@ def video_start(self):
             # Preview check
             print(Fore.CYAN + "\nStart Previewing ..." + Style.RESET_ALL)
             print(Fore.RED + "\n CRTL + C to quit previewing and start recording" + Style.RESET_ALL)
-            os.system("ssh pi@" + self.IP_address_video + " '/home/pi/RPi4_behavior_boxes/box_runtime/video_recording/old/start_preview.py'")
+            os.system("ssh pi@" + self.IP_address_video + " '/home/pi/RPi4_behavior_boxes/box_runtime/old_hardware/video_recording/old/start_preview.py'")
 
             # Kill any python process before start recording
             print(Fore.GREEN + "\nKilling any python process before start recording!" + Style.RESET_ALL)
@@ -47,7 +47,7 @@ def video_start(self):
             os.system("ssh pi@" + self.IP_address_video + " mkdir " + self.session_info['output_dir'])
             os.system("ssh pi@" + self.IP_address_video + " 'date >> ~/video/videolog.log' ")  # I/O redirection
             tempstr = (
-                    "ssh pi@" + self.IP_address_video + " 'nohup /home/pi/RPi4_behavior_boxes/box_runtime/video_recording/old/start_acquisition.py "
+                    "ssh pi@" + self.IP_address_video + " 'nohup /home/pi/RPi4_behavior_boxes/box_runtime/old_hardware/video_recording/old/start_acquisition.py "
                     + self.session_info['file_basename']
                     + " >> ~/video/videolog.log 2>&1 & ' "  # file descriptors
             )
@@ -63,7 +63,7 @@ def video_start(self):
 def video_stop(self):
     if self.session_info['ephys_rig']:
         try:
-            os.system("sh ./box_runtime/video_recording/old/stop_acquisition.sh")
+            os.system("sh ./box_runtime/old_hardware/video_recording/old/stop_acquisition.sh")
         except Exception as error_message:
             print("ephys rig can't stop camera\n")
             print(str(error_message))
@@ -71,7 +71,7 @@ def video_stop(self):
     else:
         try:
             os.system(
-                "ssh pi@" + self.IP_address_video + " /home/pi/RPi4_behavior_boxes/box_runtime/video_recording/old/stop_acquisition.sh")
+                "ssh pi@" + self.IP_address_video + " /home/pi/RPi4_behavior_boxes/box_runtime/old_hardware/video_recording/old/stop_acquisition.sh")
 
         except Exception as e:
             print(e)

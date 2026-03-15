@@ -10,7 +10,9 @@ preview code:
 - `picamera2_recorder.py`
 - `VideoCapture.py`
 
-Legacy acquisition and preview scripts were moved into `old/` to keep the active path separate from the archived one.
+Legacy acquisition and preview scripts were moved into
+`../old_hardware/video_recording/old/` to keep the active path separate from
+the archived one.
 
 ## Default topology
 
