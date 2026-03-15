@@ -33,5 +33,6 @@ are still in planning or early development.
 
    user_guide_first_run
    user_guide_sample_task
+   user_guide_minimal_experiment
    user_guide_outputs
    user_guide_troubleshooting
