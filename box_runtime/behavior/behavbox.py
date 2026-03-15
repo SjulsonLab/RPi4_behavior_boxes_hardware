@@ -31,6 +31,7 @@ from box_runtime.behavior.gpio_backend import (
     is_raspberry_pi,
     set_audio_state,
     set_camera_state,
+    set_plot_state,
     set_session_state,
     set_task_state,
     set_visual_stim_state,
@@ -130,6 +131,21 @@ class BehavBox(object):
                 "last_cue_name": None,
             },
             "camera": {},
+            "plot": {
+                "kind": "gonogo_performance",
+                "trial_outcomes": [],
+                "counts": {
+                    "completed_trials": 0,
+                    "hits": 0,
+                    "misses": 0,
+                    "false_alarms": 0,
+                    "correct_rejects": 0,
+                },
+                "rates": {
+                    "hit_rate": None,
+                    "false_alarm_rate": None,
+                },
+            },
         }
         self.event_list = deque()
         self.interact_list = []
@@ -241,6 +257,8 @@ class BehavBox(object):
             set_audio_state(**values)
         elif section == "camera":
             set_camera_state(**values)
+        elif section == "plot":
+            set_plot_state(**values)
 
     def _handle_audio_runtime_state(self, payload: dict[str, object]) -> None:
         """Receive audio-runtime state updates from the playback layer."""

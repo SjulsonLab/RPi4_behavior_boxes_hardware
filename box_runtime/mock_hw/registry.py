@@ -40,6 +40,21 @@ class PinRegistry:
                 "last_cue_name": None,
             },
             "camera": {},
+            "plot": {
+                "kind": "gonogo_performance",
+                "trial_outcomes": [],
+                "counts": {
+                    "completed_trials": 0,
+                    "hits": 0,
+                    "misses": 0,
+                    "false_alarms": 0,
+                    "correct_rejects": 0,
+                },
+                "rates": {
+                    "hit_rate": None,
+                    "false_alarm_rate": None,
+                },
+            },
         }
 
     def reset(self) -> None:
@@ -77,6 +92,21 @@ class PinRegistry:
                     "last_cue_name": None,
                 },
                 "camera": {},
+                "plot": {
+                    "kind": "gonogo_performance",
+                    "trial_outcomes": [],
+                    "counts": {
+                        "completed_trials": 0,
+                        "hits": 0,
+                        "misses": 0,
+                        "false_alarms": 0,
+                        "correct_rejects": 0,
+                    },
+                    "rates": {
+                        "hit_rate": None,
+                        "false_alarm_rate": None,
+                    },
+                },
             }
 
     def register_device(
@@ -331,3 +361,7 @@ def set_audio_state(source: str = "code", **values) -> None:
 
 def set_camera_state(source: str = "code", **values) -> None:
     REGISTRY.set_runtime_state("camera", source=source, **values)
+
+
+def set_plot_state(source: str = "code", **values) -> None:
+    REGISTRY.set_runtime_state("plot", source=source, **values)

@@ -83,6 +83,17 @@ class _FakeTask:
         return {"phase": task_state["phase"], "stop_reason": task_state.get("stop_reason")}
 
 
+class _PassiveTask(_FakeTask):
+    """Task double that never self-terminates, used for hook sequencing tests."""
+
+    def update_task(self, box, task_state, now_s):
+        self.calls.append("update_task")
+
+    def should_stop(self, box, task_state):
+        self.calls.append("should_stop")
+        return False
+
+
 def test_behavbox_lifecycle_enforces_prepare_before_start():
     with tempfile.TemporaryDirectory() as tmp:
         box = BehavBox(_session_info(tmp))
@@ -140,3 +151,32 @@ def test_task_runner_still_cleans_up_on_task_error():
         final_state = runner.finalize()
         assert final_state["stop_reason"] == "error"
         assert runner.is_closed is True
+
+
+def test_task_runner_step_hook_runs_only_after_start():
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+        task = _PassiveTask()
+        observed = []
+
+        def step_hook(runner):
+            observed.append(
+                {
+                    "prepared": runner.is_prepared,
+                    "started": runner.is_started,
+                    "phase": runner.task_state["phase"],
+                }
+            )
+            runner.stop(reason="hook_stop")
+
+        runner = TaskRunner(box=box, task=task, task_config={}, step_hooks=[step_hook])
+
+        runner.prepare()
+        assert observed == []
+
+        runner.start()
+        runner.step()
+        final_state = runner.finalize()
+
+        assert observed == [{"prepared": True, "started": True, "phase": "running"}]
+        assert final_state["stop_reason"] == "hook_stop"

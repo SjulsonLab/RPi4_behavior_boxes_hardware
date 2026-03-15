@@ -74,6 +74,9 @@ if not USING_MOCK_BACKEND:
     def set_camera_state(**kwargs) -> None:
         return None
 
+    def set_plot_state(**kwargs) -> None:
+        return None
+
     def get_registry():
         return None
 
@@ -91,6 +94,7 @@ else:
             register_pin_label,
             set_audio_state,
             set_camera_state,
+            set_plot_state,
             set_session_state,
             set_task_state,
             set_visual_stim_state,
@@ -109,6 +113,7 @@ else:
             register_pin_label,
             set_audio_state,
             set_camera_state,
+            set_plot_state,
             set_session_state,
             set_task_state,
             set_visual_stim_state,

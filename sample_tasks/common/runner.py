@@ -20,11 +20,12 @@ class TaskRunner:
         clock: Optional zero-argument callable returning POSIX seconds.
     """
 
-    def __init__(self, box, task, task_config: Optional[dict] = None, clock=None):
+    def __init__(self, box, task, task_config: Optional[dict] = None, clock=None, step_hooks: Optional[list] = None):
         self.box = box
         self.task = task
         self.task_config = {} if task_config is None else dict(task_config)
         self.clock = clock or time.time
+        self.step_hooks = [] if step_hooks is None else list(step_hooks)
         self.task_state: Optional[dict] = None
         self.runner_events: list[dict] = []
         self.is_prepared = False
@@ -87,6 +88,10 @@ class TaskRunner:
             for event in self.box.poll_runtime():
                 self.task.handle_event(self.box, self.task_state, event)
             self.task.update_task(self.box, self.task_state, now_s=float(self.clock()))
+            for hook in self.step_hooks:
+                hook(self)
+            if self.is_stopped:
+                return False
             if self.task.should_stop(self.box, self.task_state):
                 self.stop(reason="completed")
                 return False
