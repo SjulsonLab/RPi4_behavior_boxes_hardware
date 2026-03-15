@@ -10,6 +10,7 @@ The current structure is:
 
 - ``BehavBox`` owns appliance-style runtime services and session lifecycle
 - ``TaskRunner`` sequences the lifecycle and task callbacks
+- ``SimpleTask`` provides the primary end-user authoring path for common tasks
 - each sample task owns protocol logic, finite state machine (FSM) phases, and
   task-local mutable state
 - the browser-facing mock UI consumes shared runtime state instead of parsing
@@ -18,6 +19,30 @@ The current structure is:
 This split is the first step toward a real web interface. The mock web page is
 still generic, but it now renders task/session/audio runtime state through a
 stable API shape that a future operator-facing frontend can reuse.
+
+Simple Task API
+---------------
+
+There are now two supported task-authoring levels:
+
+- end-user path: ``sample_tasks.simple_api.SimpleTask``
+- advanced path: direct ``TaskProtocol`` implementations plus ``TaskRunner``
+
+The simple API exists because the lower-level lifecycle hooks are too much
+template code for many users. It compiles a short finite state machine (FSM)
+definition into the same lifecycle contract used by the advanced path.
+
+Use the simple API when you need:
+
+- common cue, response-window, reward, and timeout tasks
+- basic parameter updates through built-in helper actions
+- one short task file with the unified launcher
+
+Use the advanced path when you need:
+
+- unusual contingencies or state handling
+- direct task control over lower-level lifecycle hooks
+- behavior that does not fit the simple built-in action set
 
 Current Supported Sample Task
 -----------------------------
@@ -169,6 +194,9 @@ For the current ``head_fixed_gonogo`` task:
 
 API Reference
 -------------
+
+.. automodule:: sample_tasks.simple_api
+   :members:
 
 .. autoclass:: box_runtime.behavior.behavbox.BehavBox
    :members: prepare_session, start_session, poll_runtime, stop_session, finalize_session, close, event_name, event_timestamp, publish_runtime_state

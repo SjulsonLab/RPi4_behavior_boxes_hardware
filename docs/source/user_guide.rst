@@ -8,6 +8,8 @@ The guide is intentionally practical. It focuses on:
 
 - starting the mock BehavBox safely
 - running the current reference task
+- writing one short task file with the simple task API
+- running that task locally or on a headless Raspberry Pi (RPi)
 - finding the output files afterward
 - fixing the most common problems
 
@@ -21,8 +23,10 @@ The current supported tutorial workflow is:
 
 1. launch the mock BehavBox user interface (UI)
 2. run the reference ``head_fixed_gonogo`` sample task
-3. trigger responses manually or with the fake mouse
-4. inspect the output files written at the end of the run
+3. write a short task file with ``SimpleTask``
+4. run that task locally in mock mode or on a headless Pi over Secure Shell
+   (SSH)
+5. inspect the output files written at the end of the run
 
 This matches what the current hardware repo actually supports today. It does
 not try to document future browser workflows or additional task templates that
@@ -33,6 +37,7 @@ are still in planning or early development.
 
    user_guide_first_run
    user_guide_sample_task
+   user_guide_simple_task_api
    user_guide_minimal_experiment
    user_guide_outputs
    user_guide_troubleshooting

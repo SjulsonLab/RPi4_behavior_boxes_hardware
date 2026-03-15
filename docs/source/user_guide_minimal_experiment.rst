@@ -1,24 +1,32 @@
-Minimum Experiment Code
-=======================
+Advanced: Full Lifecycle Example
+================================
 
 Why This Example Exists
 -----------------------
 
-After you run the sample task once, the next useful question is usually:
+The simple task API is now the recommended starting point for most users.
+
+This page documents the lower-level example for the cases where the simple
+builder is not enough.
+
+After you have outgrown the simple API, the next useful question is usually:
 
 ``What is the smallest amount of code I need to write my own experiment?``
 
-The answer is **not** "put everything in one script and call random BehavBox
-methods directly." That would be shorter, but it would teach the wrong pattern.
+The answer is still **not** "put everything in one script and call random
+BehavBox methods directly." That would be shorter, but it would teach the
+wrong pattern.
 
-The supported minimum pattern is:
+The supported advanced pattern is:
 
 1. one small task module containing only task logic
 2. one runner script for local mock use
-3. one runner script for a headless Raspberry Pi (RPi) over Secure Shell (SSH)
+3. one runner script for a headless Raspberry Pi (RPi) over Secure Shell
+   (SSH)
 4. one small session-configuration helper
 
-This keeps the code small while still using the current supported lifecycle.
+This keeps the code explicit while still using the current supported
+lifecycle.
 
 Where The Example Lives
 -----------------------
@@ -71,7 +79,8 @@ Why it is written this way:
 - ``finalize_task()`` returns a small summary that becomes
   ``final_task_state.json``
 
-This is the smallest useful pattern that still matches the current task API.
+This is the lowest-level supported pattern that still matches the current task
+API.
 
 Run It Locally In Mock Mode
 ---------------------------
@@ -102,6 +111,9 @@ This is the right choice when:
 - you are working on a desktop or laptop
 - you want to test task flow without real hardware
 - you want to debug the task logic first
+
+If that is all you need, the ``SimpleTask`` page is a better starting point
+than this one.
 
 Run It On A Headless Pi Over SSH
 --------------------------------
@@ -138,9 +150,9 @@ This is the right choice when:
 Why There Are Two Runner Files
 ------------------------------
 
-This split is intentional.
+This split is intentional in the advanced path.
 
-The mock and headless-Pi versions should not be hidden behind one opaque flag,
+The mock and headless-Pi versions should not be hidden inside task logic,
 because users need to understand which environment they are running in:
 
 - local mock mode is for safe local testing with a browser UI
@@ -152,7 +164,7 @@ they are testing their code or their hardware.
 What To Copy For Your Own Task
 ------------------------------
 
-If you want to start a new task, copy these pieces:
+If you need to start a new advanced task, copy these pieces:
 
 1. ``task.py``
 2. ``session_config.py``
@@ -165,8 +177,8 @@ Then change only the task logic first:
 - stop condition
 - reward rule
 
-Do **not** start by rewriting the runner or bypassing ``TaskRunner`` unless you
-have a clear reason. The runner is what gives you:
+Do **not** start by rewriting the runner or bypassing ``TaskRunner`` unless
+you have a clear reason. The runner is what gives you:
 
 - consistent startup and shutdown
 - standard task artifacts

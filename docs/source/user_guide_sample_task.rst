@@ -73,3 +73,10 @@ Important Limitation
 
 This tutorial task is a supported bring-up and validation task. It is **not**
 meant to be the lab's long-term protocol repository.
+
+What To Do Next
+---------------
+
+After you have run this sample once, the next recommended step is the
+``SimpleTask`` tutorial. That is the supported end-user path for writing a new
+task without dropping immediately to the full lower-level lifecycle API.
