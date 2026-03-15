@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BehavBox Operator Console</title>
+  <link rel="stylesheet" href="/operator.css">
+</head>
+<body>
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Operator-facing UI</p>
+      <h1>BehavBox Operator Console</h1>
+      <p id="operator-status-line" class="subtitle">Connecting to runtime...</p>
+    </div>
+    <nav class="topnav">
+      <a href="/debug">Debug hardware page</a>
+      <a href="/" aria-current="page">Operator console</a>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <section class="panel launch-panel">
+      <div class="panel-header">
+        <h2>Session Control</h2>
+        <span id="run-status-pill" class="status-pill off">idle</span>
+      </div>
+      <form id="arm-form" class="launch-form">
+        <label>
+          Session tag
+          <input id="session-tag" name="session_tag" value="operator_session" autocomplete="off">
+        </label>
+        <label>
+          Max trials
+          <input id="max-trials" name="max_trials" type="number" min="1" step="1" value="20">
+        </label>
+        <label>
+          Max duration (s)
+          <input id="max-duration-s" name="max_duration_s" type="number" min="1" step="1" value="600">
+        </label>
+        <label class="checkbox-row">
+          Fake mouse
+          <input id="fake-mouse-enabled" name="fake_mouse_enabled" type="checkbox">
+        </label>
+        <label>
+          Fake mouse seed
+          <input id="fake-mouse-seed" name="fake_mouse_seed" type="number" step="1" value="0">
+        </label>
+        <div class="launch-actions">
+          <button id="arm-session" type="submit">Arm Session</button>
+          <button id="start-task" type="button" class="secondary">Start Task</button>
+          <button id="stop-session" type="button" class="secondary">Stop Session</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Camera Views</h2>
+        <p class="hint">Per-camera preview panels can be shown or hidden independently.</p>
+      </div>
+      <div id="camera-grid" class="camera-grid">
+        <article class="camera-slot" data-camera-id="camera0"></article>
+        <article class="camera-slot" data-camera-id="camera1"></article>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Runtime Summary</h2>
+      </div>
+      <div class="status-grid">
+        <article id="session-status" class="card"></article>
+        <article id="task-status" class="card"></article>
+        <article id="audio-status" class="card"></article>
+        <article id="visual-status" class="card"></article>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Performance</h2>
+      </div>
+      <div class="plot-shell">
+        <canvas id="performance-plot"></canvas>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Event Summary</h2>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Kind</th>
+            <th>Label</th>
+            <th>Value</th>
+            <th>Source</th>
+          </tr>
+        </thead>
+        <tbody id="event-log"></tbody>
+      </table>
+    </section>
+
+    <section class="panel state-panel">
+      <div class="panel-header">
+        <h2>Operator State</h2>
+        <p class="hint">Live controller state for debugging and inspection.</p>
+      </div>
+      <pre id="operator-run-state" class="state-block state-log"></pre>
+    </section>
+  </main>
+
+  <script src="/vendor/chart.umd.min.js"></script>
+  <script src="/operator.js"></script>
+</body>
+</html>

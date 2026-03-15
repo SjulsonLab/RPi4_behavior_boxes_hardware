@@ -8,11 +8,28 @@
 </head>
 <body>
   <header>
-    <h1>BehavBox Mock Hardware (Head-Fixed)</h1>
-    <p id="status-line">Connecting...</p>
+    <div class="header-row">
+      <div>
+        <h1>BehavBox Mock Hardware (Head-Fixed)</h1>
+        <p id="status-line">Connecting...</p>
+      </div>
+      <nav class="page-nav">
+        <a href="/debug" aria-current="page">Debug hardware page</a>
+        <a href="/">Operator console</a>
+      </nav>
+    </div>
   </header>
 
   <main>
+    <section>
+      <h2>Runtime Status</h2>
+      <div class="grid status-grid">
+        <div id="session-status" class="card"></div>
+        <div id="task-status" class="card"></div>
+        <div id="audio-status" class="card"></div>
+      </div>
+    </section>
+
     <section>
       <h2>Visual Stimulus</h2>
       <div id="visual-stim" class="card"></div>

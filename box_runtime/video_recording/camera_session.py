@@ -3,6 +3,7 @@
 Data contracts:
 - sensor timestamps: int64 nanoseconds since boot, shape (n_frames,)
 - arrival UTC timestamps: int64 nanoseconds since UNIX epoch, shape (n_frames,)
+- boottime->realtime offsets: int64 nanoseconds, shape (n_frames,)
 - derived UTC timestamps: int64 nanoseconds since UNIX epoch, shape (n_frames,)
 """
 
@@ -46,14 +47,18 @@ def estimate_required_bytes(
 
 def derive_frame_utc_ns(
     sensor_timestamps_ns: np.ndarray,
-    arrival_utc_ns: np.ndarray,
+    boottime_to_realtime_offset_ns: np.ndarray,
+    arrival_utc_ns: np.ndarray | None = None,
     bin_size_ns: int = 60 * 1_000_000_000,
 ) -> tuple[np.ndarray, dict]:
-    """Estimate capture UTC from sensor and arrival timestamps.
+    """Estimate capture UTC from sensor timestamps and sampled clock offsets.
 
     Args:
         sensor_timestamps_ns: int64 array of sensor timestamps in ns since boot.
-        arrival_utc_ns: int64 array of callback arrival timestamps in UTC ns.
+        boottime_to_realtime_offset_ns: int64 array of sampled offsets
+            ``CLOCK_REALTIME - CLOCK_BOOTTIME`` in ns.
+        arrival_utc_ns: Optional int64 array of callback arrival timestamps in
+            UTC ns, used only for diagnostics.
         bin_size_ns: Width of offset-smoothing bins in ns.
 
     Returns:
@@ -63,19 +68,24 @@ def derive_frame_utc_ns(
     """
 
     sensor = np.asarray(sensor_timestamps_ns, dtype=np.int64)
-    arrival = np.asarray(arrival_utc_ns, dtype=np.int64)
-    if sensor.ndim != 1 or arrival.ndim != 1 or len(sensor) != len(arrival):
-        raise CameraSessionError("sensor and arrival timestamps must be 1D arrays of equal length")
+    offsets = np.asarray(boottime_to_realtime_offset_ns, dtype=np.int64)
+    if sensor.ndim != 1 or offsets.ndim != 1 or len(sensor) != len(offsets):
+        raise CameraSessionError("sensor timestamps and clock offsets must be 1D arrays of equal length")
     if len(sensor) == 0:
         raise CameraSessionError("cannot derive UTC for an empty frame series")
-
-    offsets = arrival - sensor
+    arrival = None if arrival_utc_ns is None else np.asarray(arrival_utc_ns, dtype=np.int64)
+    if arrival is not None and (arrival.ndim != 1 or len(arrival) != len(sensor)):
+        raise CameraSessionError("arrival timestamps must be a 1D array matching sensor timestamps")
     start = int(sensor[0])
     stop = int(sensor[-1])
     if stop == start:
         derived = sensor + np.median(offsets).astype(np.int64)
-        residual = arrival - derived
-        return derived, _residual_diagnostics(residual)
+        residual = (
+            arrival - derived
+            if arrival is not None
+            else offsets - np.rint(np.median(offsets)).astype(np.int64)
+        )
+        return derived, _residual_diagnostics(np.asarray(residual, dtype=np.int64))
 
     bin_edges = np.arange(start, stop + bin_size_ns, bin_size_ns, dtype=np.int64)
     if len(bin_edges) < 2:
@@ -104,7 +114,11 @@ def derive_frame_utc_ns(
         )
 
     derived = sensor + np.rint(smoothed_offsets).astype(np.int64)
-    residual = arrival - derived
+    residual = (
+        arrival - derived
+        if arrival is not None
+        else offsets - np.rint(smoothed_offsets).astype(np.int64)
+    )
     return derived, _residual_diagnostics(residual)
 
 
@@ -121,7 +135,8 @@ def load_raw_frames_tsv(path: Path) -> dict[str, np.ndarray]:
     """Load raw per-frame timestamps from TSV.
 
     Args:
-        path: TSV path with frame_index, sensor_timestamp_ns, arrival_utc_ns.
+        path: TSV path with frame_index, sensor_timestamp_ns, arrival_utc_ns,
+            and optionally boottime_to_realtime_offset_ns.
 
     Returns:
         Dict of int64 arrays keyed by column name.
@@ -130,16 +145,23 @@ def load_raw_frames_tsv(path: Path) -> dict[str, np.ndarray]:
     frame_index = []
     sensor = []
     arrival = []
+    offsets = []
     with path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle, delimiter="\t")
         for row in reader:
             frame_index.append(int(row["frame_index"]))
             sensor.append(int(row["sensor_timestamp_ns"]))
             arrival.append(int(row["arrival_utc_ns"]))
+            offset_text = row.get("boottime_to_realtime_offset_ns")
+            if offset_text in (None, ""):
+                offsets.append(int(row["arrival_utc_ns"]) - int(row["sensor_timestamp_ns"]))
+            else:
+                offsets.append(int(offset_text))
     return {
         "frame_index": np.asarray(frame_index, dtype=np.int64),
         "sensor_timestamp_ns": np.asarray(sensor, dtype=np.int64),
         "arrival_utc_ns": np.asarray(arrival, dtype=np.int64),
+        "boottime_to_realtime_offset_ns": np.asarray(offsets, dtype=np.int64),
     }
 
 
@@ -225,7 +247,8 @@ def finalize_session_directory(
         rows = load_raw_frames_tsv(raw_tsv_path)
         derived_utc_ns, diagnostics = derive_frame_utc_ns(
             rows["sensor_timestamp_ns"],
-            rows["arrival_utc_ns"],
+            rows["boottime_to_realtime_offset_ns"],
+            arrival_utc_ns=rows["arrival_utc_ns"],
         )
 
         if clean_session:
@@ -318,21 +341,9 @@ def _write_final_attempt_tsv(
 ) -> None:
     with path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, delimiter="\t")
-        writer.writerow(
-            [
-                "frame_index",
-                "sensor_timestamp_ns",
-                "arrival_utc_ns",
-                "derived_utc_ns",
-            ]
-        )
-        for values in zip(
-            rows["frame_index"],
-            rows["sensor_timestamp_ns"],
-            rows["arrival_utc_ns"],
-            derived_utc_ns,
-        ):
-            writer.writerow([int(value) for value in values])
+        writer.writerow(["frame_index", "utc_s"])
+        for frame_index, utc_ns in zip(rows["frame_index"], derived_utc_ns):
+            writer.writerow([int(frame_index), f"{float(utc_ns) / 1e9:.3f}"])
 
 
 def _sha256(path: Path) -> str:

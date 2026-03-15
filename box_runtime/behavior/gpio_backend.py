@@ -7,7 +7,7 @@ class ReservedPinError(RuntimeError):
 
 
 RESERVED_PIN_REASONS = {
-    11: "GPIO11 is reserved for the IRIG timecode sender output and must not be claimed by BehavBox.",
+    9: "GPIO9 is reserved for the IRIG timecode sender output and must not be claimed by BehavBox.",
 }
 
 
@@ -52,7 +52,7 @@ if not USING_MOCK_BACKEND:
         RotaryEncoder as _GPIOZeroRotaryEncoder,
     )
 
-    def register_pin_label(pin: int, label: str, direction=None) -> None:
+    def register_pin_label(pin: int, label: str, direction=None, aliases=None) -> None:
         return None
 
     def set_visual_stim_state(
@@ -60,6 +60,21 @@ if not USING_MOCK_BACKEND:
         visual_stim_active=None,
         current_grating=None,
     ) -> None:
+        return None
+
+    def set_session_state(**kwargs) -> None:
+        return None
+
+    def set_task_state(**kwargs) -> None:
+        return None
+
+    def set_audio_state(**kwargs) -> None:
+        return None
+
+    def set_camera_state(**kwargs) -> None:
+        return None
+
+    def set_plot_state(**kwargs) -> None:
         return None
 
     def get_registry():
@@ -74,7 +89,16 @@ else:
             PWMLED as _GPIOZeroPWMLED,
             RotaryEncoder as _GPIOZeroRotaryEncoder,
         )
-        from box_runtime.mock_hw.registry import REGISTRY, register_pin_label, set_visual_stim_state
+        from box_runtime.mock_hw.registry import (
+            REGISTRY,
+            register_pin_label,
+            set_audio_state,
+            set_camera_state,
+            set_plot_state,
+            set_session_state,
+            set_task_state,
+            set_visual_stim_state,
+        )
         from box_runtime.mock_hw.server import ensure_server_running
     except ImportError:
         from box_runtime.mock_hw.devices import (
@@ -84,7 +108,16 @@ else:
             PWMLED as _GPIOZeroPWMLED,
             RotaryEncoder as _GPIOZeroRotaryEncoder,
         )
-        from box_runtime.mock_hw.registry import REGISTRY, register_pin_label, set_visual_stim_state
+        from box_runtime.mock_hw.registry import (
+            REGISTRY,
+            register_pin_label,
+            set_audio_state,
+            set_camera_state,
+            set_plot_state,
+            set_session_state,
+            set_task_state,
+            set_visual_stim_state,
+        )
         from box_runtime.mock_hw.server import ensure_server_running
 
     def get_registry():

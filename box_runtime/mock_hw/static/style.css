@@ -7,6 +7,8 @@
   --off: #d0d5dd;
   --warn: #b54708;
   --accent: #0b7285;
+  --accent-bg: #eff8ff;
+  --accent-border: #b2ddff;
 }
 
 * { box-sizing: border-box; }
@@ -21,6 +23,34 @@ header {
   padding: 16px 20px;
   border-bottom: 1px solid #e4e7ec;
   background: #fff;
+}
+
+.header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.page-nav {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.page-nav a {
+  text-decoration: none;
+  color: var(--text);
+  border: 1px solid #d0d5dd;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: #fff;
+}
+
+.page-nav a[aria-current="page"] {
+  color: #fff;
+  background: var(--accent);
+  border-color: var(--accent);
 }
 
 h1 { margin: 0 0 6px 0; font-size: 1.3rem; }
@@ -42,6 +72,10 @@ main { padding: 16px 20px; display: grid; gap: 16px; }
   padding: 12px;
 }
 
+.status-grid .card {
+  background: linear-gradient(180deg, #ffffff, #fbfdff);
+}
+
 .pin-title {
   display: flex;
   justify-content: space-between;
@@ -51,6 +85,15 @@ main { padding: 16px 20px; display: grid; gap: 16px; }
 
 .pin-label { font-weight: 600; }
 .pin-meta { color: var(--muted); font-size: 0.9rem; }
+.runtime-value { font-size: 1.1rem; font-weight: 700; margin: 6px 0; }
+.runtime-detail { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+.highlight {
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 10px;
+}
 
 .state-pill {
   display: inline-block;
@@ -97,4 +140,5 @@ th { background: #f9fafb; color: #475467; }
 @media (max-width: 640px) {
   main { padding: 12px; }
   .grid { grid-template-columns: 1fr; }
+  .header-row { flex-direction: column; }
 }

@@ -241,6 +241,93 @@ class DrmPreviewViewer:
         self._renderer = PreviewRenderer(config=runtime_config, backend=backend)
 
 
+class DirectJpegPreviewViewer:
+    """Display latest local JPEG preview frames on one DRM connector.
+
+    Args:
+        config: Preview connector and timing settings.
+        frame_provider: Zero-argument callable returning the most recent JPEG
+            frame bytes, or ``None`` when no preview frame is available.
+        backend_factory: Optional preview backend factory.
+        logger: Optional logger receiving non-fatal preview warnings.
+        poll_interval_s: Poll interval in seconds for the local frame provider.
+    """
+
+    def __init__(
+        self,
+        config: PreviewDisplayConfig,
+        frame_provider: Callable[[], bytes | None],
+        backend_factory: Callable[[PreviewDisplayConfig], Any] | None = None,
+        logger: logging.Logger | None = None,
+        poll_interval_s: float = 1.0 / 60.0,
+    ) -> None:
+        self.config = config
+        self._frame_provider = frame_provider
+        self._backend_factory = backend_factory or _PykmsPreviewBackend
+        self._logger = logger or logging.getLogger(__name__)
+        self._poll_interval_s = float(poll_interval_s)
+        self._backend: Any | None = None
+        self._renderer: PreviewRenderer | None = None
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "DirectJpegPreviewViewer":
+        """Start the preview loop in a daemon thread."""
+
+        self._ensure_runtime()
+        if self._thread is not None and self._thread.is_alive():
+            return self
+        self._thread = threading.Thread(
+            target=self.run,
+            kwargs={"stop_event": self._stop_event},
+            name="drm-direct-preview-viewer",
+            daemon=True,
+        )
+        self._thread.start()
+        return self
+
+    def run(self, stop_event: threading.Event | None = None) -> None:
+        """Run the local preview loop in the current thread."""
+
+        local_stop = stop_event or self._stop_event
+        self._ensure_runtime()
+        assert self._renderer is not None
+
+        last_frame_token: int | None = None
+        while not local_stop.is_set():
+            try:
+                frame_bytes = self._frame_provider()
+                if frame_bytes is not None:
+                    frame_token = id(frame_bytes)
+                    if frame_token != last_frame_token:
+                        self._renderer.submit_jpeg_frame(frame_bytes, received_time_s=time.monotonic())
+                        last_frame_token = frame_token
+                self._renderer.render_pending(time.monotonic())
+            except Exception as exc:
+                self._logger.warning("direct preview error on %s: %s", self.config.connector, exc)
+            time.sleep(self._poll_interval_s)
+
+    def close(self) -> None:
+        """Stop the preview thread and release the backend."""
+
+        self._stop_event.set()
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        if self._backend is not None:
+            self._backend.close()
+
+    def _ensure_runtime(self) -> None:
+        if self._renderer is not None:
+            return
+        backend = self._backend_factory(self.config)
+        runtime_config = self.config
+        backend_resolution = getattr(backend, "resolution_px", None)
+        if backend_resolution is not None:
+            runtime_config = replace(self.config, resolution_px=tuple(backend_resolution))
+        self._backend = backend
+        self._renderer = PreviewRenderer(config=runtime_config, backend=backend)
+
+
 def start_preview_viewer_from_env(
     port: int,
     backend_factory: Callable[[PreviewDisplayConfig], Any] | None = None,

@@ -214,10 +214,11 @@ irig_decoding/data/
 .idea
 temp/
 tmp_task_runs/
-sample_tasks/
+tmp_operator_runs/
 box_runtime/audio/local_source_wavs/
 box_runtime/audio/local_sounds/
 *.asv
+.DS_Store
 *.m~
 *.mex*
 Thumbs.db

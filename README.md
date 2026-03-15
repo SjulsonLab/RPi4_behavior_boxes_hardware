@@ -4,11 +4,11 @@ This repository contains only the hardware and low-level support components
 from the original `RPi4_behavior_boxes` codebase.
 
 Included directories:
-- `essential/` (device interfaces, camera, treadmill, pump, acquisition)
+- `box_runtime/` (active behavior, input, output, audio, mock-hardware, and camera runtime services)
 - `debug/` (hardware test/debug scripts)
 - `environment/` (environment specification files)
-- `video_acquisition/` (active HTTP camera service plus archived legacy camera scripts)
-- `HQ_camera/` (HQ camera support scripts from `matt-behavior`)
+- `docs/` (design notes and Sphinx docs)
+- `sample_tasks/` (reference task runner and example tasks)
 
 Excluded from this split:
 - `task_protocol/` (task-specific experiment logic)
@@ -31,8 +31,12 @@ to support independent versioning of hardware code and task code.
 
 ## Head-Fixed GPIO + Mock UI
 
-- BehavBox now uses a strict head-fixed GPIO arrangement hard-coded in:
-  `essential/behavbox.py` (`HEAD_FIXED_GPIO`).
+- BehavBox now uses a profile-aware GPIO manifest loaded from
+  `unified_GPIO_pin_arrangement_v4.csv`.
+- Canonical runtime code uses semantic names such as `reward_left`,
+  `trigger_in`, and `cue_led_5`.
+- User-facing mock/web surfaces display semantic names plus board aliases such
+  as `reward_left (pump1)` or `trigger_out (DIO2)`.
 - Hardware callbacks now enqueue structured `BehaviorEvent` objects with
   detection-time wall-clock timestamps (`name`, `timestamp`) instead of plain
   event-name strings.

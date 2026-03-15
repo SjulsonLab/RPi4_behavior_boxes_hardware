@@ -10,4 +10,7 @@ legacy general-purpose input/output (GPIO) sound-trigger pins.
    :caption: Contents
 
    audio
+   camera
    input
+   output
+   tasks

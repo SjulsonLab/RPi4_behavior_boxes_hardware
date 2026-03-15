@@ -4,27 +4,27 @@ Input Subsystem
 Overview
 --------
 
-The BehavBox input subsystem is being refactored around an explicit runtime
-service instead of direct general-purpose input/output (GPIO) ownership inside
-``BehavBox``. Version 1 of this refactor covers:
+The BehavBox input subsystem now lives in a dedicated runtime service rather
+than direct general-purpose input/output (GPIO) ownership inside
+``BehavBox``. The active runtime covers:
 
-- lick inputs
-- profile-dependent GPIO13/16 inputs
-- an external transistor-transistor logic (TTL) trigger input
+- profile-dependent lick / poke / beam-break inputs
+- a dedicated trigger input on GPIO23
+- a generic user-configurable GPIO4 input when explicitly claimed
 - head-fixed treadmill decoding through ``gpiozero.RotaryEncoder``
-- recording of input events and treadmill speed independent of structured task
-  execution
+- shared recording of input and output events plus treadmill speed independent
+  of structured task execution
 
 The input service remains task-facing through ``BehavBox``. Existing task code
 should continue to consume minimal ``BehaviorEvent`` objects and legacy
-human-readable log files while the runtime adds structured ``events.jsonl``
-artifacts in parallel.
+human-readable log files while the runtime appends minimal structured
+``events.jsonl`` artifacts in parallel.
 
 Profiles
 --------
 
-The input mapping is profile-dependent because GPIO13 and GPIO16 mean different
-things on different boxes.
+The active input mapping is profile-dependent and is loaded from the tracked
+``unified_GPIO_pin_arrangement_v4.csv`` manifest.
 
 Supported version 1 profiles are:
 
@@ -34,17 +34,16 @@ Supported version 1 profiles are:
   GPIO13 and GPIO16 are reserved for ``poke_extra1`` and ``poke_extra2``
   beam-break inputs.
 
-The default profile is ``head_fixed``.
+The canonical runtime profile key is ``box_profile``. The default profile is
+``head_fixed``.
 
 Configuration
 -------------
 
-The planned input-service configuration surface includes:
+The active input-service configuration surface includes:
 
-- ``input_profile``
+- ``box_profile``
   Either ``"head_fixed"`` or ``"freely_moving"``.
-- ``ttl_trigger_pin``
-  External TTL trigger pin. Defaults to ``4``.
 - ``treadmill_speed_hz``
   Fixed-bin treadmill speed sampling rate in hertz. Defaults to ``30.0``.
 - ``treadmill_wheel_diameter_cm``
@@ -57,9 +56,12 @@ Head-Fixed Inputs
 
 In the ``head_fixed`` profile:
 
-- existing lick pins remain unchanged
-- GPIO13 and GPIO16 are owned by ``gpiozero.RotaryEncoder``
-- the old button-style treadmill aliases on GPIO13 and GPIO16 are removed
+- GPIO5, GPIO6, and GPIO12 are ``ir_lick_left``, ``ir_lick_right``, and
+  ``ir_lick_center``
+- GPIO26, GPIO27, and GPIO15 are ``lick_left``, ``lick_right``, and
+  ``lick_center``
+- GPIO13 and GPIO16 are owned by ``gpiozero.RotaryEncoder`` as
+  ``treadmill_1`` and ``treadmill_2``
 
 The encoder sign convention is provisional in version 1. If the physical wheel
 direction is reversed relative to the software convention, the runtime should
@@ -70,7 +72,8 @@ Freely Moving Inputs
 
 In the ``freely_moving`` profile:
 
-- existing lick pins remain unchanged
+- GPIO5, GPIO6, and GPIO12 become ``poke_left``, ``poke_right``, and
+  ``poke_center``
 - GPIO13 and GPIO16 become ``poke_extra1`` and ``poke_extra2`` beam-break
   inputs
 - no treadmill rotary encoder is created on those pins
@@ -78,29 +81,22 @@ In the ``freely_moving`` profile:
 This keeps the freely moving beam-break mapping explicit instead of trying to
 infer it from task type or other session settings.
 
-TTL Trigger
------------
+Trigger Input and User GPIO
+---------------------------
 
-The external TTL trigger is initialized as an input by default and records
-rising and falling edges. In version 1 it does not trigger task behavior
+GPIO23 is the dedicated ``trigger_in`` input and records rising and falling
+edges. In version 1 it does not trigger task behavior
 directly; it only produces input events and log records.
 
-The important ownership rule is that the TTL pin is not permanently owned by
-the input service. A future output service may reclaim that pin during a
-recording session. When this happens, the input service should:
-
-- relinquish ownership of the pin cleanly
-- emit a configuration-change event
-- stop TTL edge logging from that point onward
-
-This allows the same physical pin to start as an input and later become an
-output without silently double-owning it.
+GPIO4 is no longer the default trigger. It is treated as a generic
+user-configurable line that can be claimed later as either an input or an
+output.
 
 Recording Lifecycle
 -------------------
 
-Input recording is independent of structured task execution. The runtime keeps
-two recording-demand flags:
+Input/output recording is independent of structured task execution. The runtime
+keeps two recording-demand flags:
 
 - ``user_wants_recording``
 - ``task_wants_recording``
@@ -138,7 +134,7 @@ standalone input recordings a predictable appliance-style home.
 Recorded Artifacts
 ------------------
 
-Version 1 writes three parallel artifacts:
+The runtime currently writes three parallel input-facing artifacts:
 
 - the existing semicolon-delimited human-readable ``.log`` file
 - minimal structured ``events.jsonl``
@@ -177,22 +173,20 @@ The refactor preserves these compatibility requirements:
 - lick callbacks still enqueue minimal ``BehaviorEvent`` objects
 - the legacy ``interact_list`` continues to update
 - the human-readable log style remains available to operators
-
-The refactor does **not** preserve the old button-style treadmill input aliases
-in the ``head_fixed`` profile, because those pins become true quadrature inputs
-owned by the encoder.
+- alias labels such as ``lick_3`` and board names such as ``IR_rx1`` remain
+  usable in mock/manual control surfaces
 
 Planned Public Surface
 ----------------------
 
-The input service is expected to expose a small recording-oriented surface
-through ``BehavBox``:
+The input service exposes a small recording-oriented surface through
+``BehavBox`` and a shared recorder:
 
 - ``start_recording(...)``
 - ``stop_recording(...)``
 - task-aware recording hooks or equivalents
-- TTL reconfiguration / release hooks
+- generic GPIO4 user-input claiming
 
-The exact Python module layout is still implementation work, but the intent is
-that ``BehavBox`` becomes the composition layer over the input service instead
-of directly wiring lick, beam-break, TTL, and treadmill devices itself.
+``BehavBox`` is now the composition layer over manifest-driven input and output
+services rather than directly wiring lick, beam-break, trigger, treadmill, and
+reward GPIO devices itself.

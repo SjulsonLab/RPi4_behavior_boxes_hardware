@@ -12,7 +12,7 @@ CONTENT_TYPES = {
 }
 
 
-def make_handler(registry, static_dir: str):
+def make_handler(registry, static_dir: str, operator_controller=None):
     class MockWebHandler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             return
@@ -75,6 +75,13 @@ def make_handler(registry, static_dir: str):
                 self._send_json(registry.get_state())
                 return
 
+            if parsed.path == "/api/operator/state":
+                if operator_controller is None:
+                    self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                self._send_json(operator_controller.state())
+                return
+
             if parsed.path == "/api/events":
                 query = parse_qs(parsed.query)
                 limit = 200
@@ -86,7 +93,21 @@ def make_handler(registry, static_dir: str):
                 self._send_json(registry.get_events(limit=limit))
                 return
 
-            if parsed.path in ("/", "/index.html", "/app.js", "/style.css"):
+            if parsed.path == "/debug":
+                self._send_static("/index.html")
+                return
+
+            if parsed.path == "/operator":
+                self.send_response(HTTPStatus.MOVED_PERMANENTLY)
+                self.send_header("Location", "/")
+                self.end_headers()
+                return
+
+            if parsed.path == "/":
+                self._send_static("/operator.html")
+                return
+
+            if os.path.splitext(parsed.path)[1] in CONTENT_TYPES:
                 self._send_static(parsed.path)
                 return
 
@@ -94,11 +115,67 @@ def make_handler(registry, static_dir: str):
 
         def do_POST(self):
             parsed = urlparse(self.path)
-            if not parsed.path.startswith("/api/input/"):
+            if parsed.path == "/api/operator/arm":
+                if operator_controller is None:
+                    self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                try:
+                    body = self._read_json()
+                    session_tag = str(body.get("session_tag", "")).strip()
+                    max_trials = int(body.get("max_trials"))
+                    max_duration_s = float(body.get("max_duration_s"))
+                    fake_mouse_enabled = bool(body.get("fake_mouse_enabled", False))
+                    fake_mouse_seed = body.get("fake_mouse_seed")
+                except (TypeError, ValueError):
+                    self._send_json({"error": "session_tag, max_trials, and max_duration_s are required"}, status=HTTPStatus.BAD_REQUEST)
+                    return
+                try:
+                    self._send_json(
+                        operator_controller.arm_run(
+                            session_tag=session_tag,
+                            max_trials=max_trials,
+                            max_duration_s=max_duration_s,
+                            fake_mouse_enabled=fake_mouse_enabled,
+                            fake_mouse_seed=fake_mouse_seed,
+                        )
+                    )
+                except ValueError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+                except RuntimeError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+                return
+
+            if parsed.path == "/api/operator/start":
+                if operator_controller is None:
+                    self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                try:
+                    self._send_json(operator_controller.start_run())
+                except RuntimeError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+                return
+
+            if parsed.path == "/api/operator/stop":
+                if operator_controller is None:
+                    self._send_json({"error": "operator controller unavailable"}, status=HTTPStatus.SERVICE_UNAVAILABLE)
+                    return
+                try:
+                    self._send_json(operator_controller.stop_run())
+                except RuntimeError as exc:
+                    self._send_json({"error": str(exc)}, status=HTTPStatus.CONFLICT)
+                return
+
+            if parsed.path.startswith("/api/input/"):
+                endpoint_prefix = "/api/input/"
+                registry_method = "input"
+            elif parsed.path.startswith("/api/output/"):
+                endpoint_prefix = "/api/output/"
+                registry_method = "output"
+            else:
                 self._send_text("Not found", status=HTTPStatus.NOT_FOUND)
                 return
 
-            remainder = parsed.path[len("/api/input/"):]
+            remainder = parsed.path[len(endpoint_prefix):]
             parts = [p for p in remainder.split("/") if p]
             if len(parts) != 2:
                 self._send_text("Bad request", status=HTTPStatus.BAD_REQUEST)
@@ -108,14 +185,24 @@ def make_handler(registry, static_dir: str):
             action = parts[1]
 
             try:
-                if action == "press":
+                if registry_method == "input" and action == "press":
                     registry.press_input(label=label, source="ui")
-                elif action == "release":
+                elif registry_method == "input" and action == "release":
                     registry.release_input(label=label, source="ui")
-                elif action == "pulse":
+                elif registry_method == "input" and action == "pulse":
                     body = self._read_json()
                     duration_ms = int(body.get("duration_ms", 100))
                     registry.pulse_input(label=label, duration_ms=duration_ms, source="pulse")
+                elif registry_method == "output" and action == "on":
+                    registry.set_output_state(label=label, active=True, source="ui")
+                elif registry_method == "output" and action == "off":
+                    registry.set_output_state(label=label, active=False, source="ui")
+                elif registry_method == "output" and action == "toggle":
+                    registry.toggle_output(label=label, source="ui")
+                elif registry_method == "output" and action == "pulse":
+                    body = self._read_json()
+                    duration_ms = int(body.get("duration_ms", 100))
+                    registry.pulse_output(label=label, duration_ms=duration_ms, source="pulse")
                 else:
                     self._send_text("Unknown action", status=HTTPStatus.BAD_REQUEST)
                     return

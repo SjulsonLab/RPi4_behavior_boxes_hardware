@@ -49,14 +49,22 @@ class _FrameWriter:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.handle = path.open("w", encoding="utf-8", buffering=1)
-        self.handle.write("frame_index\tsensor_timestamp_ns\tarrival_utc_ns\n")
+        self.handle.write(
+            "frame_index\tsensor_timestamp_ns\tarrival_utc_ns\tboottime_to_realtime_offset_ns\n"
+        )
         self.frame_index = 0
         self.lock = threading.Lock()
 
-    def append(self, sensor_timestamp_ns: int, arrival_utc_ns: int) -> None:
+    def append(
+        self,
+        sensor_timestamp_ns: int,
+        arrival_utc_ns: int,
+        boottime_to_realtime_offset_ns: int,
+    ) -> None:
         with self.lock:
             self.handle.write(
-                f"{self.frame_index}\t{int(sensor_timestamp_ns)}\t{int(arrival_utc_ns)}\n"
+                f"{self.frame_index}\t{int(sensor_timestamp_ns)}\t{int(arrival_utc_ns)}\t"
+                f"{int(boottime_to_realtime_offset_ns)}\n"
             )
             self.frame_index += 1
 
@@ -67,10 +75,11 @@ class _FrameWriter:
 
 
 class Picamera2Recorder:
-    """Real camera recorder used by the HTTP service on Raspberry Pi.
+    """Real camera recorder used by the local and HTTP camera runtimes.
 
     Data contracts:
     - storage_root: directory containing session subdirectories
+    - camera_num: zero-based camera index accepted by Picamera2
     - session_state.json: records state, owner, fps, bitrate_bps, and attempt count
     - raw attempt files: H.264 elementary stream + append-only frame TSV
     """
@@ -78,11 +87,13 @@ class Picamera2Recorder:
     DEFAULT_BITRATE_BPS = 8_000_000
     DEFAULT_FPS = 30.0
 
-    def __init__(self, storage_root: Path):
+    def __init__(self, storage_root: Path, *, camera_num: int = 0, camera_id: str | None = None):
         if Picamera2 is None:
             raise RuntimeError("Picamera2 runtime is unavailable on this host")
         self.storage_root = Path(storage_root)
         self.storage_root.mkdir(parents=True, exist_ok=True)
+        self.camera_num = int(camera_num)
+        self.camera_id = camera_id or f"camera{self.camera_num}"
         self.lock = threading.RLock()
         self.current_session_dir: Path | None = None
         self.current_owner: str | None = None
@@ -94,7 +105,7 @@ class Picamera2Recorder:
         self._recording_encoder = None
         self._stream_output = _StreamingOutput()
 
-        self.picam2 = Picamera2()
+        self.picam2 = Picamera2(camera_num=self.camera_num)
         self._configure_preview_pipeline()
 
     def _configure_preview_pipeline(self) -> None:
@@ -133,7 +144,9 @@ class Picamera2Recorder:
             def append_frame(request):
                 meta = request.get_metadata()
                 sensor_ts = int(meta.get("SensorTimestamp", 0))
-                self._frame_writer.append(sensor_ts, time.time_ns())
+                arrival_utc_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
+                offset_ns = _sample_boottime_to_realtime_offset_ns()
+                self._frame_writer.append(sensor_ts, arrival_utc_ns, offset_ns)
 
             self.picam2.pre_callback = append_frame
             self._recording_encoder = H264Encoder(bitrate=self.current_bitrate_bps)
@@ -240,9 +253,45 @@ class Picamera2Recorder:
     def current_config(self) -> dict[str, Any]:
         config = self.picam2.camera_configuration()
         return {
+            "camera_id": self.camera_id,
+            "camera_num": self.camera_num,
             "main_size": tuple(config["main"]["size"]),
             "frame_rate": float(config["controls"]["FrameRate"]),
         }
+
+    def close(self) -> None:
+        """Close the underlying Picamera2 device and preview encoder."""
+
+        with self.lock:
+            try:
+                self.stop()
+            except Exception:
+                pass
+            try:
+                self.picam2.stop_encoder(self._preview_encoder)
+            except Exception:
+                pass
+            try:
+                self.picam2.stop()
+            except Exception:
+                pass
+
+
+def _sample_boottime_to_realtime_offset_ns() -> int:
+    """Measure the current CLOCK_BOOTTIME to CLOCK_REALTIME offset in ns.
+
+    Returns:
+        int: Estimated offset ``realtime_ns - boottime_ns`` measured using the
+        midpoint of a bracketed BOOTTIME read.
+    """
+
+    if not hasattr(time, "CLOCK_BOOTTIME"):
+        raise RuntimeError("CLOCK_BOOTTIME is unavailable on this platform")
+    boot_before_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    realtime_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
+    boot_after_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    boot_mid_ns = (boot_before_ns + boot_after_ns) // 2
+    return int(realtime_ns - boot_mid_ns)
 
     def configure(self, mode: dict[str, Any]) -> None:
         with self.lock:

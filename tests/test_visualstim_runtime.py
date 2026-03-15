@@ -55,6 +55,7 @@ def _session_info(spec_paths: list[Path]) -> dict[str, object]:
     return {
         "vis_gratings": [str(path) for path in spec_paths],
         "gray_level": 64,
+        "visual_display_backend": "fake",
         "visual_backend": "fake",
         "visual_display_resolution_px": [32, 24],
         "visual_display_refresh_hz": 60.0,
@@ -261,6 +262,84 @@ def test_visualstim_passes_configured_display_connector(monkeypatch, tmp_path: P
     try:
         assert observed["backend"] == "fake"
         assert observed["requested_connector"] == "HDMI-A-9"
+    finally:
+        visual.myscreen.close()
+
+
+def test_visualstim_prefers_visual_display_backend_over_legacy_key(monkeypatch, tmp_path: Path) -> None:
+    """The standardized backend key should override the legacy visual_backend field.
+
+    Inputs:
+        monkeypatch: pytest fixture used to patch display-config discovery.
+        tmp_path: pytest temporary directory used for YAML spec storage.
+
+    Returns:
+        None.
+    """
+
+    observed: dict[str, object] = {}
+
+    def fake_query_display_config(
+        backend: str,
+        requested_resolution_px: tuple[int, int] | None = None,
+        requested_refresh_hz: float | None = None,
+        requested_connector: str | None = None,
+    ):
+        observed["backend"] = backend
+        observed["requested_connector"] = requested_connector
+        return SimpleNamespace(backend="fake", resolution_px=(32, 24), refresh_hz=60.0)
+
+    monkeypatch.setattr(
+        "box_runtime.visual_stimuli.visualstim.query_display_config",
+        fake_query_display_config,
+    )
+
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
+    session_info = _session_info([spec_path])
+    session_info["visual_display_backend"] = "fake"
+    session_info["visual_backend"] = "drm"
+    visual = VisualStim(session_info)
+
+    try:
+        assert observed["backend"] == "fake"
+    finally:
+        visual.myscreen.close()
+
+
+def test_visualstim_defaults_to_hdmi_a_2_connector(monkeypatch, tmp_path: Path) -> None:
+    """VisualStim should default to HDMI-A-2 for one-Pi visual stimulus output.
+
+    Inputs:
+        monkeypatch: pytest fixture used to patch display-config discovery.
+        tmp_path: pytest temporary directory used for YAML spec storage.
+
+    Returns:
+        None.
+    """
+
+    observed: dict[str, object] = {}
+
+    def fake_query_display_config(
+        backend: str,
+        requested_resolution_px: tuple[int, int] | None = None,
+        requested_refresh_hz: float | None = None,
+        requested_connector: str | None = None,
+    ):
+        observed["requested_connector"] = requested_connector
+        return SimpleNamespace(backend="fake", resolution_px=(32, 24), refresh_hz=60.0)
+
+    monkeypatch.setattr(
+        "box_runtime.visual_stimuli.visualstim.query_display_config",
+        fake_query_display_config,
+    )
+
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
+    session_info = _session_info([spec_path])
+    session_info.pop("visual_display_connector", None)
+    visual = VisualStim(session_info)
+
+    try:
+        assert observed["requested_connector"] == "HDMI-A-2"
     finally:
         visual.myscreen.close()
 
