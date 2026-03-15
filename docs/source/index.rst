@@ -13,6 +13,7 @@ repository and are not treated here as implemented behavior.
    :maxdepth: 2
    :caption: Contents
 
+   user_guide
    overview
    audio
    camera
