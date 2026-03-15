@@ -1,11 +1,12 @@
 """GPIO input runtime and treadmill sampling service for BehavBox.
 
 Data contracts:
-- ``session_info``: mapping-like object containing profile/configuration values
-- ``manifest``: ``BoxProfileManifest`` describing profile-specific input pins
-- treadmill speed file: TSV with columns ``utc_posix_s`` and ``speed_cm_per_s``
-- structured event file: minimal JSONL records written through the shared IO
-  recorder
+``session_info`` is a mapping-like object containing profile and configuration
+values. ``manifest`` is a ``BoxProfileManifest`` describing profile-specific
+input pins. The treadmill speed artifact is a tab-separated value (TSV) file
+with columns ``utc_posix_s`` and ``speed_cm_per_s``. Structured events are
+written as minimal newline-delimited JavaScript Object Notation (JSONL) records
+through the shared input/output recorder.
 """
 
 from __future__ import annotations
