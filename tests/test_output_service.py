@@ -50,11 +50,13 @@ def _session_info(base_dir: str, **overrides) -> dict:
     return info
 
 
-def test_load_box_profile_uses_v4_csv_and_profile_specific_outputs():
+def test_load_box_profile_uses_fixed_python_mappings_and_profile_specific_outputs():
     head_fixed = load_box_profile("head_fixed")
     freely_moving = load_box_profile("freely_moving")
 
-    assert head_fixed.source_csv.name == "unified_GPIO_pin_arrangement_v4.csv"
+    assert not hasattr(head_fixed, "source_csv")
+    assert head_fixed.profile_name == "head_fixed"
+    assert freely_moving.profile_name == "freely_moving"
     assert head_fixed.inputs["trigger_in"].pin == 23
     assert head_fixed.outputs["trigger_out"].pin == 24
     assert head_fixed.outputs["cue_led_5"].pin == 10
@@ -66,6 +68,11 @@ def test_load_box_profile_uses_v4_csv_and_profile_specific_outputs():
     assert "reward_5" not in head_fixed.outputs
     assert "reward_5" in freely_moving.outputs
     assert "airpuff" not in freely_moving.outputs
+    assert freely_moving.inputs["poke_left"].pin == 5
+    assert freely_moving.inputs["poke_right"].pin == 6
+    assert freely_moving.inputs["poke_center"].pin == 12
+    assert freely_moving.inputs["poke_extra1"].pin == 13
+    assert freely_moving.inputs["poke_extra2"].pin == 16
 
 
 def test_freely_moving_profile_exposes_reward_5_not_airpuff():

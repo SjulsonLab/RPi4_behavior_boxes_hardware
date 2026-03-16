@@ -75,10 +75,11 @@ class TestManifestAndMapping(unittest.TestCase):
     def tearDown(self):
         os.chdir(self._cwd)
 
-    def test_head_fixed_manifest_uses_v4_mapping(self):
+    def test_head_fixed_manifest_uses_fixed_python_mapping(self):
         manifest = load_box_profile("head_fixed")
 
-        self.assertEqual(manifest.source_csv.name, "unified_GPIO_pin_arrangement_v4.csv")
+        self.assertEqual(manifest.profile_name, "head_fixed")
+        self.assertFalse(hasattr(manifest, "source_csv"))
         self.assertEqual(manifest.inputs["trigger_in"].pin, 23)
         self.assertEqual(manifest.outputs["trigger_out"].pin, 24)
         self.assertEqual(manifest.outputs["cue_led_5"].pin, 10)
@@ -86,6 +87,20 @@ class TestManifestAndMapping(unittest.TestCase):
         self.assertEqual(manifest.user_configurable["user_configurable"].pin, 4)
         self.assertIn(9, manifest.reserved)
         self.assertEqual(manifest.reserved[9].board_alias, "DIO3")
+
+    def test_freely_moving_manifest_uses_fixed_python_mapping(self):
+        manifest = load_box_profile("freely_moving")
+
+        self.assertEqual(manifest.profile_name, "freely_moving")
+        self.assertFalse(hasattr(manifest, "source_csv"))
+        self.assertEqual(manifest.inputs["trigger_in"].pin, 23)
+        self.assertEqual(manifest.inputs["poke_left"].pin, 5)
+        self.assertEqual(manifest.inputs["poke_right"].pin, 6)
+        self.assertEqual(manifest.inputs["poke_center"].pin, 12)
+        self.assertEqual(manifest.inputs["poke_extra1"].pin, 13)
+        self.assertEqual(manifest.inputs["poke_extra2"].pin, 16)
+        self.assertEqual(manifest.outputs["reward_5"].pin, 8)
+        self.assertNotIn("airpuff", manifest.outputs)
 
     def test_behavbox_registers_v4_head_fixed_pins(self):
         with tempfile.TemporaryDirectory() as tmp:
