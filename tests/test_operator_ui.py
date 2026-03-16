@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -14,7 +15,15 @@ os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
 os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
 
 from box_runtime.mock_hw.operator_controller import OperatorRunController
-from box_runtime.mock_hw.registry import REGISTRY, set_audio_state, set_camera_state, set_session_state, set_task_state
+from box_runtime.mock_hw.devices import Button
+from box_runtime.mock_hw.registry import (
+    REGISTRY,
+    register_pin_label,
+    set_audio_state,
+    set_camera_state,
+    set_session_state,
+    set_task_state,
+)
 from box_runtime.mock_hw.web import make_handler
 
 
@@ -302,6 +311,8 @@ class _FakeOperatorController:
 
 def test_operator_routes_and_page_contract(tmp_path: Path) -> None:
     REGISTRY.reset()
+    _ = Button(915)
+    register_pin_label(915, "lick_center", direction="input", aliases=("lick_3",))
     set_session_state(active=True, lifecycle_state="running", protocol_name="head_fixed_gonogo", box_name="test_box")
     set_task_state(
         protocol_name="head_fixed_gonogo",
@@ -337,6 +348,7 @@ def test_operator_routes_and_page_contract(tmp_path: Path) -> None:
         },
     )
     controller = _FakeOperatorController()
+    expected_hostname = socket.gethostname()
 
     with _temporary_server(controller) as base_url:
         operator_html = _json_request(f"{base_url}/")
@@ -349,13 +361,21 @@ def test_operator_routes_and_page_contract(tmp_path: Path) -> None:
             payload={"session_tag": "operator_ui_test", "max_trials": 6, "max_duration_s": 120.0, "fake_mouse_enabled": True, "fake_mouse_seed": 11},
         )
         started = _json_request(f"{base_url}/api/operator/start", method="POST", payload={})
+        artificial_lick = _json_request(
+            f"{base_url}/api/input/lick_3/pulse",
+            method="POST",
+            payload={"duration_ms": 10},
+        )
+        time.sleep(0.05)
+        events = _json_request(f"{base_url}/api/events?limit=10")
         stopped = _json_request(f"{base_url}/api/operator/stop", method="POST")
 
-    assert "BehavBox Operator Console" in operator_html
+    assert f"BehavBox {expected_hostname} Operator Console" in operator_html
     assert 'href="/debug"' in operator_html
     assert "Arm Session" in operator_html
     assert "Start Task" in operator_html
     assert "Stop Session" in operator_html
+    assert "Artificial center lick" in operator_html
     assert "Fake mouse" in operator_html
     assert "performance-plot" in operator_html
     assert 'class="plot-shell"' in operator_html
@@ -371,13 +391,17 @@ def test_operator_routes_and_page_contract(tmp_path: Path) -> None:
     assert operator_html.index("Session Control") < operator_html.index("Camera Views")
     assert operator_html.index("Camera Views") < operator_html.index("Runtime Summary")
     assert operator_html.index("Event Summary") < operator_html.index("Operator State")
-    assert "BehavBox Mock Hardware" in debug_html
+    assert f"BehavBox {expected_hostname} Mock Hardware" in debug_html
     assert 'href="/"' in debug_html
     assert operator_state["status"] == "idle"
     assert armed["status"] == "armed"
     assert armed["fake_mouse"]["enabled"] is True
     assert started["status"] == "running"
     assert started["session_tag"] == "operator_ui_test"
+    assert artificial_lick["ok"] is True
+    event_sources = [(event["label"], event["value"], event["source"]) for event in events["events"] if event.get("kind") == "pin"]
+    assert ("lick_center", 1, "pulse") in event_sources
+    assert ("lick_center", 0, "pulse") in event_sources
     assert stopped["status"] == "completed"
 
 
