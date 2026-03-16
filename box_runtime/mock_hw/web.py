@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, unquote, urlparse
@@ -13,6 +14,8 @@ CONTENT_TYPES = {
 
 
 def make_handler(registry, static_dir: str, operator_controller=None):
+    hostname = socket.gethostname()
+
     class MockWebHandler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             return
@@ -52,6 +55,8 @@ def make_handler(registry, static_dir: str, operator_controller=None):
             content_type = CONTENT_TYPES.get(ext, "application/octet-stream")
             with open(file_path, "rb") as f:
                 body = f.read()
+            if ext == ".html":
+                body = body.decode("utf-8").replace("__BEHAVBOX_HOSTNAME__", hostname).encode("utf-8")
 
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", content_type)

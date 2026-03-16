@@ -3,14 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>BehavBox Operator Console</title>
+  <title>BehavBox __BEHAVBOX_HOSTNAME__ Operator Console</title>
   <link rel="stylesheet" href="/operator.css">
 </head>
 <body>
   <header class="hero">
     <div>
       <p class="eyebrow">Operator-facing UI</p>
-      <h1>BehavBox Operator Console</h1>
+      <h1>BehavBox __BEHAVBOX_HOSTNAME__ Operator Console</h1>
       <p id="operator-status-line" class="subtitle">Connecting to runtime...</p>
     </div>
     <nav class="topnav">
@@ -68,6 +68,9 @@
     <section class="panel">
       <div class="panel-header">
         <h2>Runtime Summary</h2>
+      </div>
+      <div class="launch-actions">
+        <button id="artificial-center-lick" type="button" class="secondary">Artificial center lick</button>
       </div>
       <div class="status-grid">
         <article id="session-status" class="card"></article>

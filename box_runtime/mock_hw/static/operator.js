@@ -11,6 +11,7 @@ const cameraGridEl = document.getElementById('camera-grid');
 const armForm = document.getElementById('arm-form');
 const startTaskButton = document.getElementById('start-task');
 const stopButton = document.getElementById('stop-session');
+const artificialCenterLickButton = document.getElementById('artificial-center-lick');
 let performanceChart = null;
 
 const previewVisibility = {
@@ -342,6 +343,16 @@ stopButton.addEventListener('click', async () => {
     await refresh();
   } catch (err) {
     operatorStatusLine.textContent = `Stop failed: ${err.message}`;
+  }
+});
+
+artificialCenterLickButton.addEventListener('click', async () => {
+  try {
+    await postJson('/api/input/lick_3/pulse', { duration_ms: 50 });
+    operatorStatusLine.textContent = 'Injected artificial center lick.';
+    await refresh();
+  } catch (err) {
+    operatorStatusLine.textContent = `Artificial lick failed: ${err.message}`;
   }
 });
 
