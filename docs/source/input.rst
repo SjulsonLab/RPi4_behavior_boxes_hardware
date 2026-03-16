@@ -23,8 +23,11 @@ human-readable log files while the runtime appends minimal structured
 Profiles
 --------
 
-The active input mapping is profile-dependent and is loaded from the tracked
-``unified_GPIO_pin_arrangement_v4.csv`` manifest.
+The active input mapping is profile-dependent and is defined in one fixed
+Python source of truth: ``box_runtime/io_manifest.py``.
+
+These mappings are not user-configurable at runtime. If the hardware pinout
+changes, the code should be updated directly.
 
 Supported version 1 profiles are:
 

@@ -5,9 +5,9 @@ Overview
 --------
 
 The BehavBox output subsystem now lives in a dedicated ``OutputService`` rather
-than the legacy ``Pump`` helper embedded in ``BehavBox``. The output service is
-manifest-driven and uses ``unified_GPIO_pin_arrangement_v4.csv`` as the
-authoritative source of profile-specific GPIO mappings.
+than the legacy ``Pump`` helper embedded in ``BehavBox``. The output service
+uses the fixed profile mappings defined in ``box_runtime/io_manifest.py`` as
+the authoritative source of GPIO assignments.
 
 The active output service owns:
 
@@ -22,15 +22,16 @@ The active output service owns:
 Naming and Aliases
 ------------------
 
-Runtime code uses canonical semantic names from the GPIO manifest, for example:
+Runtime code uses canonical semantic names from the fixed GPIO definitions, for
+example:
 
 - ``reward_left``
 - ``reward_center``
 - ``trigger_out``
 - ``cue_led_5``
 
-Manual-control and browser surfaces also expose board aliases from the
-``PCB Name`` column, for example:
+Manual-control and browser surfaces also expose the fixed board aliases stored
+in the Python mapping, for example:
 
 - ``reward_left (pump1)``
 - ``trigger_out (DIO2)``

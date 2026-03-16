@@ -1,10 +1,10 @@
-"""Profile-aware GPIO manifest loading from the tracked v4 CSV.
+"""Fixed GPIO mappings for the supported BehavBox profiles.
 
 Data contracts:
 - ``profile_name``: profile selector string, one of ``"head_fixed"`` or
   ``"freely_moving"``
-- CSV rows: repository-tracked ``unified_GPIO_pin_arrangement_v4.csv`` records
-  with GPIO numbers as scalar integers
+- GPIO definitions: fixed Python literals in this file, not external data
+  files
 - return value: ``BoxProfileManifest`` containing dictionaries keyed by
   canonical semantic name, with each pin spec storing GPIO number, semantic
   name, board alias, and alternate aliases
@@ -12,27 +12,18 @@ Data contracts:
 
 from __future__ import annotations
 
-from csv import reader
 from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
-import re
-
-
-PROFILE_COLUMN_NAMES = {
-    "head_fixed": "Head-fixed",
-    "freely_moving": "Freely-moving",
-}
 
 
 @dataclass(frozen=True)
 class GpioPinSpec:
-    """One resolved GPIO role from the profile manifest.
+    """One resolved GPIO role from the fixed profile mapping.
 
     Data contracts:
-    - ``pin``: BCM GPIO number as ``int``
+    - ``pin``: Broadcom serial controller (BCM) GPIO number as ``int``
     - ``canonical_name``: canonical semantic identifier as snake_case ``str``
-    - ``board_alias``: board/silkscreen connector name as ``str`` or ``None``
+    - ``board_alias``: board or silkscreen connector name as ``str`` or ``None``
     - ``direction``: one of ``"input"``, ``"output"``, ``"user_configurable"``,
       or ``"reserved"``
     - ``aliases``: alternate label tuple used by manual-control surfaces
@@ -49,7 +40,7 @@ class GpioPinSpec:
 
 @dataclass(frozen=True)
 class BoxProfileManifest:
-    """Resolved GPIO manifest for one named box profile.
+    """Resolved GPIO mapping for one named box profile.
 
     Data contracts:
     - ``inputs``/``outputs``/``user_configurable``: dictionaries keyed by
@@ -59,107 +50,346 @@ class BoxProfileManifest:
     """
 
     profile_name: str
-    source_csv: Path
     inputs: dict[str, GpioPinSpec]
     outputs: dict[str, GpioPinSpec]
     user_configurable: dict[str, GpioPinSpec]
     reserved: dict[int, GpioPinSpec]
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[1]
-
-
-def _normalize_name(value: str) -> str:
-    text = str(value).strip()
-    if not text:
-        return ""
-    text = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", text)
-    text = text.replace("-", "_").replace("/", "_")
-    text = re.sub(r"[^0-9A-Za-z_]+", "_", text)
-    text = re.sub(r"_+", "_", text).strip("_")
-    normalized = text.lower()
-    normalized = re.sub(r"^cue_led([0-9]+)$", r"cue_led_\1", normalized)
-    return normalized
-
-
-def _build_aliases(canonical_name: str, board_alias: str | None, csv_value: str) -> tuple[str, ...]:
+def _dedupe_aliases(*values: str | None) -> tuple[str, ...]:
     aliases: list[str] = []
-
-    def _append(alias_value: str | None) -> None:
-        if not alias_value:
-            return
-        alias_text = str(alias_value).strip()
-        if not alias_text:
-            return
-        if alias_text not in aliases:
-            aliases.append(alias_text)
-
-    _append(board_alias)
-    normalized_csv_value = _normalize_name(csv_value)
-    if normalized_csv_value and normalized_csv_value != canonical_name:
-        _append(normalized_csv_value)
-
-    lick_aliases = {
-        "lick_left": "lick_1",
-        "lick_right": "lick_2",
-        "lick_center": "lick_3",
-    }
-    treadmill_aliases = {
-        "treadmill_1": "treadmill_encoder_a",
-        "treadmill_2": "treadmill_encoder_b",
-    }
-    _append(lick_aliases.get(canonical_name))
-    _append(treadmill_aliases.get(canonical_name))
+    for value in values:
+        if value is None:
+            continue
+        alias = str(value).strip()
+        if alias and alias not in aliases:
+            aliases.append(alias)
     return tuple(aliases)
 
 
-def _canonical_user_name() -> str:
-    return "user_configurable"
+def _spec(
+    *,
+    pin: int,
+    canonical_name: str,
+    board_alias: str | None,
+    direction: str,
+    device_type: str,
+    notes: str = "",
+    aliases: tuple[str, ...] = (),
+) -> GpioPinSpec:
+    """Build one fixed GPIO pin specification.
 
+    Data contracts:
+    - ``pin``: BCM GPIO number as ``int``
+    - ``canonical_name``: semantic pin name as snake_case ``str``
+    - ``board_alias``: silkscreen or board label as ``str`` or ``None``
+    - ``direction``: mapping role string
+    - ``device_type``: coarse hardware category string
+    - ``notes``: human-readable free text
+    - ``aliases``: alternate labels as ``tuple[str, ...]``
+    - returns: immutable ``GpioPinSpec``
+    """
 
-def _classify_direction(csv_type: str, canonical_name: str) -> str:
-    type_name = _normalize_name(csv_type)
-    if type_name == "user_configurable":
-        return "user_configurable"
-    if canonical_name.endswith("_out") or type_name in {"pump", "cue_led"}:
-        return "output"
-    if canonical_name.endswith("_in") or type_name in {"ir_sensor", "lick", "trigger"}:
-        return "input"
-    raise ValueError(f"Cannot classify GPIO direction for type={csv_type!r}, name={canonical_name!r}")
-
-
-def _build_spec(
-    gpio_pin: int,
-    csv_type: str,
-    board_alias: str,
-    profile_value: str,
-    notes: str,
-) -> GpioPinSpec | None:
-    raw_value = str(profile_value).strip()
-    if not raw_value or raw_value.lower() in {"(unused)", "unused"}:
-        return None
-
-    if _normalize_name(csv_type) == "user_configurable":
-        canonical_name = _canonical_user_name()
-    else:
-        canonical_name = _normalize_name(raw_value)
-    direction = _classify_direction(csv_type, canonical_name)
-    aliases = _build_aliases(canonical_name, board_alias or None, raw_value)
     return GpioPinSpec(
-        pin=int(gpio_pin),
-        canonical_name=canonical_name,
-        board_alias=board_alias or None,
-        direction=direction,
-        device_type=_normalize_name(csv_type),
-        notes=str(notes).strip(),
-        aliases=aliases,
+        pin=int(pin),
+        canonical_name=str(canonical_name),
+        board_alias=board_alias,
+        direction=str(direction),
+        device_type=str(device_type),
+        notes=str(notes),
+        aliases=_dedupe_aliases(board_alias, *aliases),
     )
+
+
+def _shared_outputs() -> dict[str, GpioPinSpec]:
+    return {
+        "reward_left": _spec(
+            pin=19,
+            canonical_name="reward_left",
+            board_alias="pump1",
+            direction="output",
+            device_type="pump",
+        ),
+        "reward_right": _spec(
+            pin=20,
+            canonical_name="reward_right",
+            board_alias="pump2",
+            direction="output",
+            device_type="pump",
+        ),
+        "reward_center": _spec(
+            pin=21,
+            canonical_name="reward_center",
+            board_alias="pump3",
+            direction="output",
+            device_type="pump",
+        ),
+        "reward_4": _spec(
+            pin=7,
+            canonical_name="reward_4",
+            board_alias="pump4",
+            direction="output",
+            device_type="pump",
+        ),
+        "vacuum": _spec(
+            pin=25,
+            canonical_name="vacuum",
+            board_alias="pump_en",
+            direction="output",
+            device_type="pump",
+        ),
+        "cue_led_1": _spec(
+            pin=22,
+            canonical_name="cue_led_1",
+            board_alias="Cue1",
+            direction="output",
+            device_type="cue_led",
+            aliases=("cueLED1",),
+        ),
+        "cue_led_2": _spec(
+            pin=18,
+            canonical_name="cue_led_2",
+            board_alias="Cue2",
+            direction="output",
+            device_type="cue_led",
+            aliases=("cueLED2",),
+        ),
+        "cue_led_3": _spec(
+            pin=17,
+            canonical_name="cue_led_3",
+            board_alias="Cue3",
+            direction="output",
+            device_type="cue_led",
+            aliases=("cueLED3",),
+        ),
+        "cue_led_4": _spec(
+            pin=14,
+            canonical_name="cue_led_4",
+            board_alias="Cue4",
+            direction="output",
+            device_type="cue_led",
+            aliases=("cueLED4",),
+        ),
+        "cue_led_5": _spec(
+            pin=10,
+            canonical_name="cue_led_5",
+            board_alias="DIO4",
+            direction="output",
+            device_type="cue_led",
+            aliases=("cueLED5",),
+        ),
+        "cue_led_6": _spec(
+            pin=11,
+            canonical_name="cue_led_6",
+            board_alias="DIO5",
+            direction="output",
+            device_type="cue_led",
+            aliases=("cueLED6",),
+        ),
+        "trigger_out": _spec(
+            pin=24,
+            canonical_name="trigger_out",
+            board_alias="DIO2",
+            direction="output",
+            device_type="trigger",
+        ),
+    }
+
+
+def _shared_reserved() -> dict[int, GpioPinSpec]:
+    return {
+        9: _spec(
+            pin=9,
+            canonical_name="reserved_gpio_9",
+            board_alias="DIO3",
+            direction="reserved",
+            device_type="irig_output",
+            notes="not used by behavbox (reserved for IRIG output)",
+        ),
+    }
+
+
+def _fixed_head_fixed_manifest() -> BoxProfileManifest:
+    inputs = {
+        "trigger_in": _spec(
+            pin=23,
+            canonical_name="trigger_in",
+            board_alias="DIO1",
+            direction="input",
+            device_type="trigger",
+        ),
+        "ir_lick_left": _spec(
+            pin=5,
+            canonical_name="ir_lick_left",
+            board_alias="IR_rx1",
+            direction="input",
+            device_type="ir_sensor",
+        ),
+        "ir_lick_right": _spec(
+            pin=6,
+            canonical_name="ir_lick_right",
+            board_alias="IR_rx2",
+            direction="input",
+            device_type="ir_sensor",
+        ),
+        "ir_lick_center": _spec(
+            pin=12,
+            canonical_name="ir_lick_center",
+            board_alias="IR_rx3",
+            direction="input",
+            device_type="ir_sensor",
+        ),
+        "treadmill_1": _spec(
+            pin=13,
+            canonical_name="treadmill_1",
+            board_alias="IR_rx4",
+            direction="input",
+            device_type="ir_sensor",
+            notes="connect treadmill to the negative pin only",
+            aliases=("Treadmill 1", "treadmill_encoder_a"),
+        ),
+        "treadmill_2": _spec(
+            pin=16,
+            canonical_name="treadmill_2",
+            board_alias="IR_rx5",
+            direction="input",
+            device_type="ir_sensor",
+            notes="connect treadmill to the negative pin only",
+            aliases=("Treadmill 2", "treadmill_encoder_b"),
+        ),
+        "lick_left": _spec(
+            pin=26,
+            canonical_name="lick_left",
+            board_alias="Lick1",
+            direction="input",
+            device_type="lick",
+            aliases=("lick_1",),
+        ),
+        "lick_right": _spec(
+            pin=27,
+            canonical_name="lick_right",
+            board_alias="Lick2",
+            direction="input",
+            device_type="lick",
+            aliases=("lick_2",),
+        ),
+        "lick_center": _spec(
+            pin=15,
+            canonical_name="lick_center",
+            board_alias="Lick3",
+            direction="input",
+            device_type="lick",
+            aliases=("lick_3",),
+        ),
+    }
+    outputs = _shared_outputs()
+    outputs["airpuff"] = _spec(
+        pin=8,
+        canonical_name="airpuff",
+        board_alias="pump5",
+        direction="output",
+        device_type="pump",
+    )
+    return BoxProfileManifest(
+        profile_name="head_fixed",
+        inputs=inputs,
+        outputs=outputs,
+        user_configurable={
+            "user_configurable": _spec(
+                pin=4,
+                canonical_name="user_configurable",
+                board_alias="Camera",
+                direction="user_configurable",
+                device_type="user_configurable",
+                aliases=("user",),
+            )
+        },
+        reserved=_shared_reserved(),
+    )
+
+
+def _fixed_freely_moving_manifest() -> BoxProfileManifest:
+    inputs = {
+        "trigger_in": _spec(
+            pin=23,
+            canonical_name="trigger_in",
+            board_alias="DIO1",
+            direction="input",
+            device_type="trigger",
+        ),
+        "poke_left": _spec(
+            pin=5,
+            canonical_name="poke_left",
+            board_alias="IR_rx1",
+            direction="input",
+            device_type="ir_sensor",
+        ),
+        "poke_right": _spec(
+            pin=6,
+            canonical_name="poke_right",
+            board_alias="IR_rx2",
+            direction="input",
+            device_type="ir_sensor",
+        ),
+        "poke_center": _spec(
+            pin=12,
+            canonical_name="poke_center",
+            board_alias="IR_rx3",
+            direction="input",
+            device_type="ir_sensor",
+        ),
+        "poke_extra1": _spec(
+            pin=13,
+            canonical_name="poke_extra1",
+            board_alias="IR_rx4",
+            direction="input",
+            device_type="ir_sensor",
+            notes="connect treadmill to the negative pin only",
+        ),
+        "poke_extra2": _spec(
+            pin=16,
+            canonical_name="poke_extra2",
+            board_alias="IR_rx5",
+            direction="input",
+            device_type="ir_sensor",
+            notes="connect treadmill to the negative pin only",
+        ),
+    }
+    outputs = _shared_outputs()
+    outputs["reward_5"] = _spec(
+        pin=8,
+        canonical_name="reward_5",
+        board_alias="pump5",
+        direction="output",
+        device_type="pump",
+    )
+    return BoxProfileManifest(
+        profile_name="freely_moving",
+        inputs=inputs,
+        outputs=outputs,
+        user_configurable={
+            "user_configurable": _spec(
+                pin=4,
+                canonical_name="user_configurable",
+                board_alias="Camera",
+                direction="user_configurable",
+                device_type="user_configurable",
+                aliases=("user",),
+            )
+        },
+        reserved=_shared_reserved(),
+    )
+
+
+FIXED_GPIO_PROFILES = {
+    "head_fixed": _fixed_head_fixed_manifest(),
+    "freely_moving": _fixed_freely_moving_manifest(),
+}
 
 
 @lru_cache(maxsize=8)
 def load_box_profile(profile_name: str) -> BoxProfileManifest:
-    """Load one profile manifest from the tracked v4 CSV.
+    """Load one fixed profile mapping from this module.
 
     Args:
     - ``profile_name``: profile selector string.
@@ -169,66 +399,6 @@ def load_box_profile(profile_name: str) -> BoxProfileManifest:
     """
 
     normalized_profile = str(profile_name).strip().lower()
-    if normalized_profile not in PROFILE_COLUMN_NAMES:
+    if normalized_profile not in FIXED_GPIO_PROFILES:
         raise KeyError(f"Unknown box profile {profile_name!r}")
-
-    csv_path = _repo_root() / "unified_GPIO_pin_arrangement_v4.csv"
-    with csv_path.open("r", encoding="utf-8", newline="") as handle:
-        rows = list(reader(handle))
-    if not rows:
-        raise RuntimeError(f"GPIO manifest CSV is empty: {csv_path}")
-
-    header = [str(value).strip() for value in rows[0]]
-    index_lookup = {name: header.index(name) for name in header if name}
-    required_columns = ["GPIO", "Type", "PCB Name", PROFILE_COLUMN_NAMES[normalized_profile], "notes"]
-    missing = [name for name in required_columns if name not in index_lookup]
-    if missing:
-        raise RuntimeError(f"GPIO manifest is missing required columns: {missing}")
-
-    inputs: dict[str, GpioPinSpec] = {}
-    outputs: dict[str, GpioPinSpec] = {}
-    user_configurable: dict[str, GpioPinSpec] = {}
-    reserved: dict[int, GpioPinSpec] = {}
-
-    for row in rows[1:]:
-        if len(row) <= index_lookup["GPIO"]:
-            continue
-        gpio_text = str(row[index_lookup["GPIO"]]).strip()
-        if not gpio_text:
-            continue
-        gpio_pin = int(gpio_text)
-        csv_type = str(row[index_lookup["Type"]]).strip()
-        board_alias = str(row[index_lookup["PCB Name"]]).strip()
-        profile_value = str(row[index_lookup[PROFILE_COLUMN_NAMES[normalized_profile]]]).strip()
-        notes = str(row[index_lookup["notes"]]).strip()
-
-        spec = _build_spec(gpio_pin, csv_type, board_alias, profile_value, notes)
-        if spec is None:
-            reserved[gpio_pin] = GpioPinSpec(
-                pin=gpio_pin,
-                canonical_name=f"reserved_gpio_{gpio_pin}",
-                board_alias=board_alias or None,
-                direction="reserved",
-                device_type=_normalize_name(csv_type),
-                notes=notes,
-                aliases=tuple(alias for alias in [board_alias] if alias),
-            )
-            continue
-
-        if spec.direction == "input":
-            inputs[spec.canonical_name] = spec
-        elif spec.direction == "output":
-            outputs[spec.canonical_name] = spec
-        elif spec.direction == "user_configurable":
-            user_configurable[spec.canonical_name] = spec
-        else:
-            reserved[gpio_pin] = spec
-
-    return BoxProfileManifest(
-        profile_name=normalized_profile,
-        source_csv=csv_path,
-        inputs=inputs,
-        outputs=outputs,
-        user_configurable=user_configurable,
-        reserved=reserved,
-    )
+    return FIXED_GPIO_PROFILES[normalized_profile]

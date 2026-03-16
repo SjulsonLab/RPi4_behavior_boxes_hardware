@@ -93,7 +93,10 @@ Hardware/runtime support for RPi4 behavior boxes, including strict head-fixed GP
 - `interact_list` entries now reuse the same detection timestamp used for queue event creation.
 
 ## Profile-Aware GPIO Mapping
-- Active GPIO mapping is loaded from `unified_GPIO_pin_arrangement_v4.csv`, not a hard-coded dict.
+- Active GPIO mapping is defined in one fixed Python source of truth:
+  `box_runtime/io_manifest.py`.
+- There is no runtime CSV loading or alternate GPIO configuration source.
+- If the pinout changes, the code should be edited directly.
 - Canonical profile key: `box_profile`
   - fallback: `input_profile` if `box_profile` is absent
 - Dedicated trigger lines:
