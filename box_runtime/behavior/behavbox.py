@@ -27,6 +27,12 @@ import logging
 from colorama import Fore, Style
 from typing import Callable, Optional
 
+from box_runtime.behavior.plotting_support import (
+    detect_plotting_dependencies,
+    detect_desktop_session,
+    import_plotting_modules,
+    require_plotting_ready,
+)
 from box_runtime.behavior.gpio_backend import (
     is_raspberry_pi,
     set_audio_state,
@@ -50,19 +56,10 @@ try:
 except Exception:
     ADS1x15 = None
 
-PLOTTING_AVAILABLE = False
-try:
-    import pygame
-    import pygame.display
-    import matplotlib
-    matplotlib.use('module://box_runtime.support.pygame_matplotlib.backend_pygame')
-    import matplotlib.pyplot as plt
-    import matplotlib.figure as fg
-    PLOTTING_AVAILABLE = True
-except Exception:
-    pygame = None
-    plt = None
-    fg = None
+PLOTTING_AVAILABLE = detect_plotting_dependencies().ok
+pygame = None
+plt = None
+fg = None
 
 @dataclass(frozen=True)
 class BehaviorEvent:
@@ -161,6 +158,17 @@ class BehavBox(object):
         self.ADC = None
         self.keyboard_active = False
         self.main_display = None
+        self._pygame = None
+        self._plt = None
+        self._fg = None
+        self.plotting_status = {
+            "dependencies_ok": PLOTTING_AVAILABLE,
+            "desktop_session_ok": False,
+            "display_env": None,
+            "required": bool(self.session_info.get("plotting_required", False)),
+            "probe_ok": False,
+            "failure_reason": None,
+        }
         self.user_output = None
         self.DIO5 = None
         self.DIO4 = None
@@ -373,14 +381,44 @@ class BehavBox(object):
 
     def _prepare_keyboard(self) -> None:
         self.keyboard_active = False
-        if not PLOTTING_AVAILABLE:
-            print("Pygame/matplotlib plotting unavailable; keyboard simulation disabled.")
+        self.main_display = None
+        self._pygame = None
+        self._plt = None
+        self._fg = None
+        plotting_required = bool(self.session_info.get("plotting_required", False))
+        dependency_status = detect_plotting_dependencies()
+        desktop_status = detect_desktop_session()
+        self.plotting_status.update(
+            {
+                "dependencies_ok": dependency_status.ok,
+                "desktop_session_ok": desktop_status.ok,
+                "display_env": desktop_status.display_env,
+                "required": plotting_required,
+                "probe_ok": False,
+                "failure_reason": None,
+            }
+        )
+        if not dependency_status.ok:
+            message = "Pygame/matplotlib plotting unavailable; keyboard simulation disabled."
+            print(message)
+            self.plotting_status["failure_reason"] = dependency_status.reason
+            if plotting_required:
+                raise RuntimeError(dependency_status.reason)
+            return
+        if not desktop_status.ok:
+            message = "Desktop plotting unavailable; keyboard simulation disabled."
+            print(message)
+            self.plotting_status["failure_reason"] = desktop_status.reason
+            if plotting_required:
+                raise RuntimeError(desktop_status.reason)
             return
         try:
-            pygame.init()
-            self.main_display = pygame.display.set_mode((800, 600))
-            pygame.display.set_caption(self.session_info["box_name"])
-            fig, axes = plt.subplots(1, 1)
+            require_plotting_ready(repo_root=Path(__file__).resolve().parents[2], timeout_s=10.0)
+            self._pygame, self._plt, self._fg = import_plotting_modules()
+            self._pygame.init()
+            self.main_display = self._pygame.display.set_mode((800, 600))
+            self._pygame.display.set_caption(self.session_info["box_name"])
+            fig, axes = self._plt.subplots(1, 1)
             axes.plot()
             self.check_plot(fig)
             print(
@@ -399,10 +437,14 @@ class BehavBox(object):
                 + Style.RESET_ALL
             )
             self.keyboard_active = True
+            self.plotting_status["probe_ok"] = True
         except Exception as error_message:
             print("pygame issue\n")
             print(str(error_message))
             self.main_display = None
+            self.plotting_status["failure_reason"] = str(error_message)
+            if plotting_required:
+                raise
 
     def prepare_session(self) -> None:
         """Prepare all long-lived runtime resources for one upcoming session."""
@@ -823,13 +865,16 @@ class BehavBox(object):
             except Exception:
                 pass
             self.visualstim = None
-        if PLOTTING_AVAILABLE:
+        if self._pygame is not None:
             try:
-                pygame.quit()
+                self._pygame.quit()
             except Exception:
                 pass
         self.keyboard_active = False
         self.main_display = None
+        self._pygame = None
+        self._plt = None
+        self._fg = None
         self._is_closed = True
         self._lifecycle_state = "closed"
         self.publish_runtime_state("session", active=False, lifecycle_state="closed")
@@ -848,11 +893,11 @@ class BehavBox(object):
     2. show a x,y axis with a count of trial
     """
     def check_plot(self, figure=None, FPS=144):
-        if figure and PLOTTING_AVAILABLE:
-            FramePerSec = pygame.time.Clock()
+        if figure is not None and self._pygame is not None and self.main_display is not None:
+            FramePerSec = self._pygame.time.Clock()
             figure.canvas.draw()
             self.main_display.blit(figure, (0, 0))
-            pygame.display.update()
+            self._pygame.display.update()
             FramePerSec.tick(FPS)
         else:
             print("No figure available")
@@ -862,19 +907,19 @@ class BehavBox(object):
     ###############################################################################################
 
     def check_keybd(self):
-        if self.keyboard_active and PLOTTING_AVAILABLE:
+        if self.keyboard_active and self._pygame is not None:
             # event = pygame.event.get()
-            for event in pygame.event.get():
-                if event.type == pygame.KEYDOWN:
-                    if event.key == pygame.K_ESCAPE:
+            for event in self._pygame.event.get():
+                if event.type == self._pygame.KEYDOWN:
+                    if event.key == self._pygame.K_ESCAPE:
                         self.keyboard_active = False
-                    elif event.key == pygame.K_1:
+                    elif event.key == self._pygame.K_1:
                         self.left_entry()
                         logging.info(";" + str(time.time()) + ";[action];key_pressed_left_entry()")
-                    elif event.key == pygame.K_2:
+                    elif event.key == self._pygame.K_2:
                         self.center_entry()
                         logging.info(";" + str(time.time()) + ";[action];key_pressed_center_entry()")
-                    elif event.key == pygame.K_3:
+                    elif event.key == self._pygame.K_3:
                         self.right_entry()
                         logging.info(";" + str(time.time()) + ";[action];key_pressed_right_entry()")
                     # elif event.key == pygame.K_4:
@@ -883,22 +928,22 @@ class BehavBox(object):
                     # elif event.key == pygame.K_5:
                     #     self.reserved_rx2_pressed()
                     #     logging.info(";" + str(time.time()) + ";[action];key_pressed_reserved_rx2_pressed()")
-                    elif event.key == pygame.K_q:
+                    elif event.key == self._pygame.K_q:
                         self.deliver_reward("reward_left", self.session_info["key_reward_amount"])
-                    elif event.key == pygame.K_w:
+                    elif event.key == self._pygame.K_w:
                         self.deliver_reward("reward_right", self.session_info["key_reward_amount"])
-                    elif event.key == pygame.K_e:
+                    elif event.key == self._pygame.K_e:
                         self.deliver_reward("reward_center", self.session_info["key_reward_amount"])
-                    elif event.key == pygame.K_r:
+                    elif event.key == self._pygame.K_r:
                         self.deliver_reward("reward_4", self.session_info["key_reward_amount"])
-                    elif event.key == pygame.K_t:
+                    elif event.key == self._pygame.K_t:
                         self.pulse_output("vacuum")
-                elif event.type == pygame.KEYUP:
-                    if event.key == pygame.K_1:
+                elif event.type == self._pygame.KEYUP:
+                    if event.key == self._pygame.K_1:
                         self.left_exit()
-                    elif event.key == pygame.K_2:
+                    elif event.key == self._pygame.K_2:
                         self.center_exit()
-                    elif event.key == pygame.K_3:
+                    elif event.key == self._pygame.K_3:
                         self.right_exit()
 
     ###############################################################################################

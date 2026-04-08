@@ -1,0 +1,102 @@
+{
+  "platform_id": "rpi5_trixie",
+  "target_hardware": {
+    "model": "Raspberry Pi 5",
+    "os_codename": "trixie"
+  },
+  "apt": {
+    "runtime": [
+      "alsa-utils",
+      "ffmpeg",
+      "python3-alsaaudio",
+      "python3-colorama",
+      "python3-flask",
+      "python3-gpiozero",
+      "python3-kms++",
+      "python3-matplotlib",
+      "python3-numpy",
+      "python3-picamera2",
+      "python3-pil",
+      "python3-pygame",
+      "python3-rpi-lgpio",
+      "python3-scipy",
+      "python3-yaml",
+      "rsync"
+    ],
+    "dev_test": [
+      "python3-pytest"
+    ]
+  },
+  "python_modules": {
+    "runtime": [
+      "alsaaudio",
+      "colorama",
+      "flask",
+      "gpiozero",
+      "matplotlib",
+      "numpy",
+      "picamera2",
+      "PIL",
+      "pygame",
+      "pykms",
+      "RPi.GPIO",
+      "scipy",
+      "yaml"
+    ],
+    "dev_test": [
+      "pytest"
+    ]
+  },
+  "commands": {
+    "runtime": [
+      "arecord",
+      "ffmpeg",
+      "rsync"
+    ],
+    "dev_test": [
+      "uv"
+    ]
+  },
+  "repo_probes": {
+    "runtime": [
+      {
+        "name": "local_camera_runtime_import",
+        "code": "from box_runtime.video_recording.local_camera_runtime import LocalCameraRuntime; print('ok')",
+        "expected_stdout": "ok"
+      },
+      {
+        "name": "visualstim_import",
+        "code": "from box_runtime.visual_stimuli.visualstim import VisualStim; print('ok')",
+        "expected_stdout": "ok"
+      },
+      {
+        "name": "sound_runtime_import",
+        "code": "from box_runtime.audio.runtime import SoundRuntime; print('ok')",
+        "expected_stdout": "ok"
+      },
+      {
+        "name": "behavbox_import",
+        "code": "from box_runtime.behavior.behavbox import BehavBox; print('ok')",
+        "expected_stdout": "ok"
+      },
+      {
+        "name": "sample_task_import",
+        "code": "import sample_tasks.head_fixed_gonogo.run as runmod; print('ok')",
+        "expected_stdout": "ok"
+      }
+    ],
+    "desktop_plotting": [
+      {
+        "name": "desktop_plotting_probe",
+        "code": "from box_runtime.behavior.plotting_support import run_plotting_probe_once; print(run_plotting_probe_once().ok)",
+        "expected_stdout": "True"
+      }
+    ],
+    "dev_test": []
+  },
+  "uv": {
+    "binary_name": "uv",
+    "install_method": "astral_install_script",
+    "install_script_url": "https://astral.sh/uv/install.sh"
+  }
+}

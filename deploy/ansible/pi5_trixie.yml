@@ -1,0 +1,78 @@
+---
+- name: Provision BehavBox Pi 5 on Trixie
+  hosts: all
+  gather_facts: true
+  vars:
+    behavbox_repo_root: /home/pi/RPi4_behavior_boxes_hardware
+    behavbox_include_dev: false
+    behavbox_require_desktop_plotting: false
+
+  tasks:
+    - name: Load Pi 5 / Trixie provisioning manifest
+      ansible.builtin.include_vars:
+        file: ../../environment/rpi5_trixie_manifest.json
+        name: rpi5_manifest
+
+    - name: Assert the supported target is Pi 5 on Debian 13
+      ansible.builtin.assert:
+        that:
+          - ansible_facts["distribution"] == "Debian"
+          - ansible_facts["distribution_major_version"] == "13"
+          - ansible_facts["architecture"] == "aarch64"
+        fail_msg: >
+          This playbook currently supports only Raspberry Pi 5 class arm64 hosts
+          running Debian 13 / Trixie.
+
+    - name: Install runtime apt packages
+      become: true
+      ansible.builtin.apt:
+        update_cache: true
+        name: "{{ rpi5_manifest.apt.runtime }}"
+        state: present
+
+    - name: Install development/testing apt packages
+      become: true
+      ansible.builtin.apt:
+        name: "{{ rpi5_manifest.apt.dev_test }}"
+        state: present
+      when: behavbox_include_dev | bool
+
+    - name: Check whether uv is already installed
+      ansible.builtin.command: "{{ rpi5_manifest.uv.binary_name }} --version"
+      register: uv_check
+      changed_when: false
+      failed_when: false
+      when: behavbox_include_dev | bool
+
+    - name: Download the Astral uv installer
+      ansible.builtin.get_url:
+        url: "{{ rpi5_manifest.uv.install_script_url }}"
+        dest: /tmp/behavbox-install-uv.sh
+        mode: "0755"
+      when:
+        - behavbox_include_dev | bool
+        - uv_check.rc != 0
+
+    - name: Install uv for the current user
+      ansible.builtin.shell: /tmp/behavbox-install-uv.sh
+      args:
+        executable: /bin/bash
+      when:
+        - behavbox_include_dev | bool
+        - uv_check.rc != 0
+
+    - name: Remove the downloaded uv installer
+      ansible.builtin.file:
+        path: /tmp/behavbox-install-uv.sh
+        state: absent
+      when: behavbox_include_dev | bool
+
+    - name: Verify the provisioned runtime
+      ansible.builtin.command: >-
+        python3 -m environment.rpi5_trixie_verifier
+        --repo-root {{ behavbox_repo_root }}
+        --timeout-s 15
+        {% if behavbox_include_dev | bool %}--include-dev{% endif %}
+        {% if behavbox_require_desktop_plotting | bool %}--require-desktop-plotting{% endif %}
+      args:
+        chdir: "{{ behavbox_repo_root }}"
