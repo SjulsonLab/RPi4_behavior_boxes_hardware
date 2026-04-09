@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import subprocess
 import tempfile
@@ -539,3 +540,99 @@ def test_video_capture_defaults_camera_host_to_localhost(monkeypatch):
         capture.video_stop()
 
     assert ("init", "127.0.0.1", 8000, "behvideos") in calls
+
+
+def test_picamera2_recorder_exposes_state_helper_methods() -> None:
+    from box_runtime.video_recording.picamera2_recorder import Picamera2Recorder
+
+    assert hasattr(Picamera2Recorder, "_load_state")
+    assert hasattr(Picamera2Recorder, "_write_state")
+    assert hasattr(Picamera2Recorder, "_finalize_current_session")
+
+
+def test_picamera2_recorder_recover_live_sessions_marks_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import box_runtime.video_recording.picamera2_recorder as recorder_module
+
+    storage_root = tmp_path / "camera_recordings"
+    session_dir = storage_root / "camera0"
+    session_dir.mkdir(parents=True)
+    (session_dir / "session_state.json").write_text(
+        json.dumps(
+            {
+                "state": "LIVE",
+                "fps": 30.0,
+                "attempt_count": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        recorder_module,
+        "finalize_session_directory",
+        lambda session_dir, fps: None,
+    )
+    recorder = object.__new__(recorder_module.Picamera2Recorder)
+    recorder.storage_root = storage_root
+
+    recovered = recorder.recover_live_sessions()
+
+    assert recovered == ["camera0"]
+    state_payload = json.loads((session_dir / "session_state.json").read_text(encoding="utf-8"))
+    assert state_payload["state"] == "READY"
+
+
+def test_picamera2_streaming_output_is_bufferedio_compatible() -> None:
+    from box_runtime.video_recording.picamera2_recorder import _StreamingOutput
+
+    stream_output = _StreamingOutput()
+
+    assert isinstance(stream_output, io.BufferedIOBase)
+    payload = b"frame-bytes"
+    assert stream_output.write(payload) == len(payload)
+    assert stream_output.frame.data == payload
+
+
+def test_picamera2_append_frame_metadata_is_noop_without_frame_writer() -> None:
+    import box_runtime.video_recording.picamera2_recorder as recorder_module
+
+    class _FakeRequest:
+        def get_metadata(self):
+            return {"SensorTimestamp": 123}
+
+    recorder = object.__new__(recorder_module.Picamera2Recorder)
+    recorder._frame_writer = None
+
+    recorder._append_frame_metadata(_FakeRequest())
+
+
+def test_picamera2_append_frame_metadata_writes_expected_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import box_runtime.video_recording.picamera2_recorder as recorder_module
+
+    class _FakeRequest:
+        def get_metadata(self):
+            return {"SensorTimestamp": 456}
+
+    captured: list[tuple[int, int, int]] = []
+
+    class _FakeFrameWriter:
+        def append(self, sensor_timestamp_ns: int, arrival_utc_ns: int, boottime_to_realtime_offset_ns: int) -> None:
+            captured.append((sensor_timestamp_ns, arrival_utc_ns, boottime_to_realtime_offset_ns))
+
+    monkeypatch.setattr(recorder_module, "_sample_boottime_to_realtime_offset_ns", lambda: 999)
+    monkeypatch.setattr(
+        recorder_module.time,
+        "clock_gettime_ns",
+        lambda clock_id: 888 if clock_id == recorder_module.time.CLOCK_REALTIME else 0,
+    )
+
+    recorder = object.__new__(recorder_module.Picamera2Recorder)
+    recorder._frame_writer = _FakeFrameWriter()
+
+    recorder._append_frame_metadata(_FakeRequest())
+
+    assert captured == [(456, 888, 999)]

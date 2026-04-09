@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import io
 import shutil
 import threading
 import time
@@ -31,10 +32,20 @@ class _StreamingFrame:
     data: bytes | None = None
 
 
-class _StreamingOutput:
+class _StreamingOutput(io.BufferedIOBase):
     def __init__(self) -> None:
+        super().__init__()
         self.frame = _StreamingFrame()
         self.condition = threading.Condition()
+
+    def writable(self) -> bool:
+        return True
+
+    def readable(self) -> bool:
+        return False
+
+    def seekable(self) -> bool:
+        return False
 
     def write(self, buf: bytes) -> int:
         with self.condition:
@@ -141,14 +152,7 @@ class Picamera2Recorder:
             raw_tsv_path = session_dir / f"{attempt_name}_raw_frames.tsv"
             self._frame_writer = _FrameWriter(raw_tsv_path)
 
-            def append_frame(request):
-                meta = request.get_metadata()
-                sensor_ts = int(meta.get("SensorTimestamp", 0))
-                arrival_utc_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
-                offset_ns = _sample_boottime_to_realtime_offset_ns()
-                self._frame_writer.append(sensor_ts, arrival_utc_ns, offset_ns)
-
-            self.picam2.pre_callback = append_frame
+            self.picam2.pre_callback = self._append_frame_metadata
             self._recording_encoder = H264Encoder(bitrate=self.current_bitrate_bps)
             self.picam2.start_encoder(
                 self._recording_encoder,
@@ -173,6 +177,8 @@ class Picamera2Recorder:
         with self.lock:
             if not self.recording:
                 return
+            # Avoid callback races while tearing down writer/encoder.
+            self.picam2.pre_callback = None
             if self._recording_encoder is not None:
                 self.picam2.stop_encoder(self._recording_encoder)
             if self._frame_writer is not None:
@@ -184,6 +190,18 @@ class Picamera2Recorder:
             self.current_session_dir = None
             self.current_owner = None
             self.current_session_id = None
+
+    def _append_frame_metadata(self, request: Any) -> None:
+        """Append frame metadata if recording writer is currently active."""
+
+        frame_writer = self._frame_writer
+        if frame_writer is None:
+            return
+        meta = request.get_metadata()
+        sensor_ts = int(meta.get("SensorTimestamp", 0))
+        arrival_utc_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
+        offset_ns = _sample_boottime_to_realtime_offset_ns()
+        frame_writer.append(sensor_ts, arrival_utc_ns, offset_ns)
 
     def recover_live_sessions(self) -> list[str]:
         recovered = []
@@ -276,23 +294,6 @@ class Picamera2Recorder:
             except Exception:
                 pass
 
-
-def _sample_boottime_to_realtime_offset_ns() -> int:
-    """Measure the current CLOCK_BOOTTIME to CLOCK_REALTIME offset in ns.
-
-    Returns:
-        int: Estimated offset ``realtime_ns - boottime_ns`` measured using the
-        midpoint of a bracketed BOOTTIME read.
-    """
-
-    if not hasattr(time, "CLOCK_BOOTTIME"):
-        raise RuntimeError("CLOCK_BOOTTIME is unavailable on this platform")
-    boot_before_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
-    realtime_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
-    boot_after_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
-    boot_mid_ns = (boot_before_ns + boot_after_ns) // 2
-    return int(realtime_ns - boot_mid_ns)
-
     def configure(self, mode: dict[str, Any]) -> None:
         with self.lock:
             if self.recording:
@@ -331,3 +332,20 @@ def _sample_boottime_to_realtime_offset_ns() -> int:
     def _write_state(self, session_dir: Path, payload: dict[str, Any]) -> None:
         state_path = self._state_path(session_dir)
         state_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _sample_boottime_to_realtime_offset_ns() -> int:
+    """Measure the current CLOCK_BOOTTIME to CLOCK_REALTIME offset in ns.
+
+    Returns:
+        int: Estimated offset ``realtime_ns - boottime_ns`` measured using the
+        midpoint of a bracketed BOOTTIME read.
+    """
+
+    if not hasattr(time, "CLOCK_BOOTTIME"):
+        raise RuntimeError("CLOCK_BOOTTIME is unavailable on this platform")
+    boot_before_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    realtime_ns = time.clock_gettime_ns(time.CLOCK_REALTIME)
+    boot_after_ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    boot_mid_ns = (boot_before_ns + boot_after_ns) // 2
+    return int(realtime_ns - boot_mid_ns)

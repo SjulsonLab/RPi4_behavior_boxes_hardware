@@ -21,3 +21,40 @@ Files to push to git to save this progress:
 - `tests/test_behavbox_plotting.py`
 - `tests/test_plotting_support.py`
 - `tests/test_rpi5_trixie_provisioning.py`
+
+## 2026/04/09
+
+Dual-camera bring-up and runtime stabilization were completed for the Pi 5 test host at `10.49.98.223`. Initial dual-camera detection failed when relying on auto-detection alone, so the Pi boot camera configuration was switched to explicit dual IMX708 overlays. After reboot, both cameras were detected and could be opened individually and simultaneously through `picamera2`.
+
+Two camera-runtime regressions were then fixed in project code:
+
+- `Picamera2Recorder` helper methods were restored as proper class methods (`configure`, `_finalize_current_session`, `_state_path`, `_load_state`, `_write_state`) after an indentation regression that made them unreachable.
+- The preview-stream sink was made compatible with current `picamera2` expectations by making `_StreamingOutput` implement `io.BufferedIOBase`.
+- A stop-time callback race was fixed by:
+  - adding `_append_frame_metadata()` with a writer-availability guard, and
+  - clearing `pre_callback` before recording teardown.
+
+Regression tests were added for the above fixes:
+
+- `test_picamera2_recorder_exposes_state_helper_methods`
+- `test_picamera2_recorder_recover_live_sessions_marks_ready`
+- `test_picamera2_streaming_output_is_bufferedio_compatible`
+- `test_picamera2_append_frame_metadata_is_noop_without_frame_writer`
+- `test_picamera2_append_frame_metadata_writes_expected_values`
+
+Validation summary:
+
+- Local camera test subset: `27 passed` for
+  - `tests/test_one_pi_media_runtime.py`
+  - `tests/test_camera_service.py`
+- Pi hardware checks (real cameras):
+  - `rpicam-hello --list-cameras` reports two cameras.
+  - `Picamera2.global_camera_info()` reports count `2`.
+  - `CameraManager` two-camera session smoke (`camera0` + `camera1`) starts and stops cleanly.
+  - Session artifacts (`session.mp4`, `session.tsv`, manifests, and raw attempt files) are produced for both cameras under `/tmp/dual_camera_runtime_smoke_20260409/`.
+
+Files to push to git to save this progress:
+
+- `box_runtime/video_recording/picamera2_recorder.py`
+- `tests/test_camera_service.py`
+- `docs/implementation.md`
