@@ -58,3 +58,22 @@ Files to push to git to save this progress:
 - `box_runtime/video_recording/picamera2_recorder.py`
 - `tests/test_camera_service.py`
 - `docs/implementation.md`
+
+### Task Lifecycle Updates
+
+`BehavBox` lifecycle handling was tightened on branch `implement_gonogo` so that lifecycle state publication now routes through a single helper instead of being updated ad hoc in each method. `poll_runtime()` was changed to allow pre-start housekeeping in the `prepared` state while returning no drained events, and it continues to raise cleanly after `stop_session()`. This keeps pre-run status/housekeeping possible without letting prepared-state polling consume task inputs or mutate task-facing behavior.
+
+Lifecycle regression coverage was expanded to include:
+
+- pre-start `poll_runtime()` housekeeping behavior
+- post-stop `poll_runtime()` rejection
+- safe `close()` after `prepare_session()` without `start_session()`
+
+Validation summary:
+
+- Pi RED phase reproduced the old failure: `poll_runtime()` rejected the `prepared` state.
+- Pi GREEN phase passed after the lifecycle change: `20 passed` for
+  - `tests/test_task_runner.py`
+  - `tests/test_head_fixed_gonogo.py`
+  - `tests/test_behavbox_plotting.py`
+  - `tests/test_one_pi_media_runtime.py`
