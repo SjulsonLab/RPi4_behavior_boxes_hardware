@@ -227,6 +227,37 @@ class BehavBox(object):
                 f"expected one of {allowed_states!r}."
             )
 
+    def _set_lifecycle_state(self, lifecycle_state: str, *, active: bool) -> None:
+        """Update the authoritative lifecycle state and published session state.
+
+        Args:
+            lifecycle_state: New BehavBox lifecycle state string.
+            active: Whether the session should be reported as active.
+
+        Returns:
+            ``None``.
+        """
+
+        self._lifecycle_state = str(lifecycle_state)
+        self.publish_runtime_state(
+            "session",
+            active=bool(active),
+            lifecycle_state=self._lifecycle_state,
+            box_name=self.session_info.get("box_name"),
+        )
+
+    def _drain_runtime_events(self) -> list[BehaviorEvent]:
+        """Drain queued runtime events in first-in-first-out order.
+
+        Returns:
+            list[BehaviorEvent]: Events drained from ``event_list``.
+        """
+
+        drained_events: list[BehaviorEvent] = []
+        while self.event_list:
+            drained_events.append(self.event_list.popleft())
+        return drained_events
+
     def _configure_logging(self) -> None:
         session_dir = Path(self.session_info["dir_name"])
         session_dir.mkdir(parents=True, exist_ok=True)
@@ -465,14 +496,8 @@ class BehavBox(object):
             self._prepare_adc()
             self._prepare_keyboard()
             self._runtime_events.append({"name": "session_prepared", "timestamp": self._clock()})
-            self._lifecycle_state = "prepared"
             self._is_closed = False
-            self.publish_runtime_state(
-                "session",
-                active=False,
-                lifecycle_state="prepared",
-                box_name=self.session_info.get("box_name"),
-            )
+            self._set_lifecycle_state("prepared", active=False)
         except Exception:
             self.close()
             raise
@@ -488,8 +513,7 @@ class BehavBox(object):
             self._session_started_at_s = self._clock()
             self._runtime_events.append({"name": "session_started", "timestamp": self._session_started_at_s})
             self._handle_input_event("session_started", record_interaction=False, log_category="configuration")
-            self._lifecycle_state = "running"
-            self.publish_runtime_state("session", active=True, lifecycle_state="running")
+            self._set_lifecycle_state("running", active=True)
         except Exception:
             self.stop_task_recording()
             raise
@@ -497,12 +521,11 @@ class BehavBox(object):
     def poll_runtime(self) -> list[BehaviorEvent]:
         """Run lightweight non-task-specific runtime work and drain current events."""
 
-        self._require_lifecycle("running")
+        self._require_lifecycle("prepared", "running")
+        if self._lifecycle_state == "prepared":
+            return []
         self.check_keybd()
-        drained_events: list[BehaviorEvent] = []
-        while self.event_list:
-            drained_events.append(self.event_list.popleft())
-        return drained_events
+        return self._drain_runtime_events()
 
     def stop_session(self) -> None:
         """Leave the active session state and stop task-owned recording."""
@@ -515,8 +538,7 @@ class BehavBox(object):
         self._session_stopped_at_s = self._clock()
         self._runtime_events.append({"name": "session_stopped", "timestamp": self._session_stopped_at_s})
         self._handle_input_event("session_stopped", record_interaction=False, log_category="configuration")
-        self._lifecycle_state = "stopped"
-        self.publish_runtime_state("session", active=False, lifecycle_state="stopped")
+        self._set_lifecycle_state("stopped", active=False)
 
     def finalize_session(self) -> Path:
         """Write standardized session metadata after the run has stopped."""
@@ -532,8 +554,7 @@ class BehavBox(object):
             "session_stopped_at_s": self._session_stopped_at_s,
         }
         metadata_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-        self._lifecycle_state = "finalized"
-        self.publish_runtime_state("session", active=False, lifecycle_state="finalized")
+        self._set_lifecycle_state("finalized", active=False)
         self.publish_runtime_state("audio", active=False, current_cue_name=None)
         return metadata_path
 
@@ -876,8 +897,7 @@ class BehavBox(object):
         self._plt = None
         self._fg = None
         self._is_closed = True
-        self._lifecycle_state = "closed"
-        self.publish_runtime_state("session", active=False, lifecycle_state="closed")
+        self._set_lifecycle_state("closed", active=False)
         self.publish_runtime_state("task", phase=None, stimulus_active=False)
 
     def __del__(self):

@@ -109,6 +109,47 @@ def test_behavbox_lifecycle_enforces_prepare_before_start():
         box.close()
 
 
+def test_behavbox_poll_runtime_allows_pre_start_housekeeping_without_draining_events():
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+
+        box.prepare_session()
+        box._handle_input_event("queued_before_start", record_interaction=False)
+
+        prepared_events = list(box.event_list)
+        drained = box.poll_runtime()
+
+        assert drained == []
+        assert list(box.event_list) == prepared_events
+
+        box.close()
+
+
+def test_behavbox_poll_runtime_raises_after_stop():
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+
+        box.prepare_session()
+        box.start_session()
+        box.stop_session()
+
+        with pytest.raises(RuntimeError):
+            box.poll_runtime()
+
+        box.close()
+
+
+def test_behavbox_close_is_safe_after_prepare_without_start():
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+
+        box.prepare_session()
+        box.close()
+        box.close()
+
+        assert box._lifecycle_state == "closed"
+
+
 def test_task_runner_writes_final_task_state_and_events():
     with tempfile.TemporaryDirectory() as tmp:
         box = BehavBox(_session_info(tmp))
