@@ -123,7 +123,32 @@ class PWMLED(_BaseOutputDevice):
 
 
 class Button(_BaseDevice):
-    def __init__(self, pin: int, pull_up: Any = None, active_state: bool = True) -> None:
+    def __init__(
+        self,
+        pin: int | None = None,
+        *,
+        pull_up: Any = True,
+        active_state: bool | None = None,
+        bounce_time: float | None = None,
+        hold_time: float = 1,
+        hold_repeat: bool = False,
+        pin_factory=None,
+    ) -> None:
+        """Create one mock input button using the gpiozero-style keyword contract.
+
+        Args:
+            pin: GPIO pin number.
+            pull_up: Mock pull-up configuration placeholder.
+            active_state: Optional explicit active-state override.
+            bounce_time: Optional debounce time in seconds, ignored by the mock.
+            hold_time: Optional hold threshold in seconds, ignored by the mock.
+            hold_repeat: Optional hold-repeat flag, ignored by the mock.
+            pin_factory: Optional gpiozero pin factory, ignored by the mock.
+        """
+
+        del bounce_time, hold_time, hold_repeat, pin_factory
+        if pin is None:
+            raise TypeError("pin must be provided for mock Button devices")
         super().__init__(pin)
         self.pull_up = pull_up
         self.active_state = active_state

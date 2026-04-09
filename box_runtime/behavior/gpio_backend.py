@@ -148,9 +148,27 @@ class PWMLED(_GPIOZeroPWMLED):
 
 
 class Button(_GPIOZeroButton):
-    def __init__(self, pin, *args, **kwargs):
+    def __init__(
+        self,
+        pin=None,
+        *,
+        pull_up=True,
+        active_state=None,
+        bounce_time=None,
+        hold_time=1,
+        hold_repeat=False,
+        pin_factory=None,
+    ):
         _validate_pin(pin)
-        super().__init__(pin, *args, **kwargs)
+        super().__init__(
+            pin,
+            pull_up=pull_up,
+            active_state=active_state,
+            bounce_time=bounce_time,
+            hold_time=hold_time,
+            hold_repeat=hold_repeat,
+            pin_factory=pin_factory,
+        )
 
 
 class RotaryEncoder(_GPIOZeroRotaryEncoder):

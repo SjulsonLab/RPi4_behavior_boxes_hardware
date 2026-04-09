@@ -74,9 +74,22 @@ class InputService:
         else:
             self._setup_head_fixed_inputs()
 
+    def _create_input_button(self, pin: int) -> Button:
+        """Construct one GPIO input button using the current gpiozero contract.
+
+        Args:
+            pin: Integer GPIO pin number owned by the input service.
+
+        Returns:
+            Button: Button-like input device configured with floating input
+            semantics and explicit active-state handling.
+        """
+
+        return Button(pin, pull_up=None, active_state=True)
+
     def _setup_trigger_input(self) -> None:
         spec = self.manifest.inputs["trigger_in"]
-        self.trigger_in = Button(spec.pin, None, True)
+        self.trigger_in = self._create_input_button(spec.pin)
         register_pin_label(spec.pin, spec.canonical_name, direction="input", aliases=spec.aliases)
         self.trigger_in.when_pressed = lambda: self.owner._handle_input_event("trigger_in_rising", record_interaction=False)
         self.trigger_in.when_released = lambda: self.owner._handle_input_event("trigger_in_falling", record_interaction=False)
@@ -106,7 +119,7 @@ class InputService:
     def _setup_freely_moving_inputs(self) -> None:
         for canonical_name in ("poke_left", "poke_right", "poke_center"):
             spec = self.manifest.inputs[canonical_name]
-            button = Button(spec.pin, None, True)
+            button = self._create_input_button(spec.pin)
             register_pin_label(spec.pin, spec.canonical_name, direction="input", aliases=spec.aliases)
             button.when_pressed = lambda name=canonical_name: self.owner._handle_input_event(f"{name}_entry")
             button.when_released = lambda name=canonical_name: self.owner._handle_input_event(f"{name}_exit")
@@ -114,8 +127,8 @@ class InputService:
 
         extra1_spec = self.manifest.inputs["poke_extra1"]
         extra2_spec = self.manifest.inputs["poke_extra2"]
-        self.poke_extra1 = Button(extra1_spec.pin, None, True)
-        self.poke_extra2 = Button(extra2_spec.pin, None, True)
+        self.poke_extra1 = self._create_input_button(extra1_spec.pin)
+        self.poke_extra2 = self._create_input_button(extra2_spec.pin)
         register_pin_label(extra1_spec.pin, extra1_spec.canonical_name, direction="input", aliases=extra1_spec.aliases)
         register_pin_label(extra2_spec.pin, extra2_spec.canonical_name, direction="input", aliases=extra2_spec.aliases)
         self.poke_extra1.when_pressed = lambda: self.owner._handle_input_event("poke_extra1_entry")
@@ -140,7 +153,7 @@ class InputService:
     def _setup_ir_lick_inputs(self) -> None:
         for canonical_name in ("ir_lick_left", "ir_lick_right", "ir_lick_center"):
             spec = self.manifest.inputs[canonical_name]
-            button = Button(spec.pin, None, True)
+            button = self._create_input_button(spec.pin)
             register_pin_label(spec.pin, spec.canonical_name, direction="input", aliases=spec.aliases)
             button.when_pressed = lambda name=canonical_name: self.owner._handle_input_event(f"{name}_entry")
             button.when_released = lambda name=canonical_name: self.owner._handle_input_event(f"{name}_exit")
@@ -154,9 +167,9 @@ class InputService:
         left_spec = self.manifest.inputs["lick_left"]
         right_spec = self.manifest.inputs["lick_right"]
         center_spec = self.manifest.inputs["lick_center"]
-        self.owner.lick_left = Button(left_spec.pin, None, True)
-        self.owner.lick_right = Button(right_spec.pin, None, True)
-        self.owner.lick_center = Button(center_spec.pin, None, True)
+        self.owner.lick_left = self._create_input_button(left_spec.pin)
+        self.owner.lick_right = self._create_input_button(right_spec.pin)
+        self.owner.lick_center = self._create_input_button(center_spec.pin)
         register_pin_label(left_spec.pin, left_spec.canonical_name, direction="input", aliases=left_spec.aliases)
         register_pin_label(right_spec.pin, right_spec.canonical_name, direction="input", aliases=right_spec.aliases)
         register_pin_label(center_spec.pin, center_spec.canonical_name, direction="input", aliases=center_spec.aliases)
@@ -179,7 +192,7 @@ class InputService:
         if self.user_input is not None:
             return self.user_input
         spec = self.manifest.user_configurable["user_configurable"]
-        self.user_input = Button(spec.pin, None, True)
+        self.user_input = self._create_input_button(spec.pin)
         register_pin_label(spec.pin, label, direction="input", aliases=spec.aliases)
         self.owner.user_input = self.user_input
         return self.user_input
