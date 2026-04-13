@@ -643,6 +643,33 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
 
         self.crtc.page_flip(framebuffer)
 
+    def _wait_for_flip_complete(self, timeout_s: float) -> None:
+        """Block until the DRM driver reports a page-flip completion event.
+
+        Args:
+            timeout_s: Maximum time to wait for one flip completion in seconds.
+
+        Returns:
+            None: The helper returns after one ``FLIP_COMPLETE`` event.
+
+        Raises:
+            TimeoutError: If no ``FLIP_COMPLETE`` event arrives before
+                ``timeout_s`` elapses.
+        """
+
+        deadline = time.monotonic() + timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for DRM page-flip completion")
+            events = self._selector.select(remaining)
+            if not events:
+                continue
+            for _key, _mask in events:
+                for event in self.card.read_events():
+                    if event.type == self._pykms.DrmEventType.FLIP_COMPLETE:
+                        return
+
 
 class _XWindowDisplayBackend(_BaseDisplayBackend):
     """Desktop-window visual backend using pygame for fullscreen presentation."""
@@ -766,26 +793,6 @@ class _XWindowDisplayBackend(_BaseDisplayBackend):
 
         for _event in self._pygame.event.get():
             pass
-
-    def _wait_for_flip_complete(self, timeout_s: float) -> None:
-        """Block until the DRM driver reports a page-flip completion event.
-
-        Args:
-            timeout_s: Maximum time to wait for one flip completion.
-        """
-
-        deadline = time.monotonic() + timeout_s
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError("timed out waiting for DRM page-flip completion")
-            events = self._selector.select(remaining)
-            if not events:
-                continue
-            for _key, _mask in events:
-                for event in self.card.read_events():
-                    if event.type == self._pykms.DrmEventType.FLIP_COMPLETE:
-                        return
 
 
 def _build_backend(

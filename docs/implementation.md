@@ -353,7 +353,8 @@ Validation:
     - run completed and wrote final task state successfully,
     - `GPIO busy` now appears as close-time warnings (no uncaught crash).
 
-### Raspberry Pi 5 Camera and Display Findings (2026-04-13)
+## 2026/04/13
+### Raspberry Pi 5 Camera and Display Findings 
 
 This section summarizes what was exercised on the Raspberry Pi 5 while trying to
 show live camera preview on one monitor and drifting gratings on the other.
@@ -405,3 +406,20 @@ Current interpretation:
   ownership problem, not evidence that grating generation itself is broken.
 - For the tested setup, browser preview is the only confirmed reliable camera
   visualization path.
+
+### Matt updates - camera and display
+
+We shifted the next validation step away from task integration and onto minimal
+headless debug scripts in `debug/` so the supported one-Pi topology could be
+tested directly: camera preview alone on `HDMI-A-1`, drifting gratings alone on
+`HDMI-A-2`, and later both together. A shared headless-mode guard was added so
+these scripts fail loudly when `lightdm`, `DISPLAY`, or `WAYLAND_DISPLAY` are
+still active, instead of giving misleading desktop-mode results.
+
+Hardware validation on the Pi 5 then confirmed two things. First, the standalone
+camera preview smoke succeeded on `HDMI-A-1` in compositor-free mode. Second,
+the standalone grating smoke initially exposed a real DRM runtime bug:
+`_PykmsDisplayBackend` was calling `_wait_for_flip_complete()` even though that
+helper had been attached to the wrong backend class. After moving the helper to
+the DRM backend and adding focused regression tests, the headless grating smoke
+passed on `HDMI-A-2`.

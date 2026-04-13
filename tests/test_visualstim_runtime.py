@@ -13,6 +13,7 @@ import yaml
 from box_runtime.visual_stimuli.visualstim import VisualStim
 from box_runtime.visual_stimuli.visual_runtime.grating_compiler import compile_grating
 from box_runtime.visual_stimuli.visual_runtime.drm_runtime import (
+    _PykmsDisplayBackend,
     _atomic_commit_with_retry,
     query_display_config,
 )
@@ -544,6 +545,65 @@ def test_atomic_commit_with_retry_returns_last_retryable_failure() -> None:
     )
 
     assert result == -16
+
+
+def test_pykms_backend_exposes_flip_wait_helper() -> None:
+    """The DRM backend should define the flip-completion helper it calls.
+
+    Returns:
+        None.
+    """
+
+    assert hasattr(_PykmsDisplayBackend, "_wait_for_flip_complete")
+
+
+def test_pykms_wait_for_flip_complete_returns_on_flip_event(monkeypatch) -> None:
+    """The DRM backend should stop waiting when a flip-complete event arrives.
+
+    Args:
+        monkeypatch: Pytest fixture used to control the monotonic clock.
+
+    Returns:
+        None.
+    """
+
+    backend = object.__new__(_PykmsDisplayBackend)
+    flip_complete_type = object()
+    backend._pykms = SimpleNamespace(DrmEventType=SimpleNamespace(FLIP_COMPLETE=flip_complete_type))
+    backend.card = SimpleNamespace(read_events=lambda: [SimpleNamespace(type=flip_complete_type)])
+    backend._selector = SimpleNamespace(select=lambda _timeout: [(object(), object())])
+    monotonic_values = iter([0.0, 0.0, 0.0])
+    monkeypatch.setattr(
+        "box_runtime.visual_stimuli.visual_runtime.drm_runtime.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    backend._wait_for_flip_complete(timeout_s=0.1)
+
+
+def test_pykms_wait_for_flip_complete_times_out_without_flip_event(monkeypatch) -> None:
+    """The DRM backend should raise TimeoutError when no flip event appears.
+
+    Args:
+        monkeypatch: Pytest fixture used to control the monotonic clock.
+
+    Returns:
+        None.
+    """
+
+    backend = object.__new__(_PykmsDisplayBackend)
+    flip_complete_type = object()
+    backend._pykms = SimpleNamespace(DrmEventType=SimpleNamespace(FLIP_COMPLETE=flip_complete_type))
+    backend.card = SimpleNamespace(read_events=lambda: [])
+    backend._selector = SimpleNamespace(select=lambda _timeout: [])
+    monotonic_values = iter([0.0, 0.05, 0.11])
+    monkeypatch.setattr(
+        "box_runtime.visual_stimuli.visual_runtime.drm_runtime.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    with pytest.raises(TimeoutError, match="timed out"):
+        backend._wait_for_flip_complete(timeout_s=0.1)
 
 
 def test_unknown_grating_name_raises_clear_error(tmp_path: Path) -> None:
