@@ -70,6 +70,17 @@ def test_camera_preview_smoke_runs_preview_lifecycle_in_order(tmp_path: Path) ->
                 "preview_mode": self.session_info["camera_preview_modes"],
                 "preview_connector": self.session_info["camera_preview_connector"],
                 "preview_active": self.is_preview_active,
+                "drm_diagnostics": {
+                    "requested_connector": "HDMI-A-1",
+                    "reserved_crtc_id": 92,
+                    "reserved_plane_id": 81,
+                    "last_request": {
+                        "allow_modeset": True,
+                        "framebuffer_id": 44,
+                    },
+                },
+                "preview_last_error_phase": None,
+                "preview_last_error_message": None,
             }
 
         def close(self) -> None:
@@ -93,3 +104,6 @@ def test_camera_preview_smoke_runs_preview_lifecycle_in_order(tmp_path: Path) ->
     assert calls == ["prepare", "start_preview", "stop_preview", "close"]
     assert summary["camera_id"] == "camera0"
     assert summary["preview_connector"] == "HDMI-A-1"
+    assert summary["preview_drm_diagnostics"]["requested_connector"] == "HDMI-A-1"
+    assert summary["preview_drm_diagnostics"]["last_request"]["framebuffer_id"] == 44
+    assert summary["preview_last_error_phase"] is None

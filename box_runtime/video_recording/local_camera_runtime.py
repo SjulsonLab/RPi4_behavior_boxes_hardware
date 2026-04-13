@@ -386,7 +386,19 @@ class LocalCameraRuntime:
         self.is_prepared = False
 
     def state_dict(self) -> dict[str, Any]:
-        """Return one JSON-serializable camera runtime state dictionary."""
+        """Return one JSON-serializable camera runtime state dictionary.
+
+        Returns:
+            dict[str, Any]: Camera/runtime state including preview mode,
+            connector, storage root, and lightweight preview DRM diagnostics
+            when a DRM preview sink exposes them.
+        """
+
+        preview_state: dict[str, Any] = {}
+        if self.preview_sink is not None and hasattr(self.preview_sink, "state_dict"):
+            preview_state = dict(self.preview_sink.state_dict())
+        elif self.preview_sink is not None and hasattr(self.preview_sink, "diagnostics"):
+            preview_state = {"drm_diagnostics": dict(self.preview_sink.diagnostics())}
 
         return {
             "camera_id": self.camera_id,
@@ -399,6 +411,9 @@ class LocalCameraRuntime:
             "preview_available": False,
             "preview_url": None,
             "storage_root": str(self.storage_root),
+            "drm_diagnostics": dict(preview_state.get("drm_diagnostics", {})),
+            "preview_last_error_phase": preview_state.get("last_error_phase"),
+            "preview_last_error_message": preview_state.get("last_error_message"),
         }
 
     # Helper methods

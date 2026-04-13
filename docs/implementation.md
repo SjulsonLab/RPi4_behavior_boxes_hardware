@@ -423,3 +423,14 @@ the standalone grating smoke initially exposed a real DRM runtime bug:
 helper had been attached to the wrong backend class. After moving the helper to
 the DRM backend and adding focused regression tests, the headless grating smoke
 passed on `HDMI-A-2`.
+
+Follow-up coexistence debugging showed that simply running the camera and
+gratings as separate DRM clients was not sufficient, even after each path
+worked alone. The key finding from the shared-DRM debug path was that preview
+and stimulus need to be driven by the same shared DRM owner in one process.
+Once a debug-only shared controller was added and its non-modeset page flips
+were updated to submit the full reserved-plane state, the combined smoke passed:
+a preview placeholder rendered on `HDMI-A-1` while drifting gratings rendered
+on `HDMI-A-2` at the same time. This establishes the current architecture
+direction for real dual-display support, though the preview side is still using
+a placeholder frame rather than live camera imagery.

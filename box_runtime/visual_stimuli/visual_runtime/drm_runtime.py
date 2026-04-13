@@ -129,6 +129,7 @@ class VisualStimRuntime:
         self.gray_level_u8 = int(gray_level_u8)
         self._closed = False
         self._error_message: str | None = None
+        self._drm_diagnostics: dict[str, Any] = {}
         self._metrics: dict[str, Any] = {
             "play_count": 0,
             "current_label": "gray",
@@ -155,12 +156,17 @@ class VisualStimRuntime:
         )
         self._process.start()
         if not self._ready_event.wait(timeout=10.0):
+            diagnostics = dict(self._drm_diagnostics)
             self.close()
-            raise RuntimeError("visual stimulus worker failed to become ready within 10 seconds")
+            raise VisualStimRuntimeInitError(
+                "visual stimulus worker failed to become ready within 10 seconds",
+                diagnostics=diagnostics,
+            )
         self._drain_events()
         if self._error_message is not None:
+            diagnostics = dict(self._drm_diagnostics)
             self.close()
-            raise RuntimeError(self._error_message)
+            raise VisualStimRuntimeInitError(self._error_message, diagnostics=diagnostics)
 
     @property
     def worker_pid(self) -> int | None:
@@ -232,7 +238,8 @@ class VisualStimRuntime:
 
         Returns:
             dict[str, Any]: Dictionary containing play count, current label,
-            and a timing log of completed stimulus presentations.
+            a timing log of completed stimulus presentations, and the latest
+            lightweight DRM diagnostic snapshot when available.
         """
 
         self._drain_events()
@@ -240,6 +247,7 @@ class VisualStimRuntime:
             "play_count": int(self._metrics["play_count"]),
             "current_label": str(self._metrics["current_label"]),
             "timing_log": list(self._metrics["timing_log"]),
+            "drm_diagnostics": dict(self._drm_diagnostics),
         }
 
     def is_alive(self) -> bool:
@@ -296,7 +304,11 @@ class VisualStimRuntime:
                 self._metrics["play_count"] += 1
                 self._metrics["timing_log"].append(event["timing"])
                 self._metrics["current_label"] = "gray"
+            elif event_type == "diagnostic":
+                self._drm_diagnostics = dict(event.get("drm_diagnostics", {}))
             elif event_type == "error":
+                if "drm_diagnostics" in event:
+                    self._drm_diagnostics = dict(event.get("drm_diagnostics", {}))
                 self._error_message = str(event.get("message", "visual stimulus worker error"))
 
 
@@ -325,7 +337,9 @@ def _worker_entry(
     try:
         _best_effort_realtime_config()
         backend = _build_backend(display_config, gray_level_u8, stimuli)
+        result_queue.put({"type": "diagnostic", "drm_diagnostics": backend.diagnostics()})
         backend.display_gray(gray_level_u8)
+        result_queue.put({"type": "diagnostic", "drm_diagnostics": backend.diagnostics()})
         result_queue.put({"type": "ready"})
         result_queue.put({"type": "gray"})
         idle_event.set()
@@ -338,6 +352,7 @@ def _worker_entry(
                 break
             if command_name == "display_gray":
                 backend.display_gray(int(command["gray_level_u8"]))
+                result_queue.put({"type": "diagnostic", "drm_diagnostics": backend.diagnostics()})
                 result_queue.put({"type": "gray"})
                 idle_event.set()
                 continue
@@ -347,11 +362,17 @@ def _worker_entry(
             idle_event.clear()
             timing = backend.play(str(command["stimulus_name"]), int(command["enqueue_ns"]))
             backend.display_gray(gray_level_u8)
+            result_queue.put({"type": "diagnostic", "drm_diagnostics": backend.diagnostics()})
             result_queue.put({"type": "played", "timing": timing})
             result_queue.put({"type": "gray"})
             idle_event.set()
     except Exception:
-        result_queue.put({"type": "error", "message": traceback.format_exc()})
+        error_event: dict[str, Any] = {"type": "error", "message": traceback.format_exc()}
+        if backend is not None:
+            diagnostics = backend.diagnostics()
+            result_queue.put({"type": "diagnostic", "drm_diagnostics": diagnostics})
+            error_event["drm_diagnostics"] = diagnostics
+        result_queue.put(error_event)
         idle_event.set()
         ready_event.set()
     finally:
@@ -370,6 +391,28 @@ class _BaseDisplayBackend:
 
     def close(self) -> None:
         raise NotImplementedError
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return lightweight backend diagnostics for debugging.
+
+        Returns:
+            dict[str, Any]: JSON-serializable diagnostic snapshot.
+        """
+
+        return {}
+
+
+class VisualStimRuntimeInitError(RuntimeError):
+    """Raised when the visual worker fails before runtime startup completes.
+
+    Attributes:
+        diagnostics: JSON-serializable DRM diagnostic snapshot captured before
+            the init failure was raised to the parent process.
+    """
+
+    def __init__(self, message: str, *, diagnostics: dict[str, Any]) -> None:
+        super().__init__(message)
+        self.diagnostics = dict(diagnostics)
 
 
 class _FakeDisplayBackend(_BaseDisplayBackend):
@@ -474,6 +517,9 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
         self._modeset_done = False
         self._current_fb_id: int | None = None
         self._gray_framebuffers: dict[int, Any] = {}
+        self._last_commit_stage: str | None = None
+        self._last_commit_error: str | None = None
+        self._last_request_summary: dict[str, Any] = {}
 
         for name, stimulus in stimuli.items():
             framebuffers = [self._build_framebuffer(frame) for frame in stimulus.frames]
@@ -557,6 +603,31 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
             except Exception:
                 return None
 
+    def diagnostics(self) -> dict[str, Any]:
+        """Return a lightweight DRM resource snapshot for visual debugging.
+
+        Returns:
+            dict[str, Any]: JSON-serializable visual DRM diagnostics containing
+            reserved object identifiers and the most recent commit outcome.
+        """
+
+        requested_connector = str(getattr(self.display_config, "connector", "") or "")
+        return {
+            "backend": "drm_visual",
+            "requested_connector": requested_connector,
+            "reserved_connector_id": int(getattr(self.conn, "id", -1)),
+            "reserved_connector_name": str(
+                getattr(self.conn, "fullname", requested_connector)
+            ),
+            "reserved_crtc_id": int(getattr(self.crtc, "id", -1)),
+            "reserved_plane_id": int(getattr(self._plane, "id", -1)),
+            "modeset_done": bool(self._modeset_done),
+            "current_framebuffer_id": self._current_fb_id,
+            "last_commit_stage": self._last_commit_stage,
+            "last_commit_error": self._last_commit_error,
+            "last_request": dict(self._last_request_summary),
+        }
+
     def _set_gray_framebuffer(self, gray_level_u8: int) -> None:
         """Create and cache a gray framebuffer if needed.
 
@@ -599,24 +670,36 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
         """
 
         if allow_modeset:
+            self._last_commit_stage = "modeset"
             mode_blob = self.mode.to_blob(self.card)
+            plane_properties = {
+                "FB_ID": framebuffer.id,
+                "CRTC_ID": self.crtc.id,
+                "SRC_X": 0 << 16,
+                "SRC_Y": 0 << 16,
+                "SRC_W": framebuffer.width << 16,
+                "SRC_H": framebuffer.height << 16,
+                "CRTC_X": 0,
+                "CRTC_Y": 0,
+                "CRTC_W": self.mode.hdisplay,
+                "CRTC_H": self.mode.vdisplay,
+            }
+            self._last_request_summary = {
+                "commit_kind": "atomic",
+                "allow_modeset": True,
+                "framebuffer_id": int(framebuffer.id),
+                "object_properties": {
+                    "connector": {"CRTC_ID": int(self.crtc.id)},
+                    "crtc": {"ACTIVE": 1, "MODE_ID": int(mode_blob.id)},
+                    "plane": dict(plane_properties),
+                },
+            }
             req = self._pykms.AtomicReq(self.card)
             req.add(self.conn, "CRTC_ID", self.crtc.id)
             req.add(self.crtc, {"ACTIVE": 1, "MODE_ID": mode_blob.id})
             req.add(
                 self._plane,
-                {
-                    "FB_ID": framebuffer.id,
-                    "CRTC_ID": self.crtc.id,
-                    "SRC_X": 0 << 16,
-                    "SRC_Y": 0 << 16,
-                    "SRC_W": framebuffer.width << 16,
-                    "SRC_H": framebuffer.height << 16,
-                    "CRTC_X": 0,
-                    "CRTC_Y": 0,
-                    "CRTC_W": self.mode.hdisplay,
-                    "CRTC_H": self.mode.vdisplay,
-                },
+                plane_properties,
             )
             ret = _atomic_commit_with_retry(
                 commit_call=lambda: req.commit(allow_modeset=True),
@@ -625,10 +708,21 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
                 sleep_s=0.002,
             )
             if ret < 0:
-                raise RuntimeError(f"atomic mode set failed with {ret}")
+                self._last_commit_error = f"atomic mode set failed with {ret}"
+                raise RuntimeError(self._last_commit_error)
+            self._last_commit_error = None
             return
 
         if self.card.has_atomic:
+            self._last_commit_stage = "page_flip"
+            self._last_request_summary = {
+                "commit_kind": "atomic",
+                "allow_modeset": False,
+                "framebuffer_id": int(framebuffer.id),
+                "object_properties": {
+                    "crtc_primary_plane": {"FB_ID": int(framebuffer.id)},
+                },
+            }
             req = self._pykms.AtomicReq(self.card)
             req.add(self.crtc.primary_plane, "FB_ID", framebuffer.id)
             ret = _atomic_commit_with_retry(
@@ -638,10 +732,20 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
                 sleep_s=0.002,
             )
             if ret < 0:
-                raise RuntimeError(f"atomic page flip failed with {ret}")
+                self._last_commit_error = f"atomic page flip failed with {ret}"
+                raise RuntimeError(self._last_commit_error)
+            self._last_commit_error = None
             return
 
+        self._last_commit_stage = "legacy_page_flip"
+        self._last_request_summary = {
+            "commit_kind": "legacy_page_flip",
+            "allow_modeset": False,
+            "framebuffer_id": int(framebuffer.id),
+            "object_properties": {},
+        }
         self.crtc.page_flip(framebuffer)
+        self._last_commit_error = None
 
     def _wait_for_flip_complete(self, timeout_s: float) -> None:
         """Block until the DRM driver reports a page-flip completion event.

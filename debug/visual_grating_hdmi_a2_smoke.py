@@ -16,6 +16,19 @@ except ModuleNotFoundError:
     from repo_imports import prepare_repo_imports, resolve_repo_root
 
 
+class VisualGratingSmokeFailure(RuntimeError):
+    """Raised when the visual-only smoke fails after collecting diagnostics.
+
+    Attributes:
+        summary: JSON-serializable failure summary including any available DRM
+            diagnostics from the visual runtime startup/playback path.
+    """
+
+    def __init__(self, message: str, *, summary: dict[str, object]) -> None:
+        super().__init__(message)
+        self.summary = dict(summary)
+
+
 def build_visual_grating_session_info(
     *,
     output_root: Path,
@@ -102,14 +115,17 @@ def run_visual_grating_hdmi_a2_smoke(
         env=env,
         home_dir=home_dir,
     )
-    visual = visual_factory(session_info)
     summary: dict[str, object] = {
         "visual_backend": "drm",
         "visual_connector": "HDMI-A-2",
         "mode_status": getattr(mode_status, "describe", lambda: str(mode_status))(),
     }
+    visual = None
 
     try:
+        failure_stage = "visual_init"
+        visual = visual_factory(session_info)
+        failure_stage = "visual_playback"
         visual.show_grating("go_grating")
         sleep_fn(float(hold_s))
         visual.show_grating("nogo_grating")
@@ -126,11 +142,31 @@ def run_visual_grating_hdmi_a2_smoke(
                 "play_count": int(metrics.get("play_count", 0)),
                 "current_label": metrics.get("current_label"),
                 "timing_entries": len(list(metrics.get("timing_log", []))),
+                "visual_drm_diagnostics": dict(metrics.get("drm_diagnostics", {})),
             }
         )
         return summary
+    except Exception as exc:
+        summary["failure_stage"] = failure_stage
+        if visual is not None:
+            runtime = getattr(visual, "_runtime", None)
+            if runtime is not None and hasattr(runtime, "get_metrics"):
+                try:
+                    metrics = runtime.get_metrics()
+                except Exception:
+                    metrics = {"drm_diagnostics": dict(getattr(runtime, "_drm_diagnostics", {}))}
+            else:
+                metrics = dict(getattr(visual, "_metrics", {}))
+            summary["visual_drm_diagnostics"] = dict(metrics.get("drm_diagnostics", {}))
+        elif hasattr(exc, "diagnostics"):
+            summary["visual_drm_diagnostics"] = dict(getattr(exc, "diagnostics", {}))
+        raise VisualGratingSmokeFailure(
+            f"{type(exc).__name__}: {exc}",
+            summary=summary,
+        ) from exc
     finally:
-        visual.close()
+        if visual is not None:
+            visual.close()
 
 
 def _import_visual_stim() -> Callable[..., Any]:
@@ -171,6 +207,11 @@ def main(argv: list[str] | None = None) -> int:
     except HeadlessDisplayModeError as exc:
         print(exc, file=sys.stderr)
         return 2
+    except VisualGratingSmokeFailure as exc:
+        print(f"Visual grating smoke failed: {exc}", file=sys.stderr)
+        for key, value in exc.summary.items():
+            print(f"{key}: {value}", file=sys.stderr)
+        return 1
     except ValueError as exc:
         print(f"Visual grating smoke failed: {exc}", file=sys.stderr)
         return 1

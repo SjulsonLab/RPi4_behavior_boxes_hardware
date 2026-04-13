@@ -101,12 +101,16 @@ def run_camera_preview_hdmi_a1_smoke(
         active_state = runtime.state_dict()
         sleep_fn(float(duration_s))
         runtime.stop_preview()
+        stopped_state = runtime.state_dict()
         summary.update(
             {
                 "status": "ok",
                 "preview_active_before_stop": bool(active_state.get("preview_active", False)),
-                "preview_active_after_stop": bool(runtime.state_dict().get("preview_active", False)),
+                "preview_active_after_stop": bool(stopped_state.get("preview_active", False)),
                 "storage_root": str(active_state.get("storage_root", "")),
+                "preview_drm_diagnostics": dict(active_state.get("drm_diagnostics", {})),
+                "preview_last_error_phase": active_state.get("preview_last_error_phase"),
+                "preview_last_error_message": active_state.get("preview_last_error_message"),
             }
         )
         return summary

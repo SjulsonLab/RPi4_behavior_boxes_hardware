@@ -276,6 +276,8 @@ class DirectJpegPreviewViewer:
         self._thread: threading.Thread | None = None
         self._consecutive_errors = 0
         self._next_init_allowed_s = 0.0
+        self._last_error_phase: str | None = None
+        self._last_error_message: str | None = None
 
     def start(self) -> "DirectJpegPreviewViewer":
         """Start the preview loop in a daemon thread."""
@@ -331,6 +333,27 @@ class DirectJpegPreviewViewer:
             self._thread.join(timeout=2.0)
         self._teardown_runtime()
 
+    def state_dict(self) -> dict[str, Any]:
+        """Return one JSON-serializable preview runtime state snapshot.
+
+        Returns:
+            dict[str, Any]: Preview state including connector, whether a backend
+            is currently active, lightweight DRM diagnostics, and the latest
+            non-fatal runtime error information when available.
+        """
+
+        diagnostics: dict[str, Any] = {}
+        if self._backend is not None and hasattr(self._backend, "diagnostics"):
+            diagnostics = dict(self._backend.diagnostics())
+        return {
+            "preview_connector": self.config.connector,
+            "preview_active": self._backend is not None and self._renderer is not None,
+            "drm_diagnostics": diagnostics,
+            "consecutive_errors": int(self._consecutive_errors),
+            "last_error_phase": self._last_error_phase,
+            "last_error_message": self._last_error_message,
+        }
+
     def _ensure_runtime(self) -> None:
         if self._renderer is not None:
             return
@@ -351,6 +374,8 @@ class DirectJpegPreviewViewer:
             now_s: Current monotonic time in seconds.
         """
 
+        self._last_error_phase = str(phase)
+        self._last_error_message = str(exc)
         self._consecutive_errors += 1
         if self._should_log_consecutive_error(self._consecutive_errors):
             self._logger.warning(
@@ -450,6 +475,9 @@ class _PykmsPreviewBackend:
         self._plane = self.res.reserve_primary_plane(self.crtc)
         self._mode_set = False
         self._front_index = 0
+        self._last_commit_stage: str | None = None
+        self._last_commit_error: str | None = None
+        self._last_request_summary: dict[str, Any] = {}
         self._framebuffers = [
             pykms.DumbFramebuffer(self.card, self.resolution_px[0], self.resolution_px[1], "XR24"),
             pykms.DumbFramebuffer(self.card, self.resolution_px[0], self.resolution_px[1], "XR24"),
@@ -491,6 +519,30 @@ class _PykmsPreviewBackend:
             except Exception:
                 return None
 
+    def diagnostics(self) -> dict[str, Any]:
+        """Return a lightweight DRM resource snapshot for preview debugging.
+
+        Returns:
+            dict[str, Any]: JSON-serializable preview diagnostics containing the
+            requested connector, reserved DRM object identifiers, and the most
+            recent commit-stage outcome.
+        """
+
+        return {
+            "backend": "drm_preview",
+            "requested_connector": str(self.connector),
+            "reserved_connector_id": int(getattr(self.conn, "id", -1)),
+            "reserved_connector_name": str(
+                getattr(self.conn, "fullname", self.connector)
+            ),
+            "reserved_crtc_id": int(getattr(self.crtc, "id", -1)),
+            "reserved_plane_id": int(getattr(self._plane, "id", -1)),
+            "mode_set_done": bool(self._mode_set),
+            "last_commit_stage": self._last_commit_stage,
+            "last_commit_error": self._last_commit_error,
+            "last_request": dict(self._last_request_summary),
+        }
+
     def _write_rgb_framebuffer(self, frame_rgb: np.ndarray, framebuffer: Any) -> None:
         """Copy one RGB frame into an XR24 dumb framebuffer.
 
@@ -511,36 +563,61 @@ class _PykmsPreviewBackend:
         """Present one framebuffer on the preview connector."""
 
         if not self._mode_set:
+            self._last_commit_stage = "modeset"
             mode_blob = self.mode.to_blob(self.card)
+            plane_properties = {
+                "FB_ID": framebuffer.id,
+                "CRTC_ID": self.crtc.id,
+                "SRC_X": 0 << 16,
+                "SRC_Y": 0 << 16,
+                "SRC_W": framebuffer.width << 16,
+                "SRC_H": framebuffer.height << 16,
+                "CRTC_X": 0,
+                "CRTC_Y": 0,
+                "CRTC_W": self.mode.hdisplay,
+                "CRTC_H": self.mode.vdisplay,
+            }
+            self._last_request_summary = {
+                "commit_kind": "atomic",
+                "allow_modeset": True,
+                "framebuffer_id": int(framebuffer.id),
+                "object_properties": {
+                    "connector": {"CRTC_ID": int(self.crtc.id)},
+                    "crtc": {"ACTIVE": 1, "MODE_ID": int(mode_blob.id)},
+                    "plane": dict(plane_properties),
+                },
+            }
             req = self._pykms.AtomicReq(self.card)
             req.add(self.conn, "CRTC_ID", self.crtc.id)
             req.add(self.crtc, {"ACTIVE": 1, "MODE_ID": mode_blob.id})
             req.add(
                 self._plane,
-                {
-                    "FB_ID": framebuffer.id,
-                    "CRTC_ID": self.crtc.id,
-                    "SRC_X": 0 << 16,
-                    "SRC_Y": 0 << 16,
-                    "SRC_W": framebuffer.width << 16,
-                    "SRC_H": framebuffer.height << 16,
-                    "CRTC_X": 0,
-                    "CRTC_Y": 0,
-                    "CRTC_W": self.mode.hdisplay,
-                    "CRTC_H": self.mode.vdisplay,
-                },
+                plane_properties,
             )
             ret = req.commit(allow_modeset=True)
             if ret < 0:
-                raise RuntimeError(f"preview atomic mode set failed with {ret}")
+                self._last_commit_error = f"preview atomic mode set failed with {ret}"
+                raise RuntimeError(self._last_commit_error)
+            self._last_commit_error = None
             self._mode_set = True
             return
 
+        self._last_commit_stage = "page_flip"
+        self._last_request_summary = {
+            "commit_kind": "atomic",
+            "allow_modeset": False,
+            "framebuffer_id": int(framebuffer.id),
+            "object_properties": {
+                "crtc_primary_plane": {"FB_ID": int(framebuffer.id)},
+            },
+        }
         req = self._pykms.AtomicReq(self.card)
         req.add(self.crtc.primary_plane, "FB_ID", framebuffer.id)
         ret = req.commit()
         if ret < 0:
-            raise RuntimeError(f"preview atomic page flip failed with {ret}")
+            self._last_commit_error = f"preview atomic page flip failed with {ret}"
+            raise RuntimeError(self._last_commit_error)
+        self._last_commit_error = None
         self._wait_for_flip_complete(timeout_s=0.2)
 
     def _wait_for_flip_complete(self, timeout_s: float) -> None:
