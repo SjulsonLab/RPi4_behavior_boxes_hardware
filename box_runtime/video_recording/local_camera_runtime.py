@@ -13,7 +13,9 @@ Data contracts:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import subprocess
 import time
 from typing import Any, Callable
 
@@ -26,6 +28,56 @@ from box_runtime.video_recording.picamera2_recorder import Picamera2Recorder
 
 class CameraHardwareUnavailable(RuntimeError):
     """Raised when one requested camera cannot be opened on the local host."""
+
+
+class RpicamQtPreviewProcess:
+    """Manage one long-running desktop preview process using ``rpicam-hello``.
+
+    Data contracts:
+
+    - ``camera_num``: Zero-based libcamera index integer.
+    - ``fullscreen``: ``True`` for fullscreen preview, ``False`` for windowed.
+    """
+
+    def __init__(self, *, camera_num: int, fullscreen: bool = True) -> None:
+        self.camera_num = int(camera_num)
+        self.fullscreen = bool(fullscreen)
+        self._process: subprocess.Popen[bytes] | None = None
+
+    def start(self) -> "RpicamQtPreviewProcess":
+        """Start the preview process if it is not already running."""
+
+        if self._process is not None and self._process.poll() is None:
+            return self
+        command: list[str] = [
+            "rpicam-hello",
+            "--camera",
+            str(self.camera_num),
+            "--qt-preview",
+            "-t",
+            "0",
+        ]
+        if self.fullscreen:
+            command.append("--fullscreen")
+        environment = dict(os.environ)
+        environment.setdefault("DISPLAY", ":0")
+        environment.setdefault("XAUTHORITY", str(Path.home() / ".Xauthority"))
+        self._process = subprocess.Popen(command, env=environment)
+        return self
+
+    def close(self) -> None:
+        """Terminate the preview process if it is running."""
+
+        if self._process is None:
+            return
+        if self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=2.0)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=1.0)
+        self._process = None
 
 
 def _camera_num_from_id(camera_id: str) -> int:
@@ -94,6 +146,20 @@ def _resolve_preview_connector(session_info: dict[str, Any], camera_id: str) -> 
     return str(session_info.get("camera_preview_connector", "HDMI-A-1"))
 
 
+def _resolve_camera_recording_enabled(session_info: dict[str, Any]) -> bool:
+    """Resolve whether session startup should begin camera recording.
+
+    Args:
+        session_info: Session configuration mapping.
+
+    Returns:
+        bool: ``True`` to start recording during ``CameraManager.start_session``,
+        ``False`` for preview-only camera mode.
+    """
+
+    return bool(session_info.get("camera_recording_enabled", True))
+
+
 class LocalCameraRuntime:
     """One local automated camera runtime owned by BehavBox.
 
@@ -106,6 +172,9 @@ class LocalCameraRuntime:
         preview_sink_factory: Optional factory returning a preview sink. The
             callable must accept ``camera_id``, ``connector``, ``frame_provider``,
             and ``max_preview_hz``.
+        qt_preview_process_factory: Optional factory returning a desktop
+            preview process for ``qt_local`` mode. The callable must accept
+            keyword-only ``camera_num``.
         clock: Optional monotonic or wall-clock callable returning seconds.
     """
 
@@ -116,6 +185,7 @@ class LocalCameraRuntime:
         *,
         recorder_factory: Callable[..., Any] | None = None,
         preview_sink_factory: Callable[..., Any] | None = None,
+        qt_preview_process_factory: Callable[..., Any] | None = None,
         clock: Callable[[], float] | None = None,
     ) -> None:
         self.camera_id = str(camera_id)
@@ -124,6 +194,10 @@ class LocalCameraRuntime:
         self._clock = clock or time.time
         self._recorder_factory = recorder_factory or Picamera2Recorder
         self._preview_sink_factory = preview_sink_factory or self._default_preview_sink
+        self._qt_preview_process_factory = (
+            qt_preview_process_factory
+            or (lambda *, camera_num: RpicamQtPreviewProcess(camera_num=camera_num))
+        )
         self.storage_root = Path(self.session_info["dir_name"]) / "camera_recordings"
         self.preview_mode = _resolve_preview_mode(session_info, self.camera_id)
         self.preview_connector = _resolve_preview_connector(session_info, self.camera_id)
@@ -138,9 +212,20 @@ class LocalCameraRuntime:
     def prepare(self) -> None:
         """Instantiate the recorder and validate local camera availability."""
 
+        self.storage_root.mkdir(parents=True, exist_ok=True)
         if self.is_prepared:
             return
-        self.storage_root.mkdir(parents=True, exist_ok=True)
+        if self.preview_mode == "qt_local" and not _resolve_camera_recording_enabled(self.session_info):
+            self.is_prepared = True
+            return
+        self._ensure_recorder()
+        self.is_prepared = True
+
+    def _ensure_recorder(self) -> None:
+        """Instantiate one recorder if missing and validate camera access."""
+
+        if self.recorder is not None:
+            return
         try:
             self.recorder = self._recorder_factory(
                 self.storage_root,
@@ -151,7 +236,6 @@ class LocalCameraRuntime:
             raise
         except Exception as exc:
             raise CameraHardwareUnavailable(f"{self.camera_id} is unavailable: {exc}") from exc
-        self.is_prepared = True
 
     def start_recording(self, owner: str = "automated") -> None:
         """Start one camera recording under the local session directory.
@@ -161,6 +245,7 @@ class LocalCameraRuntime:
         """
 
         self.prepare()
+        self._ensure_recorder()
         if self.is_recording:
             return
         assert self.recorder is not None
@@ -185,18 +270,24 @@ class LocalCameraRuntime:
     def start_preview(self) -> None:
         """Start the configured local preview sink when enabled."""
 
-        if self.preview_mode != "drm_local":
+        if self.preview_mode == "off":
             return
         self.prepare()
         if self.is_preview_active:
             return
-        assert self.recorder is not None
-        self.preview_sink = self._preview_sink_factory(
-            camera_id=self.camera_id,
-            connector=self.preview_connector,
-            frame_provider=self.recorder.preview_frame,
-            max_preview_hz=self.preview_max_hz,
-        )
+        if self.preview_mode == "drm_local":
+            self._ensure_recorder()
+            assert self.recorder is not None
+            self.preview_sink = self._preview_sink_factory(
+                camera_id=self.camera_id,
+                connector=self.preview_connector,
+                frame_provider=self.recorder.preview_frame,
+                max_preview_hz=self.preview_max_hz,
+            )
+        elif self.preview_mode == "qt_local":
+            self.preview_sink = self._qt_preview_process_factory(camera_num=self.camera_num)
+        else:
+            return
         if hasattr(self.preview_sink, "start"):
             self.preview_sink.start()
         self.is_preview_active = True
@@ -289,11 +380,13 @@ class CameraManager:
         state_callback: Callable[[dict[str, dict[str, Any]]], None] | None = None,
         recorder_factory: Callable[..., Any] | None = None,
         preview_sink_factory: Callable[..., Any] | None = None,
+        qt_preview_process_factory: Callable[..., Any] | None = None,
     ) -> None:
         self.session_info = session_info
         self._state_callback = state_callback
         self._recorder_factory = recorder_factory
         self._preview_sink_factory = preview_sink_factory
+        self._qt_preview_process_factory = qt_preview_process_factory
         self.camera_ids = _normalize_camera_ids(session_info)
         self.runtimes: dict[str, LocalCameraRuntime] = {}
 
@@ -313,6 +406,7 @@ class CameraManager:
                 session_info=self.session_info,
                 recorder_factory=self._recorder_factory,
                 preview_sink_factory=self._preview_sink_factory,
+                qt_preview_process_factory=self._qt_preview_process_factory,
             )
             runtime.prepare()
             self.runtimes[camera_id] = runtime
@@ -322,9 +416,11 @@ class CameraManager:
         """Start recordings and enabled previews for all configured cameras."""
 
         self.prepare()
+        recording_enabled = _resolve_camera_recording_enabled(self.session_info)
         for camera_id in self.camera_ids:
             runtime = self.runtimes[camera_id]
-            runtime.start_recording(owner=owner)
+            if recording_enabled:
+                runtime.start_recording(owner=owner)
             runtime.start_preview()
         self._publish_state()
 

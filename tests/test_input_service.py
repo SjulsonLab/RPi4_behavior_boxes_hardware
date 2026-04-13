@@ -9,6 +9,7 @@ os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
 os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
 
 from box_runtime.behavior.behavbox import BehavBox, BehaviorEvent
+from box_runtime.input.service import _safe_close_input_device
 from box_runtime.mock_hw.registry import REGISTRY
 
 
@@ -211,3 +212,40 @@ class TestInputArtifacts(unittest.TestCase):
             self.assertIsInstance(event, BehaviorEvent)
             self.assertEqual(event.name, "left_entry")
             self.assertEqual(box.interact_list[-1][1], "left_entry")
+
+
+class _BusyCloseDevice:
+    def close(self) -> None:
+        raise RuntimeError("GPIO busy")
+
+
+class _FailCloseDevice:
+    def close(self) -> None:
+        raise RuntimeError("unexpected close failure")
+
+
+class _OkCloseDevice:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestInputCloseGuard(unittest.TestCase):
+    def test_safe_close_input_device_ignores_gpio_busy_error(self):
+        _safe_close_input_device(_BusyCloseDevice())
+
+    def test_safe_close_input_device_raises_non_gpio_busy_errors(self):
+        with self.assertRaisesRegex(RuntimeError, "unexpected close failure"):
+            _safe_close_input_device(_FailCloseDevice())
+
+    def test_safe_close_input_device_calls_close_for_normal_devices(self):
+        device = _OkCloseDevice()
+        _safe_close_input_device(device)
+        self.assertTrue(device.closed)
+
+    def test_safe_close_input_device_disables_repeated_close_after_gpio_busy(self):
+        device = _BusyCloseDevice()
+        _safe_close_input_device(device)
+        device.close()

@@ -1,8 +1,9 @@
-"""Runtime support for precomputed visual stimuli using fake or DRM backends."""
+"""Runtime support for precomputed visual stimuli using fake, DRM, or X-window backends."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import errno
 import multiprocessing as mp
 import os
 from pathlib import Path
@@ -43,7 +44,7 @@ def query_display_config(
     """Resolve the display geometry and refresh rate for a runtime backend.
 
     Args:
-        backend: Backend name, ``"fake"`` or ``"drm"``.
+        backend: Backend name, ``"fake"``, ``"drm"``, or ``"xwindow"``.
         requested_resolution_px: Optional ``(width_px, height_px)`` override.
         requested_refresh_hz: Optional target refresh rate in Hz.
         requested_connector: Optional DRM connector name such as ``"HDMI-A-1"``.
@@ -59,6 +60,16 @@ def query_display_config(
         return DisplayConfig(
             backend=backend_name,
             connector=requested_connector,
+            resolution_px=resolution_px,
+            refresh_hz=refresh_hz,
+        )
+
+    if backend_name == "xwindow":
+        resolution_px = requested_resolution_px or (640, 480)
+        refresh_hz = float(requested_refresh_hz or 60.0)
+        return DisplayConfig(
+            backend=backend_name,
+            connector=requested_connector or "HDMI-A-2",
             resolution_px=resolution_px,
             refresh_hz=refresh_hz,
         )
@@ -607,7 +618,12 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
                     "CRTC_H": self.mode.vdisplay,
                 },
             )
-            ret = req.commit(allow_modeset=True)
+            ret = _atomic_commit_with_retry(
+                commit_call=lambda: req.commit(allow_modeset=True),
+                retryable_codes={-errno.EBUSY, -errno.EAGAIN},
+                max_attempts=10,
+                sleep_s=0.002,
+            )
             if ret < 0:
                 raise RuntimeError(f"atomic mode set failed with {ret}")
             return
@@ -615,12 +631,141 @@ class _PykmsDisplayBackend(_BaseDisplayBackend):
         if self.card.has_atomic:
             req = self._pykms.AtomicReq(self.card)
             req.add(self.crtc.primary_plane, "FB_ID", framebuffer.id)
-            ret = req.commit()
+            ret = _atomic_commit_with_retry(
+                commit_call=req.commit,
+                retryable_codes={-errno.EBUSY, -errno.EAGAIN},
+                max_attempts=10,
+                sleep_s=0.002,
+            )
             if ret < 0:
                 raise RuntimeError(f"atomic page flip failed with {ret}")
             return
 
         self.crtc.page_flip(framebuffer)
+
+
+class _XWindowDisplayBackend(_BaseDisplayBackend):
+    """Desktop-window visual backend using pygame for fullscreen presentation."""
+
+    def __init__(
+        self,
+        display_config: DisplayConfig,
+        gray_level_u8: int,
+        stimuli: dict[str, CompiledGrating],
+    ) -> None:
+        try:
+            import pygame
+        except ImportError as exc:
+            raise RuntimeError("xwindow backend requires pygame to be installed") from exc
+
+        self._pygame = pygame
+        self.display_config = display_config
+        self.gray_level_u8 = int(gray_level_u8)
+        self._stimuli: dict[str, dict[str, Any]] = {}
+        self.frame_period_ns = int(round(1_000_000_000.0 / float(display_config.refresh_hz)))
+        self._display_index = _display_index_from_connector(display_config.connector)
+
+        # Select target monitor before initializing the display subsystem.
+        os.environ.setdefault("SDL_VIDEO_FULLSCREEN_DISPLAY", str(self._display_index))
+        pygame.init()
+        pygame.display.init()
+        if hasattr(pygame.display, "set_mode"):
+            pygame.display.set_mode(display_config.resolution_px, pygame.FULLSCREEN)
+        self._surface = pygame.display.get_surface()
+        if self._surface is None:
+            raise RuntimeError("xwindow backend failed to create a fullscreen surface")
+
+        for name, stimulus in stimuli.items():
+            frame_surfaces = [self._frame_to_surface(frame) for frame in stimulus.frames]
+            self._stimuli[name] = {
+                "frame_surfaces": frame_surfaces,
+                "frame_count": stimulus.frame_count,
+                "frame_interval_s": float(stimulus.frame_interval_s),
+                "spec_name": stimulus.spec.name,
+            }
+
+    def display_gray(self, gray_level_u8: int) -> None:
+        """Display a uniform gray frame.
+
+        Args:
+            gray_level_u8: Grayscale value in uint8 units [0, 255].
+        """
+
+        self.gray_level_u8 = int(gray_level_u8)
+        self._surface.fill((self.gray_level_u8, self.gray_level_u8, self.gray_level_u8))
+        self._pump_events()
+        self._pygame.display.flip()
+
+    def play(self, stimulus_name: str, enqueue_ns: int) -> dict[str, Any]:
+        """Display one compiled grating sequence using desktop fullscreen rendering.
+
+        Args:
+            stimulus_name: Canonical stimulus identifier.
+            enqueue_ns: Parent-process command enqueue timestamp in nanoseconds.
+
+        Returns:
+            dict[str, Any]: Timing log for one stimulus presentation.
+        """
+
+        stimulus = self._stimuli[stimulus_name]
+        frame_surfaces = stimulus["frame_surfaces"]
+        first_flip_ns: int | None = None
+        frame_interval_s = float(stimulus["frame_interval_s"])
+
+        for frame_surface in frame_surfaces:
+            frame_start_ns = time.perf_counter_ns()
+            self._surface.blit(frame_surface, (0, 0))
+            self._pump_events()
+            self._pygame.display.flip()
+            if first_flip_ns is None:
+                first_flip_ns = time.perf_counter_ns()
+            elapsed_s = (time.perf_counter_ns() - frame_start_ns) / 1_000_000_000.0
+            sleep_s = max(0.0, frame_interval_s - elapsed_s)
+            if sleep_s > 0.0:
+                time.sleep(sleep_s)
+
+        if first_flip_ns is None:
+            first_flip_ns = time.perf_counter_ns()
+
+        return {
+            "stimulus_name": str(stimulus["spec_name"]),
+            "enqueue_ns": int(enqueue_ns),
+            "first_flip_ns": int(first_flip_ns),
+            "frame_count": int(stimulus["frame_count"]),
+            "missed_next_vblank": int((first_flip_ns - enqueue_ns) > self.frame_period_ns),
+        }
+
+    def close(self) -> None:
+        """Close the pygame display backend."""
+
+        try:
+            self._pygame.display.quit()
+        finally:
+            self._pygame.quit()
+
+    def _frame_to_surface(self, frame: Any) -> Any:
+        """Convert one grayscale frame array into a pygame surface.
+
+        Args:
+            frame: ``uint8`` array with shape ``(height_px, width_px)``.
+
+        Returns:
+            Any: pygame surface containing the RGB-expanded frame.
+        """
+
+        np = __import__("numpy")
+        rgb = np.stack([frame, frame, frame], axis=2)
+        rgb_for_pygame = np.transpose(rgb, (1, 0, 2))
+        surface = self._pygame.surfarray.make_surface(rgb_for_pygame)
+        if surface.get_size() != self.display_config.resolution_px:
+            surface = self._pygame.transform.scale(surface, self.display_config.resolution_px)
+        return surface
+
+    def _pump_events(self) -> None:
+        """Drain pending window events to keep desktop compositor responsive."""
+
+        for _event in self._pygame.event.get():
+            pass
 
     def _wait_for_flip_complete(self, timeout_s: float) -> None:
         """Block until the DRM driver reports a page-flip completion event.
@@ -654,6 +799,8 @@ def _build_backend(
         return _FakeDisplayBackend(display_config, gray_level_u8, stimuli)
     if display_config.backend == "drm":
         return _PykmsDisplayBackend(display_config, gray_level_u8, stimuli)
+    if display_config.backend == "xwindow":
+        return _XWindowDisplayBackend(display_config, gray_level_u8, stimuli)
     raise ValueError(f"unsupported backend {display_config.backend!r}")
 
 
@@ -695,3 +842,43 @@ def _select_mode(conn: Any, requested_refresh_hz: float | None) -> Any:
         if abs(float(getattr(mode, "vrefresh", 0.0)) - float(requested_refresh_hz)) < 0.5:
             return mode
     return default_mode
+
+
+def _display_index_from_connector(connector: str | None) -> int:
+    """Map connector names such as ``HDMI-A-2`` to SDL display indices."""
+
+    connector_name = str(connector or "").strip().upper()
+    if connector_name.endswith("-2"):
+        return 1
+    return 0
+
+
+def _atomic_commit_with_retry(
+    commit_call: Any,
+    retryable_codes: set[int],
+    max_attempts: int,
+    sleep_s: float,
+) -> int:
+    """Run one DRM atomic commit with bounded retry on transient busy errors.
+
+    Args:
+        commit_call: Zero-argument callable returning DRM commit status code.
+        retryable_codes: Negative errno-style return codes to retry.
+        max_attempts: Maximum number of attempts before returning failure.
+        sleep_s: Sleep duration between retries in seconds.
+
+    Returns:
+        int: Final commit status code returned by ``commit_call``.
+    """
+
+    attempts = max(1, int(max_attempts))
+    for attempt_index in range(attempts):
+        ret = int(commit_call())
+        if ret >= 0:
+            return ret
+        if ret not in retryable_codes:
+            return ret
+        if attempt_index == attempts - 1:
+            return ret
+        time.sleep(float(sleep_s))
+    return -1

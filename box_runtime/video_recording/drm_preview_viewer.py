@@ -260,16 +260,22 @@ class DirectJpegPreviewViewer:
         backend_factory: Callable[[PreviewDisplayConfig], Any] | None = None,
         logger: logging.Logger | None = None,
         poll_interval_s: float = 1.0 / 60.0,
+        max_consecutive_errors_before_reinit: int = 3,
+        runtime_retry_backoff_s: float = 1.0,
     ) -> None:
         self.config = config
         self._frame_provider = frame_provider
         self._backend_factory = backend_factory or _PykmsPreviewBackend
         self._logger = logger or logging.getLogger(__name__)
         self._poll_interval_s = float(poll_interval_s)
+        self._max_consecutive_errors_before_reinit = max(1, int(max_consecutive_errors_before_reinit))
+        self._runtime_retry_backoff_s = max(0.0, float(runtime_retry_backoff_s))
         self._backend: Any | None = None
         self._renderer: PreviewRenderer | None = None
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._consecutive_errors = 0
+        self._next_init_allowed_s = 0.0
 
     def start(self) -> "DirectJpegPreviewViewer":
         """Start the preview loop in a daemon thread."""
@@ -290,11 +296,20 @@ class DirectJpegPreviewViewer:
         """Run the local preview loop in the current thread."""
 
         local_stop = stop_event or self._stop_event
-        self._ensure_runtime()
-        assert self._renderer is not None
-
         last_frame_token: int | None = None
         while not local_stop.is_set():
+            now_s = time.monotonic()
+            if self._renderer is None:
+                if now_s < self._next_init_allowed_s:
+                    time.sleep(self._poll_interval_s)
+                    continue
+                try:
+                    self._ensure_runtime()
+                    last_frame_token = None
+                except Exception as exc:
+                    self._handle_runtime_error(exc, phase="init", now_s=now_s)
+                    time.sleep(self._poll_interval_s)
+                    continue
             try:
                 frame_bytes = self._frame_provider()
                 if frame_bytes is not None:
@@ -303,8 +318,9 @@ class DirectJpegPreviewViewer:
                         self._renderer.submit_jpeg_frame(frame_bytes, received_time_s=time.monotonic())
                         last_frame_token = frame_token
                 self._renderer.render_pending(time.monotonic())
+                self._consecutive_errors = 0
             except Exception as exc:
-                self._logger.warning("direct preview error on %s: %s", self.config.connector, exc)
+                self._handle_runtime_error(exc, phase="render", now_s=time.monotonic())
             time.sleep(self._poll_interval_s)
 
     def close(self) -> None:
@@ -313,8 +329,7 @@ class DirectJpegPreviewViewer:
         self._stop_event.set()
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=2.0)
-        if self._backend is not None:
-            self._backend.close()
+        self._teardown_runtime()
 
     def _ensure_runtime(self) -> None:
         if self._renderer is not None:
@@ -326,6 +341,46 @@ class DirectJpegPreviewViewer:
             runtime_config = replace(self.config, resolution_px=tuple(backend_resolution))
         self._backend = backend
         self._renderer = PreviewRenderer(config=runtime_config, backend=backend)
+
+    def _handle_runtime_error(self, exc: Exception, *, phase: str, now_s: float) -> None:
+        """Track errors, throttle warning logs, and reinitialize backend as needed.
+
+        Args:
+            exc: Runtime exception raised by preview init/render logic.
+            phase: Failing phase label, either ``"init"`` or ``"render"``.
+            now_s: Current monotonic time in seconds.
+        """
+
+        self._consecutive_errors += 1
+        if self._should_log_consecutive_error(self._consecutive_errors):
+            self._logger.warning(
+                "direct preview %s error on %s (count=%d): %s",
+                phase,
+                self.config.connector,
+                self._consecutive_errors,
+                exc,
+            )
+        if self._consecutive_errors < self._max_consecutive_errors_before_reinit:
+            return
+        self._consecutive_errors = 0
+        self._next_init_allowed_s = float(now_s) + self._runtime_retry_backoff_s
+        self._teardown_runtime()
+
+    def _teardown_runtime(self) -> None:
+        """Close backend resources and clear preview runtime state."""
+
+        if self._backend is not None and hasattr(self._backend, "close"):
+            self._backend.close()
+        self._backend = None
+        self._renderer = None
+
+    @staticmethod
+    def _should_log_consecutive_error(count: int) -> bool:
+        """Return ``True`` for the first and power-of-two repeated errors."""
+
+        if count <= 0:
+            return False
+        return (count & (count - 1)) == 0
 
 
 def start_preview_viewer_from_env(

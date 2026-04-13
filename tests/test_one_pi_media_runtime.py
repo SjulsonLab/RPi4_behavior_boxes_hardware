@@ -107,6 +107,25 @@ class _FakePreviewSink:
         self.closed = True
 
 
+class _FakeQtPreviewProcess:
+    """Minimal desktop-preview process double with lifecycle hooks."""
+
+    instances: list["_FakeQtPreviewProcess"] = []
+
+    def __init__(self, camera_num: int) -> None:
+        self.camera_num = int(camera_num)
+        self.started = False
+        self.closed = False
+        _FakeQtPreviewProcess.instances.append(self)
+
+    def start(self) -> "_FakeQtPreviewProcess":
+        self.started = True
+        return self
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def _fake_recorder_factory(storage_root: Path, *, camera_num: int, camera_id: str) -> _FakeRecorder:
     return _FakeRecorder(storage_root, camera_num=camera_num, camera_id=camera_id)
 
@@ -123,6 +142,10 @@ def _fake_preview_sink_factory(
         frame_provider=frame_provider,
         max_preview_hz=max_preview_hz,
     )
+
+
+def _fake_qt_preview_process_factory(*, camera_num: int) -> _FakeQtPreviewProcess:
+    return _FakeQtPreviewProcess(camera_num=camera_num)
 
 
 def test_local_camera_runtime_starts_and_stops_recording_without_http_service() -> None:
@@ -199,6 +222,65 @@ def test_camera_manager_accepts_two_camera_ids_and_tracks_per_camera_state() -> 
         assert state["camera1"]["recording"] is True
         assert state["camera1"]["preview_mode"] == "off"
         assert [instance.camera_id for instance in _FakePreviewSink.instances] == ["camera0"]
+
+
+def test_camera_manager_preview_only_mode_starts_preview_without_recording() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _FakeRecorder.instances.clear()
+        _FakePreviewSink.instances.clear()
+        manager = CameraManager(
+            _session_info(
+                tmp,
+                camera_enabled=True,
+                camera_ids=["camera0"],
+                camera_recording_enabled=False,
+                camera_preview_modes={"camera0": "drm_local"},
+            ),
+            recorder_factory=_fake_recorder_factory,
+            preview_sink_factory=_fake_preview_sink_factory,
+        )
+
+        manager.prepare()
+        manager.start_session(owner="automated")
+        state = manager.runtime_state()
+        manager.stop_session()
+        manager.close()
+
+        assert state["camera0"]["recording"] is False
+        assert state["camera0"]["preview_active"] is True
+        assert [instance.camera_id for instance in _FakePreviewSink.instances] == ["camera0"]
+        recorder = _FakeRecorder.instances[-1]
+        assert all(call_name != "start" for call_name, _payload in recorder.calls)
+
+
+def test_local_camera_runtime_qt_preview_mode_starts_desktop_preview_process() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _FakeRecorder.instances.clear()
+        _FakeQtPreviewProcess.instances.clear()
+        runtime = LocalCameraRuntime(
+            camera_id="camera0",
+            session_info=_session_info(
+                tmp,
+                camera_enabled=True,
+                camera_preview_modes={"camera0": "qt_local"},
+            ),
+            recorder_factory=_fake_recorder_factory,
+            preview_sink_factory=_fake_preview_sink_factory,
+            qt_preview_process_factory=_fake_qt_preview_process_factory,
+        )
+
+        runtime.prepare()
+        runtime.start_preview()
+        state = runtime.state_dict()
+        runtime.stop_preview()
+        runtime.close()
+
+        assert len(_FakeQtPreviewProcess.instances) == 1
+        assert _FakeQtPreviewProcess.instances[0].camera_num == 0
+        assert _FakeQtPreviewProcess.instances[0].started is True
+        assert _FakeQtPreviewProcess.instances[0].closed is True
+        assert state["preview_active"] is True
+        assert state["preview_mode"] == "qt_local"
 
 
 def test_camera_manager_missing_hardware_fails_cleanly() -> None:
