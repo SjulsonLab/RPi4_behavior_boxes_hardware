@@ -93,6 +93,11 @@ def _begin_trial(box, task_state: dict, now_s: float) -> None:
     trial_type = _next_trial_type(task_state)
     task_state["current_trial_type"] = trial_type
     cue_name = task_state["config"]["go_cue_name"] if trial_type == "go" else task_state["config"]["nogo_cue_name"]
+    grating_name = (
+        task_state["config"]["go_grating_name"]
+        if trial_type == "go"
+        else task_state["config"]["nogo_grating_name"]
+    )
     append_task_event(task_state, "trial_started", now_s, trial_index=int(task_state["trial_index"]), trial_type=trial_type)
     enter_phase(
         task_state,
@@ -102,7 +107,25 @@ def _begin_trial(box, task_state: dict, now_s: float) -> None:
         trial_type=trial_type,
     )
     box.play_sound(cue_name, side=str(task_state["config"]["cue_side"]))
+    if _visual_stimulus_enabled(box):
+        box.show_grating(str(grating_name))
     _publish_runtime_state(box, task_state)
+
+
+def _visual_stimulus_enabled(box) -> bool:
+    """Return whether visual stimulus output is enabled for this task run.
+
+    Args:
+    - ``box``: BehavBox-like runtime object exposing ``session_info``.
+
+    Returns:
+    - ``enabled``: True when session configuration enables visual stimulus.
+    """
+
+    session_info = getattr(box, "session_info", {})
+    if not isinstance(session_info, dict):
+        return False
+    return bool(session_info.get("visual_stimulus", False))
 
 
 def _record_trial_outcome(task_state: dict, *, now_s: float, outcome: str, trial_type: str) -> None:

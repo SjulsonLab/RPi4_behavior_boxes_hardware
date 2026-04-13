@@ -12,7 +12,10 @@ import yaml
 
 from box_runtime.visual_stimuli.visualstim import VisualStim
 from box_runtime.visual_stimuli.visual_runtime.grating_compiler import compile_grating
-from box_runtime.visual_stimuli.visual_runtime.drm_runtime import query_display_config
+from box_runtime.visual_stimuli.visual_runtime.drm_runtime import (
+    _atomic_commit_with_retry,
+    query_display_config,
+)
 from box_runtime.visual_stimuli.visual_runtime.grating_specs import load_grating_spec
 
 
@@ -376,6 +379,26 @@ def test_query_display_config_missing_connector_raises_clear_error(monkeypatch) 
         )
 
 
+def test_query_display_config_xwindow_uses_requested_resolution_and_refresh() -> None:
+    """xwindow backend should accept requested geometry without DRM discovery.
+
+    Returns:
+        None.
+    """
+
+    config = query_display_config(
+        backend="xwindow",
+        requested_resolution_px=(1280, 720),
+        requested_refresh_hz=75.0,
+        requested_connector="HDMI-A-2",
+    )
+
+    assert config.backend == "xwindow"
+    assert config.resolution_px == (1280, 720)
+    assert config.refresh_hz == pytest.approx(75.0)
+    assert config.connector == "HDMI-A-2"
+
+
 def test_show_grating_uses_persistent_worker(tmp_path: Path) -> None:
     """Repeated play requests should reuse a single worker process.
 
@@ -479,6 +502,48 @@ def test_myscreen_close_shuts_worker_cleanly(tmp_path: Path) -> None:
     visual.myscreen.close()
 
     assert not visual._runtime.is_alive()
+
+
+def test_visualstim_close_is_idempotent_and_stops_worker(tmp_path: Path) -> None:
+    spec_path = _write_spec(tmp_path / "go_grating.yaml")
+    visual = VisualStim(_session_info([spec_path]))
+
+    visual.close()
+    visual.close()
+
+    assert not visual._runtime.is_alive()
+
+
+def test_atomic_commit_with_retry_succeeds_after_transient_busy() -> None:
+    statuses = iter([-16, -16, 0])
+
+    def fake_commit() -> int:
+        return next(statuses)
+
+    result = _atomic_commit_with_retry(
+        commit_call=fake_commit,
+        retryable_codes={-16},
+        max_attempts=5,
+        sleep_s=0.0,
+    )
+
+    assert result == 0
+
+
+def test_atomic_commit_with_retry_returns_last_retryable_failure() -> None:
+    statuses = iter([-16, -16, -16])
+
+    def fake_commit() -> int:
+        return next(statuses)
+
+    result = _atomic_commit_with_retry(
+        commit_call=fake_commit,
+        retryable_codes={-16},
+        max_attempts=3,
+        sleep_s=0.0,
+    )
+
+    assert result == -16
 
 
 def test_unknown_grating_name_raises_clear_error(tmp_path: Path) -> None:

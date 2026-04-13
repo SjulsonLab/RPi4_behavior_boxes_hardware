@@ -4,6 +4,8 @@
   "nogo_cue_name": "gonogo_nogo",
   "go_cue_duration_s": 0.1,
   "nogo_cue_duration_s": 0.1,
+  "go_grating_name": "go_grating",
+  "nogo_grating_name": "nogo_grating",
   "cue_side": "both",
   "iti_s": 0.5,
   "response_window_s": 1.0,

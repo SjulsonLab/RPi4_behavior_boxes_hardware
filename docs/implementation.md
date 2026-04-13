@@ -352,3 +352,56 @@ Validation:
   - `python3 scripts/run_head_fixed_gonogo_mode.py --display-mode desktop --max-trials 2 --max-duration-s 30 --session-tag gpio_busy_close_fix_check3`
     - run completed and wrote final task state successfully,
     - `GPIO busy` now appears as close-time warnings (no uncaught crash).
+
+### Raspberry Pi 5 Camera and Display Findings (2026-04-13)
+
+This section summarizes what was exercised on the Raspberry Pi 5 while trying to
+show live camera preview on one monitor and drifting gratings on the other.
+
+What worked:
+
+- The bounded head-fixed go/no-go task runner completed on the Pi:
+  - `python3 scripts/run_head_fixed_gonogo_mode.py --display-mode desktop --max-trials 5 --max-duration-s 120 --session-tag go_nogo_pi_run`
+- Browser-based camera preview worked reliably through the HTTP camera service:
+  - `/monitor`
+  - `/stream.mjpg`
+- Desktop-mode task runs could start the Qt preview process and queue
+  `go_grating` / `nogo_grating` stimuli without crashing the session.
+
+What did not work reliably:
+
+- Qt local camera preview was not consistently visible on the user-observed
+  desktop, even when the preview process started successfully.
+- Desktop-mode drifting gratings were not visibly rendered on the intended
+  monitor, despite the `xwindow` backend running and logging normal stimulus
+  loop activity.
+- Direct DRM/KMS grating attempts were blocked by display ownership:
+  - `atomic mode set failed with -13`
+
+What we found:
+
+- The repository's intended one-Pi topology is:
+  - camera preview -> `HDMI-A-1`
+  - visual stimulus -> `HDMI-A-2`
+  This is enforced in `BehavBox.validate_media_config()`.
+- Desktop mode does not actually route camera preview by HDMI connector.
+  Instead, `sample_tasks/head_fixed_gonogo/display_mode.py` sets
+  `camera_preview_display=":0"`, so `qt_local` preview follows the desktop
+  display server session rather than true connector ownership.
+- The desktop visual path uses the `xwindow` backend rather than DRM:
+  - `HDMI-A-1 -> display index 0`
+  - `HDMI-A-2 -> display index 1`
+  This relies on the active desktop compositor exposing both displays to the
+  session that launches the grating process.
+- In practice, that desktop-session assumption did not hold in the tested Pi
+  setup. The grating loop could run, but the fullscreen window did not reach a
+  visible desktop surface from the SSH-driven launch path.
+
+Current interpretation:
+
+- "Camera appears on monitor 0" is explained by desktop-mode preview using
+  `DISPLAY=:0`, not by reliable connector-based routing.
+- "Drifting grating does not show" is currently a display backend / desktop
+  ownership problem, not evidence that grating generation itself is broken.
+- For the tested setup, browser preview is the only confirmed reliable camera
+  visualization path.

@@ -10,6 +10,7 @@ os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
 os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
 
 from box_runtime.behavior.behavbox import BehavBox
+from box_runtime.output.service import _safe_close_output_device
 from box_runtime.io_manifest import load_box_profile
 from box_runtime.mock_hw.registry import REGISTRY
 
@@ -130,3 +131,42 @@ def test_configure_user_output_claims_gpio4_without_touching_trigger_pins():
         gpio4 = next(pin for pin in state["pins"] if pin["pin"] == 4)
         assert gpio4["direction"] == "output"
         assert gpio4["label"] == "ttl_output"
+
+
+class _BusyOutputCloseDevice:
+    def close(self) -> None:
+        raise RuntimeError("GPIO busy")
+
+
+class _FailOutputCloseDevice:
+    def close(self) -> None:
+        raise RuntimeError("unexpected output close failure")
+
+
+class _OkOutputCloseDevice:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_safe_close_output_device_ignores_gpio_busy_error():
+    _safe_close_output_device(_BusyOutputCloseDevice())
+
+
+def test_safe_close_output_device_raises_non_gpio_busy_errors():
+    with pytest.raises(RuntimeError, match="unexpected output close failure"):
+        _safe_close_output_device(_FailOutputCloseDevice())
+
+
+def test_safe_close_output_device_calls_close_for_normal_devices():
+    device = _OkOutputCloseDevice()
+    _safe_close_output_device(device)
+    assert device.closed is True
+
+
+def test_safe_close_output_device_disables_repeated_close_after_gpio_busy():
+    device = _BusyOutputCloseDevice()
+    _safe_close_output_device(device)
+    device.close()

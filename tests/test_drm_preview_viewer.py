@@ -10,6 +10,7 @@ from PIL import Image
 import pytest
 
 from box_runtime.video_recording.drm_preview_viewer import (
+    DirectJpegPreviewViewer,
     DrmPreviewViewer,
     MjpegFrameDecoder,
     PreviewConnectorUnavailable,
@@ -200,3 +201,123 @@ def test_drm_preview_viewer_opens_local_stream_url() -> None:
 
     assert observed["url"] == "http://127.0.0.1:8123/stream.mjpg"
 
+
+def test_direct_preview_viewer_recovers_by_reinitializing_backend() -> None:
+    """Direct preview should reinitialize the backend after repeated DRM errors.
+
+    Returns:
+        None.
+    """
+
+    config = PreviewDisplayConfig(
+        connector="HDMI-A-1",
+        resolution_px=(8, 8),
+        stream_url="",
+        max_preview_hz=60.0,
+        stall_timeout_s=0.5,
+    )
+
+    class _FailThenOkBackend:
+        def __init__(self, _config: PreviewDisplayConfig, attempt: int) -> None:
+            self.attempt = attempt
+            self.frames: list[np.ndarray] = []
+            self.closed = False
+
+        def display_frame(self, frame_rgb: np.ndarray) -> None:
+            if self.attempt == 0:
+                raise RuntimeError("preview atomic mode set failed with -13")
+            self.frames.append(np.array(frame_rgb, copy=True))
+
+        def display_black(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    backends: list[_FailThenOkBackend] = []
+
+    def backend_factory(local_config: PreviewDisplayConfig) -> _FailThenOkBackend:
+        backend = _FailThenOkBackend(local_config, attempt=len(backends))
+        backends.append(backend)
+        return backend
+
+    stop_event = threading.Event()
+    frame_call_count = 0
+    frame_bytes = _jpeg_bytes((100, 120, 140), (8, 8))
+
+    def frame_provider() -> bytes:
+        nonlocal frame_call_count
+        frame_call_count += 1
+        if frame_call_count >= 24:
+            stop_event.set()
+        return frame_bytes
+
+    viewer = DirectJpegPreviewViewer(
+        config=config,
+        frame_provider=frame_provider,
+        backend_factory=backend_factory,
+        poll_interval_s=0.0005,
+        max_consecutive_errors_before_reinit=1,
+        runtime_retry_backoff_s=0.0,
+    )
+    viewer.run(stop_event=stop_event)
+
+    assert len(backends) >= 2
+    assert backends[0].closed is True
+    assert len(backends[-1].frames) >= 1
+
+
+def test_direct_preview_viewer_throttles_repeated_error_logs(caplog) -> None:
+    """Direct preview should throttle repeated identical render failures.
+
+    Inputs:
+        caplog: pytest fixture that captures log records.
+
+    Returns:
+        None.
+    """
+
+    config = PreviewDisplayConfig(
+        connector="HDMI-A-1",
+        resolution_px=(8, 8),
+        stream_url="",
+        max_preview_hz=60.0,
+        stall_timeout_s=0.5,
+    )
+    stop_event = threading.Event()
+    frame_call_count = 0
+    frame_bytes = _jpeg_bytes((10, 20, 30), (8, 8))
+
+    class _AlwaysFailBackend:
+        def __init__(self, _config: PreviewDisplayConfig) -> None:
+            self.closed = False
+
+        def display_frame(self, frame_rgb: np.ndarray) -> None:
+            raise RuntimeError("preview atomic mode set failed with -13")
+
+        def display_black(self) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    def frame_provider() -> bytes:
+        nonlocal frame_call_count
+        frame_call_count += 1
+        if frame_call_count >= 32:
+            stop_event.set()
+        return frame_bytes
+
+    viewer = DirectJpegPreviewViewer(
+        config=config,
+        frame_provider=frame_provider,
+        backend_factory=_AlwaysFailBackend,
+        poll_interval_s=0.0005,
+        max_consecutive_errors_before_reinit=1000,
+    )
+    with caplog.at_level("WARNING"):
+        viewer.run(stop_event=stop_event)
+
+    warning_messages = [record.getMessage() for record in caplog.records if record.levelname == "WARNING"]
+    assert frame_call_count >= 32
+    assert len(warning_messages) <= 8
