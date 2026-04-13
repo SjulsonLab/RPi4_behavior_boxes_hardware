@@ -310,3 +310,45 @@ Validation:
   - `25 passed, 1 skipped`
 - `BEHAVBOX_MOCK_UI_AUTOSTART=0 python3 -m pytest tests/test_one_pi_media_runtime.py tests/test_head_fixed_gonogo.py tests/test_task_runner.py tests/test_drm_preview_viewer.py -q`
   - `31 passed`
+
+### GPIO Busy Close-Path Guard (Desktop Dual-Display Runs)
+
+During desktop-mode dual-display runs (Qt camera preview + xwindow drifting gratings), teardown could previously raise:
+
+- `lgpio.error: 'GPIO busy'`
+
+This was occurring in hardware device close paths and could surface near shutdown even after a successful run.
+
+Code changes:
+
+- `box_runtime/input/service.py`
+  - added GPIO-busy detection helper for close-time exceptions,
+  - added safe-close wrapper that ignores known `GPIO busy` teardown errors and logs a warning,
+  - updated `InputService.close()` to use safe-close behavior for each opened device,
+  - disabled repeated future `close()` calls on already-closed/ignored-busy devices to reduce destructor-time re-raises.
+- `box_runtime/output/service.py`
+  - applied the same safe-close strategy for output devices and `OutputService.close()`.
+
+Tests added/updated first:
+
+- `tests/test_input_service.py`
+  - safe-close ignores GPIO busy,
+  - safe-close raises non-GPIO errors,
+  - normal close still succeeds,
+  - repeated close after busy ignore does not re-raise.
+- `tests/test_output_service.py`
+  - same coverage for output device close behavior.
+
+Validation:
+
+- Local:
+  - `BEHAVBOX_MOCK_UI_AUTOSTART=0 python3 -m pytest tests/test_input_service.py tests/test_output_service.py -q`
+    - `21 passed`
+  - `BEHAVBOX_MOCK_UI_AUTOSTART=0 python3 -m pytest tests/test_head_fixed_display_mode.py tests/test_one_pi_media_runtime.py tests/test_head_fixed_gonogo.py tests/test_task_runner.py tests/test_visualstim_runtime.py tests/test_input_service.py tests/test_output_service.py -q`
+    - `70 passed, 1 skipped`
+- Raspberry Pi 5:
+  - `python3 -m pytest tests/test_input_service.py tests/test_output_service.py -q`
+    - `21 passed`
+  - `python3 scripts/run_head_fixed_gonogo_mode.py --display-mode desktop --max-trials 2 --max-duration-s 30 --session-tag gpio_busy_close_fix_check3`
+    - run completed and wrote final task state successfully,
+    - `GPIO busy` now appears as close-time warnings (no uncaught crash).
