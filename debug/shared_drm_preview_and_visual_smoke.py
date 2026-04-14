@@ -11,10 +11,12 @@ from typing import Any, Callable, Mapping
 try:
     from debug.display_mode_guard import HeadlessDisplayModeError, require_headless_console_mode
     from debug.repo_imports import prepare_repo_imports, resolve_repo_root
+    from debug.shared_camera_frame_source import SharedCameraFrameSource
     from debug.shared_drm_debug import SharedDrmController, make_placeholder_preview_frame
 except ModuleNotFoundError:
     from display_mode_guard import HeadlessDisplayModeError, require_headless_console_mode
     from repo_imports import prepare_repo_imports, resolve_repo_root
+    from shared_camera_frame_source import SharedCameraFrameSource
     from shared_drm_debug import SharedDrmController, make_placeholder_preview_frame
 
 
@@ -70,28 +72,43 @@ def run_shared_drm_preview_and_visual_smoke(
     *,
     output_root: Path,
     hold_s: float = 1.0,
+    preview_mode: str = "placeholder",
+    preview_source_mode: str = "rgb_main",
+    preview_frame_rate_hz: float = 30.0,
     repo_root: Path | str | None = None,
     env: Mapping[str, str] | None = None,
     home_dir: Path | str | None = None,
     require_mode: Callable[[], Any] = require_headless_console_mode,
     controller_factory: Callable[..., Any] = SharedDrmController,
+    frame_source_factory: Callable[..., Any] = SharedCameraFrameSource,
     compile_stimuli_fn: Callable[..., dict[str, Any]] = compile_shared_drm_stimuli,
     sleep_fn: Callable[[float], None] = time.sleep,
+    monotonic_fn: Callable[[], float] = time.monotonic,
 ) -> dict[str, object]:
     """Run the shared-DRM placeholder-preview plus grating smoke.
 
     Args:
         output_root: Directory under which smoke outputs may be stored.
         hold_s: Additional hold time in seconds between grating presentations.
+        preview_mode: Preview source mode, either ``"placeholder"`` or
+            ``"live_camera0"``.
+        preview_source_mode: Live camera preview source mode. ``"rgb_main"``
+            captures from the main RGB stream, while ``"yuv_lores"`` uses the
+            optional YUV low-resolution stream.
+        preview_frame_rate_hz: Target shared preview update rate in frames per
+            second for live camera mode.
         repo_root: Optional explicit repository root path.
         env: Optional environment-variable mapping used for repo-root detection.
         home_dir: Optional home-directory path used for repo-root fallback.
         require_mode: Zero-argument callable validating headless console mode.
         controller_factory: Factory returning a ``SharedDrmController``-compatible
             object.
+        frame_source_factory: Factory returning a frame source compatible with
+            ``SharedCameraFrameSource``.
         compile_stimuli_fn: Callable compiling shared-DRM stimuli for the
             stimulus output.
         sleep_fn: Sleep callable used between stimulus presentations.
+        monotonic_fn: Monotonic clock callable returning seconds.
 
     Returns:
         dict[str, object]: JSON-serializable smoke summary.
@@ -115,19 +132,73 @@ def run_shared_drm_preview_and_visual_smoke(
     summary: dict[str, object] = {
         "preview_connector": "HDMI-A-1",
         "visual_connector": "HDMI-A-2",
+        "preview_mode": str(preview_mode),
+        "camera_preview_source_mode": str(preview_source_mode),
+        "preview_target_fps": float(preview_frame_rate_hz),
         "mode_status": getattr(mode_status, "describe", lambda: str(mode_status))(),
     }
 
     controller = None
+    frame_source = None
+    preview_frame_count = 0
+    preview_started_monotonic_s: float | None = None
     failure_stage = "controller_init"
     try:
         controller = controller_factory(
             preview_connector="HDMI-A-1",
             stimulus_connector="HDMI-A-2",
         )
-        failure_stage = "preview_placeholder"
-        placeholder_frame = make_placeholder_preview_frame(controller.preview.resolution_px)
-        controller.preview.display_rgb_frame(placeholder_frame)
+        if preview_mode == "placeholder":
+            failure_stage = "preview_placeholder"
+            preview_frame = make_placeholder_preview_frame(controller.preview.resolution_px)
+        elif preview_mode == "live_camera0":
+            failure_stage = "preview_frame_source_init"
+            frame_source = frame_source_factory(
+                camera_id="camera0",
+                resolution_px=controller.preview.resolution_px,
+                acquisition_resolution_px=controller.preview.resolution_px,
+                preview_stream_resolution_px=controller.preview.resolution_px,
+                preview_source_mode=str(preview_source_mode),
+                frame_rate_hz=float(preview_frame_rate_hz),
+            )
+            summary.update(
+                {
+                    "camera_preview_source_mode": getattr(
+                        frame_source,
+                        "preview_source_mode",
+                        preview_source_mode,
+                    ),
+                    "camera_acquisition_resolution_px": getattr(
+                        frame_source,
+                        "acquisition_resolution_px",
+                        controller.preview.resolution_px,
+                    ),
+                    "preview_stream_resolution_px": getattr(
+                        frame_source,
+                        "preview_stream_resolution_px",
+                        controller.preview.resolution_px,
+                    ),
+                    "preview_frame_resolution_px": getattr(
+                        frame_source,
+                        "preview_rgb_resolution_px",
+                        controller.preview.resolution_px,
+                    ),
+                }
+            )
+            failure_stage = "preview_capture"
+            preview_frame = frame_source.capture_rgb_frame()
+            summary["preview_frame_resolution_px"] = getattr(
+                frame_source,
+                "preview_rgb_resolution_px",
+                (int(preview_frame.shape[1]), int(preview_frame.shape[0])),
+            )
+        else:
+            raise ValueError(f"unsupported preview_mode {preview_mode!r}")
+
+        failure_stage = "preview_display"
+        controller.preview.display_rgb_frame(preview_frame)
+        preview_frame_count += 1
+        preview_started_monotonic_s = monotonic_fn()
         summary["preview_drm_diagnostics"] = controller.preview.diagnostics()
 
         failure_stage = "stimulus_compile"
@@ -142,17 +213,49 @@ def run_shared_drm_preview_and_visual_smoke(
 
         failure_stage = "stimulus_playback"
         controller.stimulus.play_grating("go_grating", compiled_stimuli["go_grating"])
-        sleep_fn(float(hold_s))
+        preview_frame_count = _update_preview_during_hold(
+            controller=controller,
+            frame_source=frame_source,
+            hold_s=float(hold_s),
+            preview_frame_rate_hz=float(preview_frame_rate_hz),
+            sleep_fn=sleep_fn,
+            preview_frame_count=preview_frame_count,
+            monotonic_fn=monotonic_fn,
+        )
         controller.stimulus.play_grating("nogo_grating", compiled_stimuli["nogo_grating"])
-        sleep_fn(float(hold_s))
+        preview_frame_count = _update_preview_during_hold(
+            controller=controller,
+            frame_source=frame_source,
+            hold_s=float(hold_s),
+            preview_frame_rate_hz=float(preview_frame_rate_hz),
+            sleep_fn=sleep_fn,
+            preview_frame_count=preview_frame_count,
+            monotonic_fn=monotonic_fn,
+        )
+
+        preview_elapsed_s = (
+            max(0.0, monotonic_fn() - preview_started_monotonic_s)
+            if preview_started_monotonic_s is not None
+            else 0.0
+        )
+        preview_fps_achieved = (
+            float(preview_frame_count) / preview_elapsed_s
+            if preview_elapsed_s > 0.0
+            else 0.0
+        )
 
         summary.update(
             {
                 "status": "ok",
+                "preview_frame_count": int(preview_frame_count),
+                "preview_elapsed_s": float(preview_elapsed_s),
+                "preview_fps_achieved": float(preview_fps_achieved),
                 "preview_drm_diagnostics": controller.preview.diagnostics(),
                 "visual_drm_diagnostics": controller.stimulus.diagnostics(),
             }
         )
+        if frame_source is not None and hasattr(frame_source, "diagnostics"):
+            summary.update(frame_source.diagnostics())
         return summary
     except Exception as exc:
         summary["failure_stage"] = failure_stage
@@ -165,8 +268,55 @@ def run_shared_drm_preview_and_visual_smoke(
             summary=summary,
         ) from exc
     finally:
+        if frame_source is not None:
+            frame_source.close()
         if controller is not None:
             controller.close()
+
+
+def _update_preview_during_hold(
+    *,
+    controller: Any,
+    frame_source: Any,
+    hold_s: float,
+    preview_frame_rate_hz: float,
+    sleep_fn: Callable[[float], None],
+    preview_frame_count: int,
+    monotonic_fn: Callable[[], float],
+) -> int:
+    """Update shared preview frames repeatedly during one hold interval.
+
+    Args:
+        controller: Shared DRM controller exposing ``preview.display_rgb_frame``.
+        frame_source: Optional live frame source, or ``None`` for placeholder mode.
+        hold_s: Hold interval in seconds.
+        preview_frame_rate_hz: Target preview update rate in frames per second.
+        sleep_fn: Sleep callable used between updates.
+        preview_frame_count: Running preview frame count before this hold interval.
+        monotonic_fn: Monotonic clock callable returning seconds.
+
+    Returns:
+        int: Updated preview frame count after this hold interval.
+    """
+
+    frame_count = int(preview_frame_count)
+    if frame_source is None:
+        sleep_fn(float(hold_s))
+        return frame_count
+
+    interval_s = 1.0 / max(float(preview_frame_rate_hz), 1.0)
+    deadline = monotonic_fn() + max(0.0, float(hold_s))
+    while True:
+        now = monotonic_fn()
+        if now >= deadline:
+            break
+        controller.preview.display_rgb_frame(frame_source.capture_rgb_frame())
+        frame_count += 1
+        remaining_s = deadline - monotonic_fn()
+        if remaining_s <= 0.0:
+            break
+        sleep_fn(min(interval_s, remaining_s))
+    return frame_count
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -184,6 +334,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output-root", type=Path, default=Path("/tmp/behavbox_debug"))
     parser.add_argument("--hold-s", type=float, default=1.0)
+    parser.add_argument(
+        "--preview-mode",
+        choices=("placeholder", "live_camera0"),
+        default="placeholder",
+    )
+    parser.add_argument(
+        "--preview-source-mode",
+        choices=("rgb_main", "yuv_lores"),
+        default="rgb_main",
+    )
+    parser.add_argument("--preview-frame-rate-hz", type=float, default=30.0)
     parser.add_argument("--repo-root", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -191,6 +352,9 @@ def main(argv: list[str] | None = None) -> int:
         summary = run_shared_drm_preview_and_visual_smoke(
             output_root=args.output_root,
             hold_s=args.hold_s,
+            preview_mode=args.preview_mode,
+            preview_source_mode=args.preview_source_mode,
+            preview_frame_rate_hz=args.preview_frame_rate_hz,
             repo_root=args.repo_root,
         )
     except HeadlessDisplayModeError as exc:

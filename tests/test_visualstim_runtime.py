@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import queue
 import sys
 from types import SimpleNamespace
 
@@ -16,6 +17,8 @@ from box_runtime.visual_stimuli.visual_runtime.drm_runtime import (
     _PykmsDisplayBackend,
     _atomic_commit_with_retry,
     query_display_config,
+    DisplayConfig,
+    VisualStimRuntime,
 )
 from box_runtime.visual_stimuli.visual_runtime.grating_specs import load_grating_spec
 
@@ -604,6 +607,262 @@ def test_pykms_wait_for_flip_complete_times_out_without_flip_event(monkeypatch) 
 
     with pytest.raises(TimeoutError, match="timed out"):
         backend._wait_for_flip_complete(timeout_s=0.1)
+
+
+def test_pykms_backend_reports_connector_crtc_and_plane_diagnostics() -> None:
+    """The DRM visual backend should expose lightweight resource diagnostics.
+
+    Returns:
+        None.
+    """
+
+    backend = object.__new__(_PykmsDisplayBackend)
+    backend.display_config = SimpleNamespace(connector="HDMI-A-2")
+    backend.conn = SimpleNamespace(id=41, fullname="HDMI-A-2")
+    backend.crtc = SimpleNamespace(id=52)
+    backend._plane = SimpleNamespace(id=63)
+    backend._modeset_done = True
+    backend._current_fb_id = 77
+    backend._last_commit_stage = "modeset"
+    backend._last_commit_error = "atomic mode set failed with -13"
+    backend._last_request_summary = {
+        "commit_kind": "atomic",
+        "allow_modeset": True,
+        "framebuffer_id": 77,
+        "object_properties": {
+            "connector": {"CRTC_ID": 52},
+            "crtc": {"ACTIVE": 1, "MODE_ID": 99},
+            "plane": {"FB_ID": 77},
+        },
+    }
+
+    diagnostics = backend.diagnostics()
+
+    assert diagnostics["backend"] == "drm_visual"
+    assert diagnostics["requested_connector"] == "HDMI-A-2"
+    assert diagnostics["reserved_connector_id"] == 41
+    assert diagnostics["reserved_connector_name"] == "HDMI-A-2"
+    assert diagnostics["reserved_crtc_id"] == 52
+    assert diagnostics["reserved_plane_id"] == 63
+    assert diagnostics["modeset_done"] is True
+    assert diagnostics["current_framebuffer_id"] == 77
+    assert diagnostics["last_commit_stage"] == "modeset"
+    assert diagnostics["last_commit_error"] == "atomic mode set failed with -13"
+    assert diagnostics["last_request"]["allow_modeset"] is True
+    assert diagnostics["last_request"]["object_properties"]["plane"]["FB_ID"] == 77
+
+
+def test_pykms_backend_records_page_flip_request_summary(monkeypatch) -> None:
+    """Visual page flips should preserve the submitted atomic request summary.
+
+    Args:
+        monkeypatch: Pytest fixture used to patch atomic request creation.
+    """
+
+    class FakeAtomicReq:
+        def __init__(self, card: object) -> None:
+            self.card = card
+            self.calls: list[tuple[object, object, object]] = []
+
+        def add(self, obj: object, prop: object, value: object | None = None) -> None:
+            self.calls.append((obj, prop, value))
+
+        def commit(self, allow_modeset: bool = False) -> int:
+            return 0
+
+    req_instances: list[FakeAtomicReq] = []
+
+    def fake_atomic_req(card: object) -> FakeAtomicReq:
+        req = FakeAtomicReq(card)
+        req_instances.append(req)
+        return req
+
+    backend = object.__new__(_PykmsDisplayBackend)
+    backend._pykms = SimpleNamespace(AtomicReq=fake_atomic_req)
+    backend.card = SimpleNamespace(has_atomic=True)
+    backend.display_config = SimpleNamespace(connector="HDMI-A-2")
+    backend.conn = SimpleNamespace(id=41, fullname="HDMI-A-2")
+    backend.crtc = SimpleNamespace(id=52, primary_plane="crtc-primary-plane")
+    backend._plane = SimpleNamespace(id=63)
+    backend._modeset_done = True
+    backend._current_fb_id = None
+    backend._last_commit_stage = None
+    backend._last_commit_error = None
+    backend._last_request_summary = {}
+
+    framebuffer = SimpleNamespace(id=77, width=800, height=600)
+
+    backend._flip_to_framebuffer(framebuffer, allow_modeset=False)
+
+    diagnostics = backend.diagnostics()
+    assert diagnostics["last_request"]["allow_modeset"] is False
+    assert diagnostics["last_request"]["framebuffer_id"] == 77
+    assert diagnostics["last_request"]["object_properties"]["crtc_primary_plane"]["FB_ID"] == 77
+
+
+def test_visual_runtime_get_metrics_includes_drm_diagnostics() -> None:
+    """Parent metrics snapshots should include the latest worker DRM diagnostics.
+
+    Returns:
+        None.
+    """
+
+    runtime = object.__new__(VisualStimRuntime)
+    runtime._metrics = {"play_count": 0, "current_label": "gray", "timing_log": []}
+    runtime._error_message = None
+    runtime._drain_events = lambda: None
+    runtime._drm_diagnostics = {
+        "backend": "drm_visual",
+        "requested_connector": "HDMI-A-2",
+        "reserved_crtc_id": 52,
+    }
+
+    metrics = runtime.get_metrics()
+
+    assert metrics["drm_diagnostics"]["backend"] == "drm_visual"
+    assert metrics["drm_diagnostics"]["reserved_crtc_id"] == 52
+
+
+def test_visual_runtime_error_event_updates_drm_diagnostics() -> None:
+    """Error events should be allowed to carry the latest DRM diagnostics.
+
+    Returns:
+        None.
+    """
+
+    runtime = object.__new__(VisualStimRuntime)
+    runtime._metrics = {"play_count": 0, "current_label": "gray", "timing_log": []}
+    runtime._error_message = None
+    runtime._drm_diagnostics = {}
+
+    class FakeQueue:
+        def __init__(self) -> None:
+            self._items = [
+                {
+                    "type": "error",
+                    "message": "RuntimeError: atomic mode set failed with -13",
+                    "drm_diagnostics": {
+                        "backend": "drm_visual",
+                        "requested_connector": "HDMI-A-2",
+                        "reserved_plane_id": 63,
+                    },
+                }
+            ]
+
+        def get_nowait(self) -> dict[str, object]:
+            if not self._items:
+                raise queue.Empty
+            return self._items.pop(0)
+
+    runtime._result_queue = FakeQueue()
+
+    runtime._drain_events()
+
+    assert runtime._error_message == "RuntimeError: atomic mode set failed with -13"
+    assert runtime._drm_diagnostics["requested_connector"] == "HDMI-A-2"
+    assert runtime._drm_diagnostics["reserved_plane_id"] == 63
+
+
+def test_visual_runtime_init_failure_preserves_latest_drm_diagnostics(monkeypatch) -> None:
+    """Runtime init errors should retain the latest worker DRM diagnostics.
+
+    Args:
+        monkeypatch: Pytest fixture used to replace multiprocessing context.
+
+    Returns:
+        None.
+    """
+
+    class FakeQueue:
+        def __init__(self, items: list[dict[str, object]]) -> None:
+            self._items = list(items)
+
+        def put(self, item: dict[str, object]) -> None:
+            self._items.append(item)
+
+        def get_nowait(self) -> dict[str, object]:
+            if not self._items:
+                raise queue.Empty
+            return self._items.pop(0)
+
+    class FakeEvent:
+        def wait(self, timeout: float | None = None) -> bool:
+            return True
+
+        def set(self) -> None:
+            return None
+
+        def clear(self) -> None:
+            return None
+
+    class FakeProcess:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            self.pid = 4321
+
+        def start(self) -> None:
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+        def join(self, timeout: float | None = None) -> None:
+            return None
+
+        def terminate(self) -> None:
+            return None
+
+    class FakeContext:
+        def __init__(self) -> None:
+            self._queue_calls = 0
+
+        def Queue(self) -> FakeQueue:
+            self._queue_calls += 1
+            if self._queue_calls == 1:
+                return FakeQueue([])
+            return FakeQueue(
+                [
+                    {
+                        "type": "diagnostic",
+                        "drm_diagnostics": {
+                            "backend": "drm_visual",
+                            "requested_connector": "HDMI-A-2",
+                            "reserved_crtc_id": 52,
+                            "last_commit_stage": "modeset",
+                            "last_commit_error": "atomic mode set failed with -13",
+                        },
+                    },
+                    {
+                        "type": "error",
+                        "message": "RuntimeError: atomic mode set failed with -13",
+                    },
+                ]
+            )
+
+        def Event(self) -> FakeEvent:
+            return FakeEvent()
+
+        def Process(self, *args: object, **kwargs: object) -> FakeProcess:
+            return FakeProcess(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "box_runtime.visual_stimuli.visual_runtime.drm_runtime._runtime_context",
+        lambda: FakeContext(),
+    )
+
+    with pytest.raises(RuntimeError, match="atomic mode set failed with -13") as exc_info:
+        VisualStimRuntime(
+            display_config=DisplayConfig(
+                backend="fake",
+                connector="HDMI-A-2",
+                resolution_px=(32, 24),
+                refresh_hz=60.0,
+            ),
+            gray_level_u8=64,
+            stimuli={},
+        )
+
+    assert getattr(exc_info.value, "diagnostics", {})["requested_connector"] == "HDMI-A-2"
+    assert getattr(exc_info.value, "diagnostics", {})["reserved_crtc_id"] == 52
 
 
 def test_unknown_grating_name_raises_clear_error(tmp_path: Path) -> None:

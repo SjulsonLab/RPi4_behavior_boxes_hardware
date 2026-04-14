@@ -434,3 +434,25 @@ a preview placeholder rendered on `HDMI-A-1` while drifting gratings rendered
 on `HDMI-A-2` at the same time. This establishes the current architecture
 direction for real dual-display support, though the preview side is still using
 a placeholder frame rather than live camera imagery.
+
+The shared DRM path was then extended to use live `camera0` frames on
+`HDMI-A-1` while gratings continued on `HDMI-A-2`. This worked with a shared
+DRM owner, which is the main architectural result, but preview smoothness was
+still limited. A dual-stream `YUV` preview experiment was added and measured
+honestly, but it performed worse than the simpler single-stream `RGB` path, so
+the default was moved back to the previous `rgb_main` preview source while
+keeping `yuv_lores` available as an explicit option for later testing. In the
+current shared live-preview smoke, the `rgb_main` path is reaching about 9.4
+FPS at `1024x600`, which is usable for debugging but still well below the
+intended smoother operator preview.
+
+Next camera issues to consider or test:
+1. Time the main live-preview stages separately: `capture_array`, any resize or
+   copy work, and the shared DRM display call.
+2. Start from a fully working stable camera feed and test what slows down only
+   when the shared-DRM / drifting-grating path is active.
+3. Decide whether any performance-critical camera acquisition should move to a
+   separate Pi, rather than requiring the same Pi to do both display routing
+   and high-value capture work.
+4. Revisit preview stream formats and sensor modes only after end-user camera
+   requirements are clearer, so we do not optimize the wrong camera setup.
