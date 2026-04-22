@@ -474,3 +474,31 @@ speed improvement by itself. In practice, the single-process and
 multiprocessing versions both remained in a similar "good enough for operator
 preview" range. That points away from grating timing on the CPU as the main
 bottleneck and more toward the shared camera / framebuffer / DRM display path.
+
+Later on April 22, the preview path was reworked to model Picamera2's DRM
+preview design more closely while still keeping a single shared DRM owner in
+project code. New dmabuf-based camera preview helpers and smokes were added,
+including explicit dmabuf framebuffer reuse and delayed request release so that
+camera buffers stay alive until the next frame is actually committed. A first
+important negative result was that simply switching to dmabufs was not enough:
+the naive dmabuf path was still slow and choppy until buffer reuse and request
+lifetime were fixed.
+
+The most important result from that debugging was that preview request policy
+matters a lot. In this shared-DRM dmabuf preview path, `request_mode="latest"`
+(using `capture_request(flush=True)`) performed badly and inconsistently,
+whereas `request_mode="next"` (plain sequential `capture_request()`) produced
+near-target preview rates. On hardware, the single-output dmabuf smoke reached
+about `28.9 fps` at a `30 fps` target and about `49 fps` at a `50 fps` target
+with `request_mode="next"`, while the `latest` mode was much worse. The
+dmabuf-based blank-second-screen smoke on `HDMI-A-2` also held about `49.4
+fps`, showing that shared dual-output DRM control itself is not the limiting
+factor in this setup.
+
+Finally, the standard preview-plus-gratings shared-DRM smoke was moved onto the
+same dmabuf / `request_mode="next"` preview path while keeping the older
+back-to-back `go_grating` / `nogo_grating` stimulus sequencing on `HDMI-A-2`.
+That smoke also held about `50.03-50.12 fps` on hardware. This is an important
+checkpoint for later developers: the earlier preview slowdowns were largely an
+artifact of the older RGB copy/upload preview path and the wrong request mode,
+not an inherent limitation of shared DRM with drifting gratings.

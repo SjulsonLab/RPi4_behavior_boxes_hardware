@@ -11,12 +11,12 @@ from typing import Any, Callable, Mapping
 try:
     from debug.display_mode_guard import HeadlessDisplayModeError, require_headless_console_mode
     from debug.repo_imports import prepare_repo_imports, resolve_repo_root
-    from debug.shared_camera_frame_source import SharedCameraFrameSource
+    from debug.shared_camera_dmabuf_source import SharedCameraDmabufSource
     from debug.shared_drm_debug import SharedDrmController
 except ModuleNotFoundError:
     from display_mode_guard import HeadlessDisplayModeError, require_headless_console_mode
     from repo_imports import prepare_repo_imports, resolve_repo_root
-    from shared_camera_frame_source import SharedCameraFrameSource
+    from shared_camera_dmabuf_source import SharedCameraDmabufSource
     from shared_drm_debug import SharedDrmController
 
 
@@ -53,14 +53,16 @@ def run_camera_setup_preview_plus_blank_hdmi_a2_smoke(
     preview_connector: str = "HDMI-A-1",
     blank_connector: str = "HDMI-A-2",
     resolution_px: tuple[int, int] = (1024, 600),
-    preview_source_mode: str = "rgb_main",
+    preview_source_mode: str = "dmabuf_main",
     blank_gray_level_u8: int = 127,
     frame_rate_hz: float = 30.0,
+    sensor_mode: int = 0,
+    request_mode: str = "next",
     repo_root: Path | str | None = None,
     env: Mapping[str, str] | None = None,
     home_dir: Path | str | None = None,
     require_mode: Callable[[], Any] = require_headless_console_mode,
-    frame_source_factory: Callable[..., Any] = SharedCameraFrameSource,
+    frame_source_factory: Callable[..., Any] = SharedCameraDmabufSource,
     shared_controller_factory: Callable[..., Any] = SharedDrmController,
     monotonic_fn: Callable[[], float] = time.monotonic,
     sleep_fn: Callable[[float], None] = time.sleep,
@@ -73,20 +75,25 @@ def run_camera_setup_preview_plus_blank_hdmi_a2_smoke(
         preview_connector: DRM connector name for the camera preview output.
         blank_connector: DRM connector name for the blank second output.
         resolution_px: Preview output resolution as ``(width_px, height_px)``.
-        preview_source_mode: Camera preview source mode passed through to
-            ``SharedCameraFrameSource``.
+        preview_source_mode: Preview source label for this smoke. The dmabuf
+            preview transport currently supports only ``"dmabuf_main"``.
         blank_gray_level_u8: Blank-screen gray value in uint8 display units.
         frame_rate_hz: Target preview loop rate in frames per second.
+        sensor_mode: Picamera2 sensor mode index used for preview testing.
+        request_mode: Preview request-selection policy passed through to the
+            dmabuf camera source.
         repo_root: Optional explicit repository root path.
         env: Optional environment-variable mapping used for repo-root detection.
         home_dir: Optional home-directory path used for repo-root fallback.
         require_mode: Zero-argument callable validating headless console mode.
         frame_source_factory: Factory returning a
-            ``SharedCameraFrameSource``-compatible object.
+            ``SharedCameraDmabufSource``-compatible object.
         shared_controller_factory: Factory returning a
             ``SharedDrmController``-compatible object.
         monotonic_fn: Monotonic clock callable returning seconds.
-        sleep_fn: Sleep callable used to target the preview loop rate.
+        sleep_fn: Compatibility-only sleep callable retained for the older
+            RGB preview loop signature. The dmabuf preview path does not rely
+            on fixed loop sleeps for pacing.
 
     Returns:
         dict[str, object]: JSON-serializable smoke summary with timing metrics.
@@ -107,17 +114,26 @@ def run_camera_setup_preview_plus_blank_hdmi_a2_smoke(
     )
     output_root.mkdir(parents=True, exist_ok=True)
 
+    if str(preview_source_mode) != "dmabuf_main":
+        raise ValueError(
+            "camera setup preview plus blank dmabuf smoke supports only preview_source_mode='dmabuf_main'"
+        )
+
     summary: dict[str, object] = {
         "preview_connector": str(preview_connector),
         "blank_connector": str(blank_connector),
         "blank_gray_level_u8": int(blank_gray_level_u8),
         "camera_preview_source_mode": str(preview_source_mode),
+        "camera_preview_transport": "dmabuf",
         "preview_target_fps": float(frame_rate_hz),
+        "sensor_mode": int(sensor_mode),
+        "request_mode": str(request_mode),
         "mode_status": getattr(mode_status, "describe", lambda: str(mode_status))(),
     }
 
     frame_source = None
     controller = None
+    current_frame = None
     frame_count = 0
     capture_time_total_s = 0.0
     frame_prepare_time_total_s = 0.0
@@ -128,10 +144,9 @@ def run_camera_setup_preview_plus_blank_hdmi_a2_smoke(
         frame_source = frame_source_factory(
             camera_id="camera0",
             resolution_px=resolution_px,
-            acquisition_resolution_px=resolution_px,
-            preview_stream_resolution_px=resolution_px,
-            preview_source_mode=str(preview_source_mode),
             frame_rate_hz=float(frame_rate_hz),
+            sensor_mode=int(sensor_mode),
+            request_mode=str(request_mode),
         )
         if hasattr(frame_source, "diagnostics"):
             summary.update(frame_source.diagnostics())
@@ -149,7 +164,6 @@ def run_camera_setup_preview_plus_blank_hdmi_a2_smoke(
 
         started_s = monotonic_fn()
         deadline_s = started_s + max(0.0, float(duration_s))
-        interval_s = 1.0 / max(float(frame_rate_hz), 1.0)
 
         while True:
             now_s = monotonic_fn()
@@ -158,25 +172,22 @@ def run_camera_setup_preview_plus_blank_hdmi_a2_smoke(
 
             failure_stage = "preview_loop_capture"
             capture_started_s = monotonic_fn()
-            source_frame = frame_source.capture_source_frame()
+            frame = frame_source.capture_frame_for_preview()
             capture_time_total_s += max(0.0, monotonic_fn() - capture_started_s)
-
-            failure_stage = "preview_loop_prepare"
-            prepare_started_s = monotonic_fn()
-            preview_frame = frame_source.prepare_preview_frame(source_frame)
-            frame_prepare_time_total_s += max(0.0, monotonic_fn() - prepare_started_s)
 
             failure_stage = "preview_loop_display"
             display_started_s = monotonic_fn()
-            controller.preview.display_rgb_frame(preview_frame)
+            try:
+                controller.preview.display_dmabuf_frame(frame)
+            except Exception:
+                frame_source.release_frame(frame)
+                raise
             display_time_total_s += max(0.0, monotonic_fn() - display_started_s)
+            if current_frame is not None:
+                frame_source.release_frame(current_frame)
+            current_frame = frame
 
             frame_count += 1
-
-            remaining_s = deadline_s - monotonic_fn()
-            if remaining_s <= 0.0:
-                break
-            sleep_fn(min(interval_s, remaining_s))
 
         elapsed_s = max(0.0, monotonic_fn() - (started_s if started_s is not None else monotonic_fn()))
         fps_achieved = float(frame_count) / elapsed_s if elapsed_s > 0.0 else 0.0
@@ -216,6 +227,8 @@ def run_camera_setup_preview_plus_blank_hdmi_a2_smoke(
             summary=summary,
         ) from exc
     finally:
+        if current_frame is not None and frame_source is not None:
+            frame_source.release_frame(current_frame)
         if controller is not None:
             controller.close()
         if frame_source is not None:
@@ -240,8 +253,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preview-connector", type=str, default="HDMI-A-1")
     parser.add_argument("--blank-connector", type=str, default="HDMI-A-2")
     parser.add_argument("--blank-gray-level", type=int, default=127)
-    parser.add_argument("--preview-source-mode", choices=("rgb_main", "yuv_lores"), default="rgb_main")
+    parser.add_argument("--preview-source-mode", choices=("dmabuf_main",), default="dmabuf_main")
     parser.add_argument("--frame-rate-hz", type=float, default=30.0)
+    parser.add_argument("--sensor-mode", type=int, default=0)
+    parser.add_argument("--request-mode", choices=("latest", "next"), default="next")
     parser.add_argument("--repo-root", type=Path, default=None)
     args = parser.parse_args(argv)
 
@@ -254,6 +269,8 @@ def main(argv: list[str] | None = None) -> int:
             blank_gray_level_u8=args.blank_gray_level,
             preview_source_mode=args.preview_source_mode,
             frame_rate_hz=args.frame_rate_hz,
+            sensor_mode=args.sensor_mode,
+            request_mode=args.request_mode,
             repo_root=args.repo_root,
         )
     except HeadlessDisplayModeError as exc:

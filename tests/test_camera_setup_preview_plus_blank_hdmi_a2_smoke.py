@@ -15,6 +15,7 @@ def test_dual_output_setup_preview_reports_timing_metrics_and_blank_output(tmp_p
     """Dual-output setup preview should drive camera preview plus a blank second output."""
 
     calls: list[str] = []
+    released_frames: list[str] = []
 
     class FakeOutput:
         def __init__(self, role: str, connector: str, resolution_px: tuple[int, int]) -> None:
@@ -22,8 +23,8 @@ def test_dual_output_setup_preview_reports_timing_metrics_and_blank_output(tmp_p
             self.connector = connector
             self.resolution_px = resolution_px
 
-        def display_rgb_frame(self, frame_rgb: np.ndarray) -> None:
-            calls.append(f"{self.role}:rgb:{frame_rgb.shape}")
+        def display_dmabuf_frame(self, frame: object) -> None:
+            calls.append(f"{self.role}:dmabuf:{getattr(frame, 'buffer_key', '<missing>')}")
 
         def display_gray(self, gray_level_u8: int) -> None:
             calls.append(f"{self.role}:gray:{gray_level_u8}")
@@ -56,37 +57,33 @@ def test_dual_output_setup_preview_reports_timing_metrics_and_blank_output(tmp_p
             *,
             camera_id: str,
             resolution_px: tuple[int, int],
-            acquisition_resolution_px: tuple[int, int],
-            preview_stream_resolution_px: tuple[int, int],
-            preview_source_mode: str,
             frame_rate_hz: float,
+            sensor_mode: int,
+            request_mode: str,
         ) -> None:
             calls.append(
                 "frame_source:init:"
-                f"{camera_id}:{resolution_px}:{acquisition_resolution_px}:{preview_stream_resolution_px}:{preview_source_mode}:{frame_rate_hz}"
+                f"{camera_id}:{resolution_px}:{frame_rate_hz}:{sensor_mode}:{request_mode}"
             )
-            self.preview_source_mode = preview_source_mode
-            self.acquisition_resolution_px = acquisition_resolution_px
-            self.preview_stream_resolution_px = preview_stream_resolution_px
-            self.preview_rgb_resolution_px = resolution_px
+            self._next_key = 0
 
-        def capture_source_frame(self) -> np.ndarray:
-            calls.append("frame_source:capture_source")
-            return np.zeros((600, 1024, 3), dtype=np.uint8)
+        def capture_frame_for_preview(self) -> object:
+            calls.append("frame_source:capture_frame_for_preview")
+            self._next_key += 1
+            return type("FakeFrame", (), {"buffer_key": f"frame-{self._next_key}"})()
 
-        def prepare_preview_frame(self, source_frame: np.ndarray) -> np.ndarray:
-            calls.append(f"frame_source:prepare:{source_frame.shape}")
-            return np.ascontiguousarray(source_frame, dtype=np.uint8)
+        def release_frame(self, frame: object) -> None:
+            released_frames.append(getattr(frame, "buffer_key", "<missing>"))
 
         def diagnostics(self) -> dict[str, object]:
             return {
                 "camera_id": "camera0",
-                "camera_preview_source_mode": self.preview_source_mode,
-                "acquisition_resolution_px": self.acquisition_resolution_px,
-                "preview_stream_resolution_px": self.preview_stream_resolution_px,
-                "preview_frame_resolution_px": self.preview_rgb_resolution_px,
-                "output_resolution_px": self.preview_rgb_resolution_px,
+                "camera_preview_source_mode": "dmabuf_main",
+                "camera_preview_transport": "dmabuf",
+                "output_resolution_px": (1024, 600),
                 "frame_rate_hz": 30.0,
+                "sensor_mode": 0,
+                "request_mode": "next",
             }
 
         def close(self) -> None:
@@ -138,22 +135,25 @@ def test_dual_output_setup_preview_reports_timing_metrics_and_blank_output(tmp_p
         sleep_fn=lambda _seconds: None,
     )
 
-    assert calls[0] == "frame_source:init:camera0:(1024, 600):(1024, 600):(1024, 600):rgb_main:30.0"
+    assert calls[0] == "frame_source:init:camera0:(1024, 600):30.0:0:next"
     assert calls[1] == "controller:init:HDMI-A-1:HDMI-A-2"
     assert "blank:gray:127" in calls
-    assert "frame_source:capture_source" in calls
-    assert "frame_source:prepare:(600, 1024, 3)" in calls
-    assert any(call.startswith("preview:rgb:") for call in calls)
+    assert "frame_source:capture_frame_for_preview" in calls
+    assert any(call.startswith("preview:dmabuf:") for call in calls)
     assert calls[-2:] == ["controller:close", "frame_source:close"]
+    assert released_frames
     assert summary["preview_connector"] == "HDMI-A-1"
     assert summary["blank_connector"] == "HDMI-A-2"
     assert summary["blank_gray_level_u8"] == 127
-    assert summary["camera_preview_source_mode"] == "rgb_main"
+    assert summary["camera_preview_source_mode"] == "dmabuf_main"
+    assert summary["camera_preview_transport"] == "dmabuf"
+    assert summary["request_mode"] == "next"
+    assert summary["sensor_mode"] == 0
     assert summary["preview_frame_count"] >= 1
     assert summary["preview_elapsed_s"] >= 0.0
     assert summary["preview_fps_achieved"] >= 0.0
     assert summary["capture_time_total_s"] >= 0.0
-    assert summary["frame_prepare_time_total_s"] >= 0.0
+    assert summary["frame_prepare_time_total_s"] == 0.0
     assert summary["display_time_total_s"] >= 0.0
     assert summary["preview_drm_diagnostics"]["requested_connector"] == "HDMI-A-1"
     assert summary["blank_drm_diagnostics"]["requested_connector"] == "HDMI-A-2"
@@ -226,7 +226,7 @@ def test_dual_output_setup_preview_reports_preview_loop_display_failure_stage(
         def __init__(self, role: str) -> None:
             self.role = role
 
-        def display_rgb_frame(self, _frame_rgb: np.ndarray) -> None:
+        def display_dmabuf_frame(self, _frame: object) -> None:
             raise RuntimeError("preview display failed")
 
         def display_gray(self, _gray_level_u8: int) -> None:
@@ -251,16 +251,13 @@ def test_dual_output_setup_preview_reports_preview_loop_display_failure_stage(
 
     class FakeFrameSource:
         def __init__(self, **_kwargs) -> None:
-            self.preview_source_mode = "rgb_main"
-            self.acquisition_resolution_px = (1024, 600)
-            self.preview_stream_resolution_px = (1024, 600)
-            self.preview_rgb_resolution_px = (1024, 600)
+            self.released_frames: list[object] = []
 
-        def capture_source_frame(self) -> np.ndarray:
-            return np.zeros((600, 1024, 3), dtype=np.uint8)
+        def capture_frame_for_preview(self) -> object:
+            return object()
 
-        def prepare_preview_frame(self, source_frame: np.ndarray) -> np.ndarray:
-            return source_frame
+        def release_frame(self, frame: object) -> None:
+            self.released_frames.append(frame)
 
         def diagnostics(self) -> dict[str, object]:
             return {}

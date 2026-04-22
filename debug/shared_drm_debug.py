@@ -47,11 +47,11 @@ class SharedDrmController:
         self,
         *,
         preview_connector: str,
-        stimulus_connector: str,
+        stimulus_connector: str | None,
         pykms_module: Any | None = None,
         selector_factory: Callable[[], Any] = selectors.DefaultSelector,
     ) -> None:
-        if preview_connector == stimulus_connector:
+        if stimulus_connector is not None and preview_connector == stimulus_connector:
             raise ValueError("shared DRM controller requires duplicate connectors to be avoided")
 
         if pykms_module is None:
@@ -72,8 +72,12 @@ class SharedDrmController:
         self.preview = self._build_output(
             SharedDrmOutputSpec(role="preview", connector=str(preview_connector))
         )
-        self.stimulus = self._build_output(
-            SharedDrmOutputSpec(role="stimulus", connector=str(stimulus_connector))
+        self.stimulus = (
+            self._build_output(
+                SharedDrmOutputSpec(role="stimulus", connector=str(stimulus_connector))
+            )
+            if stimulus_connector is not None
+            else None
         )
 
     def _build_output(self, spec: SharedDrmOutputSpec) -> SharedDrmOutput:
@@ -134,10 +138,10 @@ class SharedDrmController:
             keys pointing to JSON-serializable output diagnostics.
         """
 
-        return {
-            "preview": self.preview.diagnostics(),
-            "stimulus": self.stimulus.diagnostics(),
-        }
+        diagnostics = {"preview": self.preview.diagnostics()}
+        if self.stimulus is not None:
+            diagnostics["stimulus"] = self.stimulus.diagnostics()
+        return diagnostics
 
     def close(self) -> None:
         """Release shared selector state and disable card planes once.
@@ -214,6 +218,7 @@ class SharedDrmOutput:
             ),
         ]
         self._gray_framebuffers: dict[int, Any] = {}
+        self._dmabuf_framebuffers: dict[object, Any] = {}
 
     def display_rgb_frame(self, frame_rgb: np.ndarray) -> None:
         """Display one RGB frame on this output.
@@ -247,6 +252,69 @@ class SharedDrmOutput:
         self._mode_set = True
         self._current_framebuffer_id = int(framebuffer.id)
         self._front_index ^= 1
+
+    def display_dmabuf_frame(self, frame: Any) -> None:
+        """Display one dmabuf-backed camera frame on this output.
+
+        Args:
+            frame: Object exposing:
+                - ``pixel_format`` as a string such as ``"XBGR8888"``
+                - ``width_px`` and ``height_px`` in pixels
+                - ``plane_fds`` as ``tuple[int, ...]``
+                - ``strides_bytes`` as ``tuple[int, ...]``
+                - ``offsets_bytes`` as ``tuple[int, ...]``
+
+        Returns:
+            None.
+        """
+
+        width_px = int(frame.width_px)
+        height_px = int(frame.height_px)
+        if (width_px, height_px) != self.resolution_px:
+            raise ValueError("dmabuf frame resolution must match the reserved connector mode")
+
+        format_map = {
+            "RGB888": self.controller._pykms.PixelFormat.RGB888,
+            "BGR888": self.controller._pykms.PixelFormat.BGR888,
+            "XRGB8888": self.controller._pykms.PixelFormat.XRGB8888,
+            "XBGR8888": self.controller._pykms.PixelFormat.XBGR8888,
+            "YUV420": self.controller._pykms.PixelFormat.YUV420,
+            "YVU420": self.controller._pykms.PixelFormat.YVU420,
+        }
+        pixel_format = str(frame.pixel_format)
+        if pixel_format not in format_map:
+            raise RuntimeError(f"unsupported dmabuf pixel format {pixel_format!r}")
+
+        buffer_key = getattr(
+            frame,
+            "buffer_key",
+            (
+                pixel_format,
+                width_px,
+                height_px,
+                tuple(int(fd) for fd in frame.plane_fds),
+                tuple(int(stride) for stride in frame.strides_bytes),
+                tuple(int(offset) for offset in frame.offsets_bytes),
+            ),
+        )
+        framebuffer = self._dmabuf_framebuffers.get(buffer_key)
+        if framebuffer is None:
+            framebuffer = self.controller._pykms.DmabufFramebuffer(
+                self.controller.card,
+                width_px,
+                height_px,
+                format_map[pixel_format],
+                list(frame.plane_fds),
+                list(frame.strides_bytes),
+                list(frame.offsets_bytes),
+            )
+            self._dmabuf_framebuffers[buffer_key] = framebuffer
+        self._flip_to_framebuffer(framebuffer, allow_modeset=not self._mode_set)
+        self.controller.wait_for_flip_complete(
+            timeout_s=2.0 / max(float(self.refresh_hz), 1.0)
+        )
+        self._mode_set = True
+        self._current_framebuffer_id = int(framebuffer.id)
 
     def display_gray(self, gray_level_u8: int) -> None:
         """Display a solid grayscale framebuffer on this output.
@@ -388,11 +456,13 @@ class SharedDrmOutput:
         }
 
     def _flip_to_framebuffer(self, framebuffer: Any, *, allow_modeset: bool) -> None:
-        """Submit one framebuffer to this output's primary plane.
+        """Submit one framebuffer to this output's reserved primary plane.
 
         Args:
-            framebuffer: pykms framebuffer object carrying XR24 pixels.
-            allow_modeset: Whether the request may perform the initial modeset.
+            framebuffer: pykms framebuffer object exposing ``id``, ``width``,
+                and ``height`` for the reserved output mode.
+            allow_modeset: Whether this atomic request may perform the initial
+                modeset for the output.
 
         Returns:
             None.
@@ -462,6 +532,79 @@ class SharedDrmOutput:
             self._last_commit_error = f"shared DRM atomic page flip failed with {ret}"
             raise RuntimeError(self._last_commit_error)
         self._last_commit_error = None
+
+
+class SharedDrmPreviewBackend:
+    """Single-output DRM preview backend built on the shared DRM output logic.
+
+    Args:
+        connector: DRM connector name for the preview output.
+        resolution_px: Output resolution as ``(width_px, height_px)``.
+        frame_rate_hz: Requested preview frame rate in Hz.
+        controller_factory: Factory returning a ``SharedDrmController``.
+        frame_release_fn: Optional callback that releases one displayed camera
+            frame after it is no longer current.
+
+    Returns:
+        SharedDrmPreviewBackend: Single-output preview backend with dmabuf display support.
+    """
+
+    def __init__(
+        self,
+        *,
+        connector: str,
+        resolution_px: tuple[int, int],
+        frame_rate_hz: float,
+        controller_factory: Callable[..., SharedDrmController] = SharedDrmController,
+        frame_release_fn: Callable[[Any], None] | None = None,
+    ) -> None:
+        del resolution_px, frame_rate_hz
+        self._controller = controller_factory(
+            preview_connector=str(connector),
+            stimulus_connector=None,
+        )
+        self._frame_release_fn = frame_release_fn
+        self._current_frame: Any | None = None
+
+    def display_dmabuf_frame(self, frame: Any) -> None:
+        """Display one dmabuf-backed camera frame on the preview output.
+
+        Args:
+            frame: Dmabuf-backed camera frame metadata object.
+
+        Returns:
+            None.
+        """
+        previous_frame = self._current_frame
+        try:
+            self._controller.preview.display_dmabuf_frame(frame)
+        except Exception:
+            if self._frame_release_fn is not None:
+                self._frame_release_fn(frame)
+            raise
+        self._current_frame = frame
+        if previous_frame is not None and self._frame_release_fn is not None:
+            self._frame_release_fn(previous_frame)
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return preview DRM diagnostics.
+
+        Returns:
+            dict[str, Any]: JSON-serializable preview DRM diagnostics.
+        """
+
+        return self._controller.preview.diagnostics()
+
+    def close(self) -> None:
+        """Close the underlying shared DRM controller.
+
+        Returns:
+            None.
+        """
+        if self._current_frame is not None and self._frame_release_fn is not None:
+            self._frame_release_fn(self._current_frame)
+            self._current_frame = None
+        self._controller.close()
 
 
 def make_placeholder_preview_frame(resolution_px: tuple[int, int]) -> np.ndarray:

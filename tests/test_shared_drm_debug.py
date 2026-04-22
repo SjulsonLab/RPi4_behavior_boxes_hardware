@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from debug.shared_drm_debug import SharedDrmController
+from debug.shared_drm_debug import SharedDrmController, SharedDrmPreviewBackend
 
 
 class _FakeMode:
@@ -71,6 +71,31 @@ class _FakeFramebuffer:
 
     def map(self, _offset: int) -> memoryview:
         return memoryview(self._map._buffer)
+
+
+class _FakeDmabufFramebuffer:
+    """Fake dmabuf framebuffer recording imported plane metadata."""
+
+    _next_id = 2000
+    init_count = 0
+    last_init: tuple[object, int, int, object, list[int], list[int], list[int]] | None = None
+
+    def __init__(
+        self,
+        card: object,
+        width_px: int,
+        height_px: int,
+        fmt: object,
+        fds: list[int],
+        strides: list[int],
+        offsets: list[int],
+    ) -> None:
+        _FakeDmabufFramebuffer.init_count += 1
+        _FakeDmabufFramebuffer.last_init = (card, width_px, height_px, fmt, list(fds), list(strides), list(offsets))
+        self.width = width_px
+        self.height = height_px
+        self.id = _FakeDmabufFramebuffer._next_id
+        _FakeDmabufFramebuffer._next_id += 1
 
 
 class _FakeAtomicReq:
@@ -153,8 +178,17 @@ def _fake_pykms() -> object:
         Card=_FakeCard,
         ResourceManager=_FakeResourceManager,
         DumbFramebuffer=_FakeFramebuffer,
+        DmabufFramebuffer=_FakeDmabufFramebuffer,
         AtomicReq=_FakeAtomicReq,
         DrmEventType=SimpleNamespace(FLIP_COMPLETE="flip"),
+        PixelFormat=SimpleNamespace(
+            RGB888="RGB888",
+            BGR888="BGR888",
+            XRGB8888="XRGB8888",
+            XBGR8888="XBGR8888",
+            YUV420="YUV420",
+            YVU420="YVU420",
+        ),
     )
 
 
@@ -336,3 +370,174 @@ def test_shared_drm_stimulus_gray_frame_page_flip_targets_reserved_plane() -> No
     plane_props = diagnostics["last_request"]["object_properties"]["plane"]
     assert props["FB_ID"] == plane_props["FB_ID"]
     assert plane_props["CRTC_ID"] == 104
+
+
+def test_shared_drm_preview_dmabuf_page_flip_imports_framebuffer_and_waits() -> None:
+    """Dmabuf preview display should import the buffer and wait for flip completion."""
+
+    wait_calls: list[float] = []
+
+    class TrackingController(SharedDrmController):
+        def wait_for_flip_complete(self, timeout_s: float) -> None:
+            wait_calls.append(float(timeout_s))
+
+    controller = TrackingController(
+        preview_connector="HDMI-A-1",
+        stimulus_connector="HDMI-A-2",
+        pykms_module=_fake_pykms(),
+        selector_factory=_FakeSelector,
+    )
+    frame = SimpleNamespace(
+        pixel_format="XBGR8888",
+        width_px=640,
+        height_px=480,
+        plane_fds=(57,),
+        strides_bytes=(2560,),
+        offsets_bytes=(0,),
+    )
+
+    controller.preview.display_dmabuf_frame(frame)
+
+    assert _FakeDmabufFramebuffer.last_init is not None
+    _card, width_px, height_px, fmt, fds, strides, offsets = _FakeDmabufFramebuffer.last_init
+    assert width_px == 640
+    assert height_px == 480
+    assert fmt == "XBGR8888"
+    assert fds == [57]
+    assert strides == [2560]
+    assert offsets == [0]
+    assert len(wait_calls) == 1
+    assert wait_calls[0] > 0.0
+
+
+def test_shared_drm_preview_dmabuf_reuses_cached_import_for_same_buffer_key() -> None:
+    """Dmabuf preview should not re-import a framebuffer when the buffer identity is unchanged."""
+
+    _FakeDmabufFramebuffer.init_count = 0
+    controller = SharedDrmController(
+        preview_connector="HDMI-A-1",
+        stimulus_connector="HDMI-A-2",
+        pykms_module=_fake_pykms(),
+        selector_factory=_FakeSelector,
+    )
+    frame = SimpleNamespace(
+        buffer_key=("buffer-1",),
+        pixel_format="XBGR8888",
+        width_px=640,
+        height_px=480,
+        plane_fds=(57,),
+        strides_bytes=(2560,),
+        offsets_bytes=(0,),
+    )
+
+    controller.preview.display_dmabuf_frame(frame)
+    controller.preview.display_dmabuf_frame(frame)
+
+    assert _FakeDmabufFramebuffer.init_count == 1
+
+
+def test_shared_drm_preview_dmabuf_imports_new_framebuffer_for_new_buffer_key() -> None:
+    """Distinct camera buffers should create distinct imported DRM framebuffers."""
+
+    _FakeDmabufFramebuffer.init_count = 0
+    controller = SharedDrmController(
+        preview_connector="HDMI-A-1",
+        stimulus_connector="HDMI-A-2",
+        pykms_module=_fake_pykms(),
+        selector_factory=_FakeSelector,
+    )
+    frame_a = SimpleNamespace(
+        buffer_key=("buffer-1",),
+        pixel_format="XBGR8888",
+        width_px=640,
+        height_px=480,
+        plane_fds=(57,),
+        strides_bytes=(2560,),
+        offsets_bytes=(0,),
+    )
+    frame_b = SimpleNamespace(
+        buffer_key=("buffer-2",),
+        pixel_format="XBGR8888",
+        width_px=640,
+        height_px=480,
+        plane_fds=(58,),
+        strides_bytes=(2560,),
+        offsets_bytes=(0,),
+    )
+
+    controller.preview.display_dmabuf_frame(frame_a)
+    controller.preview.display_dmabuf_frame(frame_b)
+
+    assert _FakeDmabufFramebuffer.init_count == 2
+
+
+def test_shared_drm_preview_backend_releases_previous_and_current_frames() -> None:
+    """Preview backend should release the previous frame on swap and the final frame on close."""
+
+    calls: list[str] = []
+    released: list[str] = []
+
+    class FakePreviewOutput:
+        def display_dmabuf_frame(self, frame: object) -> None:
+            calls.append(f"display:{frame.name}")
+
+    class FakeController:
+        def __init__(self, **_kwargs) -> None:
+            self.preview = FakePreviewOutput()
+
+        def close(self) -> None:
+            calls.append("controller:close")
+
+    frame_a = SimpleNamespace(name="a")
+    frame_b = SimpleNamespace(name="b")
+
+    backend = SharedDrmPreviewBackend(
+        connector="HDMI-A-1",
+        resolution_px=(640, 480),
+        frame_rate_hz=30.0,
+        controller_factory=FakeController,
+        frame_release_fn=lambda frame: released.append(frame.name),
+    )
+
+    backend.display_dmabuf_frame(frame_a)
+    backend.display_dmabuf_frame(frame_b)
+    backend.close()
+
+    assert calls == ["display:a", "display:b", "controller:close"]
+    assert released == ["a", "b"]
+
+
+def test_shared_drm_preview_backend_releases_failed_frame_and_keeps_current() -> None:
+    """A failed preview swap should release only the failed new frame and keep the old current frame."""
+
+    released: list[str] = []
+
+    class FakePreviewOutput:
+        def display_dmabuf_frame(self, frame: object) -> None:
+            if frame.name == "b":
+                raise RuntimeError("display failed")
+
+    class FakeController:
+        def __init__(self, **_kwargs) -> None:
+            self.preview = FakePreviewOutput()
+
+        def close(self) -> None:
+            return None
+
+    frame_a = SimpleNamespace(name="a")
+    frame_b = SimpleNamespace(name="b")
+
+    backend = SharedDrmPreviewBackend(
+        connector="HDMI-A-1",
+        resolution_px=(640, 480),
+        frame_rate_hz=30.0,
+        controller_factory=FakeController,
+        frame_release_fn=lambda frame: released.append(frame.name),
+    )
+
+    backend.display_dmabuf_frame(frame_a)
+    with pytest.raises(RuntimeError, match="display failed"):
+        backend.display_dmabuf_frame(frame_b)
+    backend.close()
+
+    assert released == ["b", "a"]
