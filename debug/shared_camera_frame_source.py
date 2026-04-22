@@ -84,6 +84,13 @@ class SharedCameraFrameSource:
     - ``preview_source_mode``: Preview frame source strategy. ``"rgb_main"``
       captures from the main RGB stream. ``"yuv_lores"`` captures from the
       YUV low-resolution stream and converts it to RGB.
+    - ``capture_source_frame()`` returns the raw array from the selected
+      preview source stream. For ``"rgb_main"`` this is a ``uint8`` RGB array
+      with shape ``(height_px, width_px, 3)``. For ``"yuv_lores"`` this is the
+      raw ``uint8`` YUV420 buffer returned by Picamera2, typically with shape
+      ``(height_px * 3 / 2, width_px)``.
+    - ``prepare_preview_frame(source_frame)`` returns a contiguous ``uint8``
+      RGB preview frame with shape ``(output_height_px, output_width_px, 3)``.
     - ``capture_rgb_frame()`` returns ``uint8`` RGB frames with shape
       ``(height_px, width_px, 3)``.
     """
@@ -190,10 +197,40 @@ class SharedCameraFrameSource:
             ``(height_px, width_px, 3)``.
         """
 
+        source_frame = self.capture_source_frame()
+        return self.prepare_preview_frame(source_frame)
+
+    def capture_source_frame(self) -> np.ndarray:
+        """Capture one raw frame from the selected preview source stream.
+
+        Returns:
+            np.ndarray: Raw preview-source frame. For ``"rgb_main"``, the shape
+            is ``(height_px, width_px, 3)``. For ``"yuv_lores"``, the returned
+            array is the raw YUV420 buffer from Picamera2.
+        """
+
         if self.preview_source_mode == "rgb_main":
-            frame = np.asarray(self._picam2.capture_array("main"), dtype=np.uint8)
+            return np.asarray(self._picam2.capture_array("main"), dtype=np.uint8)
+        return np.asarray(self._picam2.capture_array("lores"), dtype=np.uint8)
+
+    def prepare_preview_frame(self, source_frame: np.ndarray) -> np.ndarray:
+        """Convert one raw source frame into the final RGB preview frame.
+
+        Args:
+            source_frame: Raw frame from ``capture_source_frame()``. For
+                ``"rgb_main"`` this must be an RGB array with shape
+                ``(height_px, width_px, 3)``. For ``"yuv_lores"`` this must be
+                the raw YUV420 array returned by Picamera2.
+
+        Returns:
+            np.ndarray: Contiguous ``uint8`` RGB preview frame with shape
+            ``(output_height_px, output_width_px, 3)``.
+        """
+
+        if self.preview_source_mode == "rgb_main":
+            frame = np.asarray(source_frame, dtype=np.uint8)
         else:
-            frame_yuv = np.asarray(self._picam2.capture_array("lores"), dtype=np.uint8)
+            frame_yuv = np.asarray(source_frame, dtype=np.uint8)
             frame = np.asarray(
                 self._yuv420_to_rgb_fn(frame_yuv.reshape(-1), self.preview_stream_resolution_px),
                 dtype=np.uint8,

@@ -240,6 +240,10 @@ class SharedDrmOutput:
         pixels[:, :, 2] = frame_rgb[:, :, 0]
         pixels[:, :, 3] = 0
         self._flip_to_framebuffer(framebuffer, allow_modeset=not self._mode_set)
+        if self._mode_set:
+            self.controller.wait_for_flip_complete(
+                timeout_s=2.0 / max(float(self.refresh_hz), 1.0)
+            )
         self._mode_set = True
         self._current_framebuffer_id = int(framebuffer.id)
         self._front_index ^= 1
@@ -274,8 +278,42 @@ class SharedDrmOutput:
         framebuffer = self._gray_framebuffers[gray_level]
         allow_modeset = not self._mode_set
         self._flip_to_framebuffer(framebuffer, allow_modeset=allow_modeset)
+        self.controller.wait_for_flip_complete(
+            timeout_s=2.0 / max(float(self.refresh_hz), 1.0)
+        )
         self._mode_set = True
         self._current_framebuffer_id = int(framebuffer.id)
+
+    def display_gray_frame(self, frame_gray_u8: np.ndarray) -> None:
+        """Display one grayscale frame on this output.
+
+        Args:
+            frame_gray_u8: ``uint8`` array with shape ``(height_px, width_px)``.
+                Axis order is vertical pixel index, horizontal pixel index.
+
+        Returns:
+            None.
+        """
+
+        height_px, width_px = frame_gray_u8.shape
+        if (width_px, height_px) != self.resolution_px:
+            raise ValueError("frame_gray_u8 resolution must match the reserved connector mode")
+
+        framebuffer = self._rgb_framebuffers[self._front_index ^ 1]
+        mapped = framebuffer.map(0)
+        pixels = np.frombuffer(mapped, dtype=np.uint8).reshape(height_px, width_px, 4)
+        pixels[:, :, 0] = frame_gray_u8
+        pixels[:, :, 1] = frame_gray_u8
+        pixels[:, :, 2] = frame_gray_u8
+        pixels[:, :, 3] = 0
+        self._flip_to_framebuffer(framebuffer, allow_modeset=not self._mode_set)
+        if self._mode_set:
+            self.controller.wait_for_flip_complete(
+                timeout_s=2.0 / max(float(self.refresh_hz), 1.0)
+            )
+        self._mode_set = True
+        self._current_framebuffer_id = int(framebuffer.id)
+        self._front_index ^= 1
 
     def play_grating(self, stimulus_name: str, compiled_grating: Any) -> dict[str, Any]:
         """Display one compiled grating sequence on this output.

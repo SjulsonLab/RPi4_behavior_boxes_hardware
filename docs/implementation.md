@@ -456,3 +456,21 @@ Next camera issues to consider or test:
    and high-value capture work.
 4. Revisit preview stream formats and sensor modes only after end-user camera
    requirements are clearer, so we do not optimize the wrong camera setup.
+
+## 2026/04/22
+
+Two explicit setup-preview stress smokes were added as longer-lived debug
+examples: one shared-DRM smoke that runs live camera preview on `HDMI-A-1`
+while drifting gratings run on `HDMI-A-2` in a single process, and a second
+variant that keeps the same shared DRM ownership but moves grating timing onto
+a separate worker process with only a minimal start signal and shared frame
+state. Both are useful reference code for later behavior / stimulus / camera
+integration testing, even though neither one is yet the final task runtime.
+
+What these smokes showed is that drifting gratings do impose a real preview
+slowdown compared with the camera-only and camera-plus-blank-screen cases, but
+moving the grating timing onto another core did not produce a dramatic preview
+speed improvement by itself. In practice, the single-process and
+multiprocessing versions both remained in a similar "good enough for operator
+preview" range. That points away from grating timing on the CPU as the main
+bottleneck and more toward the shared camera / framebuffer / DRM display path.

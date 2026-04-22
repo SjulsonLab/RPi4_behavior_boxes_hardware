@@ -162,6 +162,53 @@ def test_shared_camera_frame_source_can_use_optional_yuv_lores_preview_mode() ->
     assert configuration_kwargs["lores"] == {"size": (640, 480), "format": "YUV420"}
 
 
+def test_shared_camera_frame_source_exposes_capture_and_prepare_steps() -> None:
+    """Frame source should expose separate source-capture and preview-prep helpers."""
+
+    calls: list[tuple[str, object]] = []
+
+    class FakePicamera2:
+        def __init__(self, *, camera_num: int) -> None:
+            calls.append(("init", camera_num))
+
+        def create_video_configuration(self, **kwargs):
+            calls.append(("create_video_configuration", kwargs))
+            return kwargs
+
+        def configure(self, _configuration) -> None:
+            calls.append(("configure", None))
+
+        def start(self) -> None:
+            calls.append(("start", None))
+
+        def capture_array(self, name: str = "main"):
+            calls.append(("capture_array", name))
+            return np.full((480, 640, 3), 17, dtype=np.uint8)
+
+        def stop(self) -> None:
+            calls.append(("stop", None))
+
+        def close(self) -> None:
+            calls.append(("close", None))
+
+    source = SharedCameraFrameSource(
+        camera_id="camera0",
+        resolution_px=(640, 480),
+        acquisition_resolution_px=(640, 480),
+        frame_rate_hz=30.0,
+        picamera2_factory=FakePicamera2,
+    )
+
+    raw_frame = source.capture_source_frame()
+    preview_frame = source.prepare_preview_frame(raw_frame)
+    source.close()
+
+    assert raw_frame.shape == (480, 640, 3)
+    assert preview_frame.shape == (480, 640, 3)
+    assert preview_frame.dtype == np.uint8
+    assert ("capture_array", "main") in calls
+
+
 def test_letterbox_rgb_frame_local_resizes_to_target_shape() -> None:
     """Local letterbox helper should return a uint8 RGB frame at target size.
 

@@ -102,7 +102,7 @@ class _FakeCard:
         self.disable_planes_calls += 1
 
     def read_events(self) -> list[object]:
-        return []
+        return [SimpleNamespace(type="flip")]
 
 
 class _FakeSelector:
@@ -115,7 +115,7 @@ class _FakeSelector:
         return None
 
     def select(self, _timeout_s: float) -> list[tuple[object, object]]:
-        return []
+        return [(object(), object())]
 
     def close(self) -> None:
         self.closed = True
@@ -240,6 +240,30 @@ def test_shared_drm_preview_page_flip_targets_reserved_preview_plane() -> None:
     assert plane_props["SRC_H"] == 480 << 16
 
 
+def test_shared_drm_preview_page_flip_waits_for_flip_completion() -> None:
+    """Preview page flips should wait for flip completion after a non-modeset commit."""
+
+    wait_calls: list[float] = []
+
+    class TrackingController(SharedDrmController):
+        def wait_for_flip_complete(self, timeout_s: float) -> None:
+            wait_calls.append(float(timeout_s))
+
+    controller = TrackingController(
+        preview_connector="HDMI-A-1",
+        stimulus_connector="HDMI-A-2",
+        pykms_module=_fake_pykms(),
+        selector_factory=_FakeSelector,
+    )
+    frame_rgb = np.zeros((480, 640, 3), dtype=np.uint8)
+
+    controller.preview.display_rgb_frame(frame_rgb)
+    controller.preview.display_rgb_frame(frame_rgb)
+
+    assert len(wait_calls) == 1
+    assert wait_calls[0] > 0.0
+
+
 def test_shared_drm_stimulus_page_flip_targets_reserved_stimulus_plane() -> None:
     """Stimulus page flips should target the reserved stimulus plane, not CRTC primary_plane."""
 
@@ -266,3 +290,49 @@ def test_shared_drm_stimulus_page_flip_targets_reserved_stimulus_plane() -> None
     assert plane_props["CRTC_H"] == 600
     assert plane_props["SRC_W"] == 1024 << 16
     assert plane_props["SRC_H"] == 600 << 16
+
+
+def test_shared_drm_stimulus_initial_gray_waits_for_flip_completion() -> None:
+    """Initial stimulus gray display should wait for modeset completion before later page flips."""
+
+    wait_calls: list[float] = []
+
+    class TrackingController(SharedDrmController):
+        def wait_for_flip_complete(self, timeout_s: float) -> None:
+            wait_calls.append(float(timeout_s))
+
+    controller = TrackingController(
+        preview_connector="HDMI-A-1",
+        stimulus_connector="HDMI-A-2",
+        pykms_module=_fake_pykms(),
+        selector_factory=_FakeSelector,
+    )
+
+    controller.stimulus.display_gray(127)
+
+    assert len(wait_calls) == 1
+    assert wait_calls[0] > 0.0
+
+
+def test_shared_drm_stimulus_gray_frame_page_flip_targets_reserved_plane() -> None:
+    """Stimulus grayscale-frame page flips should use the reserved stimulus plane."""
+
+    controller = SharedDrmController(
+        preview_connector="HDMI-A-1",
+        stimulus_connector="HDMI-A-2",
+        pykms_module=_fake_pykms(),
+        selector_factory=_FakeSelector,
+    )
+    gray_frame = np.zeros((600, 1024), dtype=np.uint8)
+
+    controller.stimulus.display_gray_frame(gray_frame)
+    controller.stimulus.display_gray_frame(gray_frame)
+
+    page_flip_target, props, value = _FakeAtomicReq.last_requests[-1]
+    assert page_flip_target is controller.stimulus.plane
+    assert isinstance(props, dict)
+    assert value is None
+    diagnostics = controller.stimulus.diagnostics()
+    plane_props = diagnostics["last_request"]["object_properties"]["plane"]
+    assert props["FB_ID"] == plane_props["FB_ID"]
+    assert plane_props["CRTC_ID"] == 104
