@@ -502,3 +502,27 @@ That smoke also held about `50.03-50.12 fps` on hardware. This is an important
 checkpoint for later developers: the earlier preview slowdowns were largely an
 artifact of the older RGB copy/upload preview path and the wrong request mode,
 not an inherent limitation of shared DRM with drifting gratings.
+
+
+## 2026/04/23
+
+A lightweight recording checkpoint was added on top of the April 22 shared-DRM
+preview work. A new single-output smoke combined the existing dmabuf preview
+path on `HDMI-A-1` with H.264 recording and timestamp CSV output, keeping the
+same working preview settings (`request_mode="next"`) and exposing the same
+FPS / sensor-mode knobs used in the preview-only smokes. The recording callback
+saves `SensorTimestamp_ns`, `FrameDuration_us`, and `UnixTimestamp_s`, and a
+fast text overlay was enabled by default with a `--no-overlay` option kept for
+comparisons.
+
+After fixing the standalone import path for the copied debug helper and
+installing `python3-opencv` on the Pi so the overlay path could run, the
+recording smoke looked healthy on hardware. The next step then combined that
+recording path with the already-working drifting-grating smoke on `HDMI-A-2`,
+reusing the same back-to-back `go_grating` / `nogo_grating` sequencing as the
+preview-only grating tests. In the highest-stress check run so far
+(`50 fps`, `sensor_mode=1`, recording + overlay + drifting gratings), the Pi
+still reported about `49.8 fps`, which is a promising sign for later BehavBox
+integration. The CSV metadata also looked stable, reinforcing that acquisition
+timing and preview-loop timing should be treated as related but not identical
+measures.
