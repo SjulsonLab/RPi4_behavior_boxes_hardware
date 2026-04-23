@@ -1,6 +1,7 @@
 import os
 import tempfile
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -13,7 +14,9 @@ from box_runtime.video_recording.local_camera_runtime import (
     CameraHardwareUnavailable,
     CameraManager,
     LocalCameraRuntime,
+    RpicamQtPreviewProcess,
 )
+import box_runtime.video_recording.local_camera_runtime as local_camera_runtime_module
 
 
 def _session_info(base_dir: str, **overrides) -> dict[str, object]:
@@ -107,6 +110,33 @@ class _FakePreviewSink:
         self.closed = True
 
 
+class _FakeQtPreviewProcess:
+    """Minimal desktop-preview process double with lifecycle hooks."""
+
+    instances: list["_FakeQtPreviewProcess"] = []
+
+    def __init__(
+        self,
+        camera_num: int,
+        *,
+        display: str | None = None,
+        fullscreen: bool = True,
+    ) -> None:
+        self.camera_num = int(camera_num)
+        self.display = display
+        self.fullscreen = bool(fullscreen)
+        self.started = False
+        self.closed = False
+        _FakeQtPreviewProcess.instances.append(self)
+
+    def start(self) -> "_FakeQtPreviewProcess":
+        self.started = True
+        return self
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def _fake_recorder_factory(storage_root: Path, *, camera_num: int, camera_id: str) -> _FakeRecorder:
     return _FakeRecorder(storage_root, camera_num=camera_num, camera_id=camera_id)
 
@@ -123,6 +153,15 @@ def _fake_preview_sink_factory(
         frame_provider=frame_provider,
         max_preview_hz=max_preview_hz,
     )
+
+
+def _fake_qt_preview_process_factory(
+    *,
+    camera_num: int,
+    display: str | None = None,
+    fullscreen: bool = True,
+) -> _FakeQtPreviewProcess:
+    return _FakeQtPreviewProcess(camera_num=camera_num, display=display, fullscreen=fullscreen)
 
 
 def test_local_camera_runtime_starts_and_stops_recording_without_http_service() -> None:
@@ -199,6 +238,205 @@ def test_camera_manager_accepts_two_camera_ids_and_tracks_per_camera_state() -> 
         assert state["camera1"]["recording"] is True
         assert state["camera1"]["preview_mode"] == "off"
         assert [instance.camera_id for instance in _FakePreviewSink.instances] == ["camera0"]
+
+
+def test_camera_manager_preview_only_mode_starts_preview_without_recording() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _FakeRecorder.instances.clear()
+        _FakePreviewSink.instances.clear()
+        manager = CameraManager(
+            _session_info(
+                tmp,
+                camera_enabled=True,
+                camera_ids=["camera0"],
+                camera_recording_enabled=False,
+                camera_preview_modes={"camera0": "drm_local"},
+            ),
+            recorder_factory=_fake_recorder_factory,
+            preview_sink_factory=_fake_preview_sink_factory,
+        )
+
+        manager.prepare()
+        manager.start_session(owner="automated")
+        state = manager.runtime_state()
+        manager.stop_session()
+        manager.close()
+
+        assert state["camera0"]["recording"] is False
+        assert state["camera0"]["preview_active"] is True
+        assert [instance.camera_id for instance in _FakePreviewSink.instances] == ["camera0"]
+        recorder = _FakeRecorder.instances[-1]
+        assert all(call_name != "start" for call_name, _payload in recorder.calls)
+
+
+def test_local_camera_runtime_qt_preview_mode_starts_desktop_preview_process() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _FakeRecorder.instances.clear()
+        _FakeQtPreviewProcess.instances.clear()
+        runtime = LocalCameraRuntime(
+            camera_id="camera0",
+            session_info=_session_info(
+                tmp,
+                camera_enabled=True,
+                camera_preview_modes={"camera0": "qt_local"},
+            ),
+            recorder_factory=_fake_recorder_factory,
+            preview_sink_factory=_fake_preview_sink_factory,
+            qt_preview_process_factory=_fake_qt_preview_process_factory,
+        )
+
+        runtime.prepare()
+        runtime.start_preview()
+        state = runtime.state_dict()
+        runtime.stop_preview()
+        runtime.close()
+
+        assert len(_FakeQtPreviewProcess.instances) == 1
+        assert _FakeQtPreviewProcess.instances[0].camera_num == 0
+        assert _FakeQtPreviewProcess.instances[0].display is None
+        assert _FakeQtPreviewProcess.instances[0].fullscreen is True
+        assert _FakeQtPreviewProcess.instances[0].started is True
+        assert _FakeQtPreviewProcess.instances[0].closed is True
+        assert state["preview_active"] is True
+        assert state["preview_mode"] == "qt_local"
+
+
+def test_local_camera_runtime_qt_preview_mode_uses_configured_display_and_fullscreen() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        _FakeQtPreviewProcess.instances.clear()
+        runtime = LocalCameraRuntime(
+            camera_id="camera0",
+            session_info=_session_info(
+                tmp,
+                camera_enabled=True,
+                camera_preview_modes={"camera0": "qt_local"},
+                camera_preview_display=":0",
+                camera_preview_fullscreen=True,
+            ),
+            recorder_factory=_fake_recorder_factory,
+            preview_sink_factory=_fake_preview_sink_factory,
+            qt_preview_process_factory=_fake_qt_preview_process_factory,
+        )
+
+        runtime.start_preview()
+        runtime.stop_preview()
+
+        assert len(_FakeQtPreviewProcess.instances) == 1
+        assert _FakeQtPreviewProcess.instances[0].display == ":0"
+        assert _FakeQtPreviewProcess.instances[0].fullscreen is True
+
+
+def test_local_camera_runtime_preview_start_failure_warns_and_continues(caplog: pytest.LogCaptureFixture) -> None:
+    class _FailingPreview:
+        def start(self):
+            raise RuntimeError("cannot open preview display")
+
+        def close(self) -> None:
+            return
+
+    def _failing_factory(*, camera_num: int, display: str | None = None, fullscreen: bool = True):
+        del camera_num, display, fullscreen
+        return _FailingPreview()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        runtime = LocalCameraRuntime(
+            camera_id="camera0",
+            session_info=_session_info(
+                tmp,
+                camera_enabled=True,
+                camera_preview_modes={"camera0": "qt_local"},
+            ),
+            recorder_factory=_fake_recorder_factory,
+            preview_sink_factory=_fake_preview_sink_factory,
+            qt_preview_process_factory=_failing_factory,
+        )
+
+        with caplog.at_level("WARNING"):
+            runtime.start_preview()
+
+        assert runtime.is_preview_active is False
+        assert "preview startup failed" in caplog.text.lower()
+
+
+def test_rpicam_qt_preview_process_uses_explicit_display_over_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakePopen:
+        def __init__(self, command, env=None):
+            captured["command"] = list(command)
+            captured["env"] = dict(env or {})
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            del timeout
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setenv("DISPLAY", ":77")
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    process = RpicamQtPreviewProcess(camera_num=0, display=":0", fullscreen=False)
+    process.start()
+
+    assert captured["env"]["DISPLAY"] == ":0"
+    assert "--fullscreen" not in captured["command"]
+    process.close()
+
+
+def test_local_camera_runtime_default_qt_factory_accepts_display_arguments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class _FakeRpicamQtPreviewProcess:
+        def __init__(
+            self,
+            *,
+            camera_num: int,
+            display: str | None = None,
+            fullscreen: bool = True,
+            xauthority: str | None = None,
+        ) -> None:
+            captured["camera_num"] = camera_num
+            captured["display"] = display
+            captured["fullscreen"] = fullscreen
+            captured["xauthority"] = xauthority
+
+        def start(self):
+            return self
+
+        def close(self) -> None:
+            return
+
+    monkeypatch.setattr(local_camera_runtime_module, "RpicamQtPreviewProcess", _FakeRpicamQtPreviewProcess)
+    with tempfile.TemporaryDirectory() as tmp:
+        runtime = LocalCameraRuntime(
+            camera_id="camera0",
+            session_info=_session_info(
+                tmp,
+                camera_enabled=True,
+                camera_preview_modes={"camera0": "qt_local"},
+                camera_preview_display=":0",
+                camera_preview_fullscreen=True,
+            ),
+            recorder_factory=_fake_recorder_factory,
+            preview_sink_factory=_fake_preview_sink_factory,
+            qt_preview_process_factory=None,
+        )
+        runtime.start_preview()
+        runtime.stop_preview()
+
+    assert captured["camera_num"] == 0
+    assert captured["display"] == ":0"
+    assert captured["fullscreen"] is True
 
 
 def test_camera_manager_missing_hardware_fails_cleanly() -> None:

@@ -830,6 +830,24 @@ class BehavBox(object):
         canonical_output = compatibility_lookup.get(str(output_name), str(output_name))
         self.output_service.deliver_reward(canonical_output, reward_size_ul=reward_size)
 
+    def show_grating(self, grating_name: str) -> None:
+        """Show one named visual stimulus grating through the visual runtime.
+
+        Data contract:
+        - ``grating_name``: ``str`` stimulus alias/name accepted by
+          ``VisualStim.show_grating``.
+        - Returns ``None``.
+
+        Raises:
+        - ``RuntimeError`` if visual stimulus is unavailable.
+        """
+
+        if self.visualstim is None or not hasattr(self.visualstim, "show_grating"):
+            raise RuntimeError(
+                "visual stimulus runtime is unavailable; enable visual_stimulus and call prepare_session() first"
+            )
+        self.visualstim.show_grating(str(grating_name))
+
     def pulse_output(self, output_name: str, duration_s: Optional[float] = None) -> None:
         """Pulse one named GPIO output.
 

@@ -11,6 +11,7 @@ through the shared input/output recorder.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 import time
@@ -23,6 +24,55 @@ from box_runtime.io_recording import SharedIoRecorder
 
 if TYPE_CHECKING:
     from box_runtime.behavior.behavbox import BehavBox, BehaviorEvent
+
+
+def _is_gpio_busy_close_error(exc: Exception) -> bool:
+    """Return whether one device-close exception matches known GPIO busy teardown.
+
+    Args:
+        exc: Exception raised while closing one GPIO-backed input device.
+
+    Returns:
+        bool: ``True`` when the error message indicates GPIO busy during close.
+    """
+
+    return "gpio busy" in str(exc).strip().lower()
+
+
+def _safe_close_input_device(device: object) -> None:
+    """Close one input device while tolerating known GPIO-busy teardown races.
+
+    Args:
+        device: Device-like object exposing ``close()``.
+
+    Returns:
+        None.
+    """
+
+    if not hasattr(device, "close"):
+        return
+    try:
+        device.close()
+    except Exception as exc:
+        if _is_gpio_busy_close_error(exc):
+            logging.warning(
+                "ignoring GPIO busy while closing input device type=%s: %s",
+                type(device).__name__,
+                exc,
+            )
+            _disable_future_close_calls(device)
+            return
+        raise
+    _disable_future_close_calls(device)
+
+
+def _disable_future_close_calls(device: object) -> None:
+    """Best-effort disable repeated close attempts on already-closed devices."""
+
+    try:
+        setattr(device, "close", lambda: None)
+    except Exception:
+        return
 
 
 class InputService:
@@ -242,8 +292,8 @@ class InputService:
             self.poke_extra2,
             self.treadmill_encoder,
         ):
-            if device is not None and hasattr(device, "close"):
-                device.close()
+            if device is not None:
+                _safe_close_input_device(device)
 
     def _start_treadmill_sampler(self) -> None:
         if self.treadmill_encoder is None or self._treadmill_handle is None:

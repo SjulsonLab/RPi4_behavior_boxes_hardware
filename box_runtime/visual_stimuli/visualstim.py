@@ -229,12 +229,18 @@ class VisualStim:
         self.myscreen = _ScreenCompat(self._runtime, self.gray_level_u8)
         self.myscreen.display_greyscale(self.gray_level_u8, blocking=True)
 
+    def close(self) -> None:
+        """Close the worker runtime and keep the method idempotent."""
+
+        runtime = getattr(self, "_runtime", None)
+        if runtime is None:
+            return
+        runtime.close()
+
     def __del__(self) -> None:
         """Close the runtime during garbage collection."""
 
-        runtime = getattr(self, "_runtime", None)
-        if runtime is not None:
-            runtime.close()
+        self.close()
 
 
 def _stimulus_aliases(grating_path: Path, stimulus_name: str) -> tuple[str, ...]:
