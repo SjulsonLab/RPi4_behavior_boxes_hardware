@@ -25,9 +25,12 @@ def test_camera_preview_recording_smoke_reports_preview_metrics_and_output_paths
     class FakeSource:
         def __init__(self, **kwargs) -> None:
             calls.append("source:init")
+            assert kwargs["camera_id"] == "camera1"
             assert kwargs["sensor_mode"] == 1
             assert kwargs["request_mode"] == "next"
             assert kwargs["overlay_enabled"] is True
+            assert Path(kwargs["video_path"]).name == "camera1_preview_recording_output.h264"
+            assert Path(kwargs["timestamp_csv_path"]).name == "camera1_preview_recording_timestamp.csv"
             Path(kwargs["video_path"]).write_text("fake h264", encoding="utf-8")
             Path(kwargs["timestamp_csv_path"]).write_text(
                 "SensorTimestamp_ns,FrameDuration_us,UnixTimestamp_s\n1,2,3.0\n",
@@ -101,6 +104,7 @@ def test_camera_preview_recording_smoke_reports_preview_metrics_and_output_paths
 
     summary = run_camera_preview_recording_hdmi_a1_smoke(
         output_root=tmp_path,
+        camera_id="camera1",
         duration_s=0.05,
         frame_rate_hz=50.0,
         sensor_mode=1,
@@ -124,13 +128,14 @@ def test_camera_preview_recording_smoke_reports_preview_metrics_and_output_paths
     assert any(call.startswith("backend:display:") for call in calls)
     assert "source:release_frame" in calls
     assert calls[-2:] == ["backend:close", "source:close"]
+    assert summary["camera_id"] == "camera1"
     assert summary["sensor_mode"] == 1
     assert summary["request_mode"] == "next"
     assert summary["overlay_enabled"] is True
     assert summary["preview_frame_count"] >= 1
     assert summary["preview_fps_achieved"] >= 0.0
-    assert summary["video_path"].endswith(".h264")
-    assert summary["timestamp_csv_path"].endswith(".csv")
+    assert summary["video_path"].endswith("camera1_preview_recording_output.h264")
+    assert summary["timestamp_csv_path"].endswith("camera1_preview_recording_timestamp.csv")
     assert summary["preview_drm_diagnostics"]["requested_connector"] == "HDMI-A-1"
 
 
@@ -149,6 +154,7 @@ def test_camera_preview_recording_smoke_closes_resources_on_display_failure(
     class FakeSource:
         def __init__(self, **kwargs) -> None:
             calls.append("source:init")
+            assert kwargs["camera_id"] == "camera1"
             Path(kwargs["video_path"]).write_text("fake h264", encoding="utf-8")
             Path(kwargs["timestamp_csv_path"]).write_text(
                 "SensorTimestamp_ns,FrameDuration_us,UnixTimestamp_s\n",
@@ -186,6 +192,7 @@ def test_camera_preview_recording_smoke_closes_resources_on_display_failure(
     with pytest.raises(RuntimeError, match="display failed") as exc_info:
         run_camera_preview_recording_hdmi_a1_smoke(
             output_root=tmp_path,
+            camera_id="camera1",
             duration_s=0.05,
             sensor_mode=0,
             request_mode="next",
@@ -203,5 +210,6 @@ def test_camera_preview_recording_smoke_closes_resources_on_display_failure(
         )
 
     assert exc_info.value.summary["failure_stage"] == "preview_loop_display"
+    assert exc_info.value.summary["camera_id"] == "camera1"
     assert "source:release_frame" in calls
     assert calls[-2:] == ["backend:close", "source:close"]

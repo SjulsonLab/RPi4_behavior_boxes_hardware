@@ -50,6 +50,7 @@ def _average(total_s: float, count: int) -> float:
 def run_camera_preview_recording_hdmi_a1_smoke(
     *,
     output_root: Path,
+    camera_id: str = "camera0",
     duration_s: float = 5.0,
     preview_connector: str = "HDMI-A-1",
     resolution_px: tuple[int, int] = (1024, 600),
@@ -84,6 +85,9 @@ def run_camera_preview_recording_hdmi_a1_smoke(
 
     Args:
         output_root: Directory under which recording outputs may be stored.
+        camera_id: Semantic camera identifier such as ``"camera0"`` or
+            ``"camera1"`` passed directly to the recording dmabuf source and
+            used to name the output artifacts.
         duration_s: Requested preview duration in seconds.
         preview_connector: DRM connector name for the preview output.
         resolution_px: Requested output resolution as ``(width_px, height_px)``.
@@ -123,10 +127,12 @@ def run_camera_preview_recording_hdmi_a1_smoke(
     )
     output_root.mkdir(parents=True, exist_ok=True)
 
-    video_path = output_root / "camera0_preview_recording_output.h264"
-    timestamp_csv_path = output_root / "camera0_preview_recording_timestamp.csv"
+    camera_label = str(camera_id)
+    video_path = output_root / f"{camera_label}_preview_recording_output.h264"
+    timestamp_csv_path = output_root / f"{camera_label}_preview_recording_timestamp.csv"
 
     summary: dict[str, object] = {
+        "camera_id": camera_label,
         "preview_connector": str(preview_connector),
         "preview_target_fps": float(frame_rate_hz),
         "sensor_mode": int(sensor_mode),
@@ -147,7 +153,7 @@ def run_camera_preview_recording_hdmi_a1_smoke(
 
     try:
         frame_source = frame_source_factory(
-            camera_id="camera0",
+            camera_id=camera_label,
             resolution_px=resolution_px,
             video_path=video_path,
             timestamp_csv_path=timestamp_csv_path,
@@ -158,6 +164,7 @@ def run_camera_preview_recording_hdmi_a1_smoke(
         )
         if hasattr(frame_source, "diagnostics"):
             summary.update(frame_source.diagnostics())
+            summary["camera_id"] = camera_label
 
         failure_stage = "preview_backend_init"
         preview_backend = preview_backend_factory(
@@ -205,6 +212,7 @@ def run_camera_preview_recording_hdmi_a1_smoke(
         )
         if hasattr(frame_source, "diagnostics"):
             summary.update(frame_source.diagnostics())
+            summary["camera_id"] = camera_label
         if hasattr(preview_backend, "diagnostics"):
             summary["preview_drm_diagnostics"] = preview_backend.diagnostics()
         return summary
@@ -215,6 +223,7 @@ def run_camera_preview_recording_hdmi_a1_smoke(
         summary["display_time_total_s"] = float(display_time_total_s)
         if frame_source is not None and hasattr(frame_source, "diagnostics"):
             summary.update(frame_source.diagnostics())
+            summary["camera_id"] = camera_label
         if preview_backend is not None and hasattr(preview_backend, "diagnostics"):
             summary["preview_drm_diagnostics"] = preview_backend.diagnostics()
         raise CameraPreviewRecordingSmokeFailure(
@@ -242,6 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Run a single-output dmabuf camera preview+recording smoke on HDMI-A-1."
     )
     parser.add_argument("--output-root", type=Path, default=Path("/tmp/behavbox_debug"))
+    parser.add_argument("--camera-id", type=str, default="camera0")
     parser.add_argument("--duration-s", type=float, default=5.0)
     parser.add_argument("--preview-connector", type=str, default="HDMI-A-1")
     parser.add_argument("--frame-rate-hz", type=float, default=30.0)
@@ -254,6 +264,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         summary = run_camera_preview_recording_hdmi_a1_smoke(
             output_root=args.output_root,
+            camera_id=args.camera_id,
             duration_s=args.duration_s,
             preview_connector=args.preview_connector,
             frame_rate_hz=args.frame_rate_hz,
