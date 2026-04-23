@@ -7,7 +7,9 @@ os.environ["BEHAVBOX_FORCE_MOCK"] = "1"
 os.environ["BEHAVBOX_MOCK_UI_AUTOSTART"] = "0"
 
 from box_runtime.behavior.behavbox import BehavBox
+from box_runtime.behavior.gpio_backend import is_raspberry_pi
 from sample_tasks.common.mock_inputs import MockInputInjector
+from sample_tasks.head_fixed_gonogo.session_config import build_session_info
 from sample_tasks.head_fixed_gonogo import task as gonogo_task
 
 
@@ -208,3 +210,67 @@ def test_gonogo_publishes_runtime_state_for_phase_trial_and_audio():
         box.stop_session()
         box.finalize_session()
         box.close()
+
+
+class _FakeGonogoBox:
+    """Minimal task-facing box double used for deterministic grating checks."""
+
+    def __init__(self) -> None:
+        self.session_info = {"visual_stimulus": True}
+        self.runtime_updates: list[tuple[str, dict]] = []
+        self.played_cues: list[str] = []
+        self.shown_gratings: list[str] = []
+        self.registered_noises: list[str] = []
+
+    def publish_runtime_state(self, section: str, **values) -> None:
+        self.runtime_updates.append((section, dict(values)))
+
+    def register_noise_cue(self, name: str, duration_s: float, seed: int = 0) -> None:
+        del duration_s, seed
+        self.registered_noises.append(str(name))
+
+    def play_sound(self, cue_name: str, side: str = "both", gain_db: float = 0.0) -> None:
+        del side, gain_db
+        self.played_cues.append(str(cue_name))
+
+    def show_grating(self, grating_name: str) -> None:
+        self.shown_gratings.append(str(grating_name))
+
+
+def test_begin_trial_maps_go_and_nogo_to_expected_gratings() -> None:
+    box = _FakeGonogoBox()
+    task_state = gonogo_task.prepare_task(
+        box,
+        {
+            "trial_sequence": ["go", "nogo"],
+            "go_cue_duration_s": 0.02,
+            "nogo_cue_duration_s": 0.02,
+            "iti_s": 0.0,
+            "response_window_s": 0.2,
+            "max_trials": 2,
+        },
+    )
+
+    gonogo_task._begin_trial(box, task_state, now_s=time.time())
+    gonogo_task._begin_trial(box, task_state, now_s=time.time())
+
+    assert box.shown_gratings == ["go_grating", "nogo_grating"]
+    assert box.played_cues == ["gonogo_go", "gonogo_nogo"]
+
+
+def test_head_fixed_session_config_enables_visual_stimulus_with_grating_files(tmp_path: Path) -> None:
+    session_info = build_session_info(tmp_path, "sessionA")
+
+    assert session_info["visual_stimulus"] is True
+    expected_backend = "drm" if is_raspberry_pi() else "fake"
+    assert session_info["visual_display_backend"] == expected_backend
+    assert session_info["visual_display_connector"] == "HDMI-A-2"
+    vis_gratings = [Path(path) for path in session_info["vis_gratings"]]
+    assert len(vis_gratings) == 2
+    assert vis_gratings[0].name == "go_grating.yaml"
+    assert vis_gratings[1].name == "nogo_grating.yaml"
+    assert session_info["camera_enabled"] is True
+    assert session_info["camera_ids"] == ["camera0"]
+    assert session_info["camera_recording_enabled"] is False
+    assert session_info["camera_preview_modes"] == {"camera0": "qt_local"}
+    assert session_info["camera_preview_connector"] == "HDMI-A-1"

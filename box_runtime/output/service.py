@@ -22,6 +22,41 @@ if TYPE_CHECKING:
     from box_runtime.behavior.behavbox import BehavBox
 
 
+def _is_gpio_busy_close_error(exc: Exception) -> bool:
+    """Return whether one output-device close error matches GPIO busy teardown."""
+
+    return "gpio busy" in str(exc).strip().lower()
+
+
+def _safe_close_output_device(device: object) -> None:
+    """Close one output device while tolerating known GPIO-busy teardown races."""
+
+    if not hasattr(device, "close"):
+        return
+    try:
+        device.close()
+    except Exception as exc:
+        if _is_gpio_busy_close_error(exc):
+            logging.warning(
+                "ignoring GPIO busy while closing output device type=%s: %s",
+                type(device).__name__,
+                exc,
+            )
+            _disable_future_close_calls(device)
+            return
+        raise
+    _disable_future_close_calls(device)
+
+
+def _disable_future_close_calls(device: object) -> None:
+    """Best-effort disable repeated close attempts on already-closed devices."""
+
+    try:
+        setattr(device, "close", lambda: None)
+    except Exception:
+        return
+
+
 class BoxLED(PWMLED):
     """PWM LED wrapper keeping a configurable default intensity."""
 
@@ -145,8 +180,7 @@ class OutputService:
         """Release owned output devices."""
 
         for device in self.outputs.values():
-            if hasattr(device, "close"):
-                device.close()
+            _safe_close_output_device(device)
 
     def _canonical_name(self, output_name: str) -> str:
         if output_name in self.outputs:

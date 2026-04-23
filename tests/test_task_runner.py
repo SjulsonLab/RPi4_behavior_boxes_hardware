@@ -221,3 +221,29 @@ def test_task_runner_step_hook_runs_only_after_start():
 
         assert observed == [{"prepared": True, "started": True, "phase": "running"}]
         assert final_state["stop_reason"] == "hook_stop"
+
+
+def test_behavbox_show_grating_raises_when_visual_runtime_is_unavailable():
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+
+        with pytest.raises(RuntimeError, match="visual stimulus"):
+            box.show_grating("go_grating")
+
+
+def test_behavbox_show_grating_delegates_to_visual_runtime():
+    class _FakeVisualStim:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def show_grating(self, grating_name: str) -> None:
+            self.calls.append(str(grating_name))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+        fake_visual = _FakeVisualStim()
+        box.visualstim = fake_visual
+
+        box.show_grating("nogo_grating")
+
+        assert fake_visual.calls == ["nogo_grating"]
