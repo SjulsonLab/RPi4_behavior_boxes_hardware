@@ -4,42 +4,47 @@ from pathlib import Path
 
 import pytest
 
-from debug.camera_setup_preview_hdmi_a1_dmabuf_smoke import (
-    run_camera_setup_preview_hdmi_a1_dmabuf_smoke,
-)
 from debug.display_mode_guard import HeadlessModeStatus
+from debug.dual_camera_preview_recording_hdmi_a1_smoke import (
+    run_dual_camera_preview_recording_hdmi_a1_smoke,
+)
 
 
-def test_camera_setup_preview_dmabuf_smoke_reports_timing_metrics(tmp_path: Path) -> None:
-    """The dmabuf smoke should report timing metrics and DRM diagnostics."""
+def test_dual_camera_preview_recording_smoke_reports_both_camera_artifacts(tmp_path: Path) -> None:
+    """Dual-camera smoke should report preview metrics and both recording artifacts."""
 
     calls: list[str] = []
 
     class FakeFrame:
-        def __init__(self) -> None:
+        def __init__(self, key: str) -> None:
+            self.buffer_key = key
             self.request = object()
 
-    class FakeSource:
+    class FakeDualSource:
         def __init__(self, **kwargs) -> None:
             calls.append("source:init")
-            assert kwargs["camera_id"] == "camera1"
-            assert kwargs["sensor_mode"] == 0
-            assert kwargs["request_mode"] == "next"
+            assert kwargs["preview_overlay_enabled"] is True
+            assert kwargs["recording_overlay_enabled"] is True
 
         def capture_frame_for_preview(self) -> FakeFrame:
-            calls.append("source:capture_frame_for_preview")
-            return FakeFrame()
+            calls.append("source:capture")
+            return FakeFrame("camera0-frame")
 
         def release_frame(self, _frame: FakeFrame) -> None:
-            calls.append("source:release_frame")
+            calls.append("source:release")
 
         def diagnostics(self) -> dict[str, object]:
             return {
-                "camera_id": "camera0",
-                "frame_rate_hz": 30.0,
-                "sensor_mode": 0,
-                "frame_duration_us": 33333,
-                "output_resolution_px": (1024, 600),
+                "preview_camera_id": "camera0",
+                "recording_camera_id": "camera1",
+                "camera0_video_path": str(tmp_path / "camera0_preview_recording_output.h264"),
+                "camera0_timestamp_csv_path": str(tmp_path / "camera0_preview_recording_timestamp.csv"),
+                "camera1_video_path": str(tmp_path / "camera1_recording_output.h264"),
+                "camera1_timestamp_csv_path": str(tmp_path / "camera1_recording_timestamp.csv"),
+                "camera0_timestamp_sample_count": 11,
+                "camera1_timestamp_sample_count": 13,
+                "camera0_overlay_enabled": True,
+                "camera1_overlay_enabled": True,
             }
 
         def close(self) -> None:
@@ -49,10 +54,10 @@ def test_camera_setup_preview_dmabuf_smoke_reports_timing_metrics(tmp_path: Path
         def __init__(self, **kwargs) -> None:
             calls.append("backend:init")
             self._frame_release_fn = kwargs["frame_release_fn"]
-            self._current_frame: FakeFrame | None = None
+            self._current_frame = None
 
         def display_dmabuf_frame(self, frame: FakeFrame) -> None:
-            calls.append("backend:display")
+            calls.append(f"backend:display:{frame.buffer_key}")
             if self._current_frame is not None:
                 self._frame_release_fn(self._current_frame)
             self._current_frame = frame
@@ -85,11 +90,14 @@ def test_camera_setup_preview_dmabuf_smoke_reports_timing_metrics(tmp_path: Path
         ]
     )
 
-    summary = run_camera_setup_preview_hdmi_a1_dmabuf_smoke(
-            output_root=tmp_path,
-            camera_id="camera1",
-            duration_s=0.05,
-            frame_rate_hz=30.0,
+    summary = run_dual_camera_preview_recording_hdmi_a1_smoke(
+        output_root=tmp_path,
+        duration_s=0.05,
+        frame_rate_hz=30.0,
+        sensor_mode=0,
+        request_mode="next",
+        preview_overlay_enabled=True,
+        recording_overlay_enabled=True,
         require_mode=lambda: HeadlessModeStatus(
             ok=True,
             lightdm_state="inactive",
@@ -98,52 +106,55 @@ def test_camera_setup_preview_dmabuf_smoke_reports_timing_metrics(tmp_path: Path
             tty="/dev/tty1",
             reasons=(),
         ),
-        frame_source_factory=FakeSource,
+        dual_source_factory=FakeDualSource,
         preview_backend_factory=FakeBackend,
         monotonic_fn=lambda: next(time_points),
-        sleep_fn=lambda _seconds: None,
     )
 
     assert calls[:2] == ["source:init", "backend:init"]
-    assert "source:capture_frame_for_preview" in calls
-    assert "backend:display" in calls
-    assert "source:release_frame" in calls
+    assert "source:capture" in calls
+    assert any(call.startswith("backend:display:camera0-frame") for call in calls)
+    assert "source:release" in calls
     assert calls[-2:] == ["backend:close", "source:close"]
-    assert summary["preview_connector"] == "HDMI-A-1"
-    assert summary["camera_id"] == "camera1"
-    assert summary["preview_frame_count"] >= 1
-    assert summary["preview_elapsed_s"] >= 0.0
-    assert summary["preview_fps_achieved"] >= 0.0
-    assert summary["capture_time_total_s"] >= 0.0
-    assert summary["display_time_total_s"] >= 0.0
-    assert summary["sensor_mode"] == 0
-    assert summary["frame_duration_us"] == 33333
-    assert summary["request_mode"] == "next"
+    assert summary["preview_camera_id"] == "camera0"
+    assert summary["recording_camera_id"] == "camera1"
+    assert summary["camera0_video_path"].endswith(".h264")
+    assert summary["camera1_video_path"].endswith(".h264")
+    assert summary["camera0_timestamp_csv_path"].endswith(".csv")
+    assert summary["camera1_timestamp_csv_path"].endswith(".csv")
+    assert summary["camera0_timestamp_sample_count"] == 11
+    assert summary["camera1_timestamp_sample_count"] == 13
     assert summary["preview_drm_diagnostics"]["requested_connector"] == "HDMI-A-1"
 
 
-def test_camera_setup_preview_dmabuf_smoke_releases_frame_on_display_failure(tmp_path: Path) -> None:
-    """Display failures should still release the current captured frame."""
+def test_dual_camera_preview_recording_smoke_closes_resources_on_display_failure(
+    tmp_path: Path,
+) -> None:
+    """Display failures should still close the dual-camera source cleanly."""
 
     calls: list[str] = []
 
     class FakeFrame:
         def __init__(self) -> None:
+            self.buffer_key = "camera0-frame"
             self.request = object()
 
-    class FakeSource:
+    class FakeDualSource:
         def __init__(self, **_kwargs) -> None:
             calls.append("source:init")
 
         def capture_frame_for_preview(self) -> FakeFrame:
-            calls.append("source:capture_frame_for_preview")
+            calls.append("source:capture")
             return FakeFrame()
 
         def release_frame(self, _frame: FakeFrame) -> None:
-            calls.append("source:release_frame")
+            calls.append("source:release")
 
         def diagnostics(self) -> dict[str, object]:
-            return {}
+            return {
+                "preview_camera_id": "camera0",
+                "recording_camera_id": "camera1",
+            }
 
         def close(self) -> None:
             calls.append("source:close")
@@ -164,11 +175,9 @@ def test_camera_setup_preview_dmabuf_smoke_releases_frame_on_display_failure(tmp
             calls.append("backend:close")
 
     with pytest.raises(RuntimeError, match="display failed") as exc_info:
-        run_camera_setup_preview_hdmi_a1_dmabuf_smoke(
+        run_dual_camera_preview_recording_hdmi_a1_smoke(
             output_root=tmp_path,
-            camera_id="camera1",
             duration_s=0.05,
-            request_mode="next",
             require_mode=lambda: HeadlessModeStatus(
                 ok=True,
                 lightdm_state="inactive",
@@ -177,12 +186,12 @@ def test_camera_setup_preview_dmabuf_smoke_releases_frame_on_display_failure(tmp
                 tty="/dev/tty1",
                 reasons=(),
             ),
-            frame_source_factory=FakeSource,
+            dual_source_factory=FakeDualSource,
             preview_backend_factory=FailingBackend,
-            sleep_fn=lambda _seconds: None,
         )
 
     assert exc_info.value.summary["failure_stage"] == "preview_loop_display"
-    assert exc_info.value.summary["camera_id"] == "camera1"
-    assert "source:release_frame" in calls
+    assert exc_info.value.summary["preview_camera_id"] == "camera0"
+    assert exc_info.value.summary["recording_camera_id"] == "camera1"
+    assert "source:release" in calls
     assert calls[-2:] == ["backend:close", "source:close"]
