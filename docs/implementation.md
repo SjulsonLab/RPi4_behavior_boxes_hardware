@@ -526,3 +526,13 @@ still reported about `49.8 fps`, which is a promising sign for later BehavBox
 integration. The CSV metadata also looked stable, reinforcing that acquisition
 timing and preview-loop timing should be treated as related but not identical
 measures.
+
+Late in the same debugging session, the recording path was extended to two
+cameras on the Pi 5: `camera0` previewed and recorded while `camera1` recorded
+without preview, and then the same arrangement was combined with the existing
+drifting-grating stimulus output on `HDMI-A-2`. In the combined dual-camera +
+stimulus test, both recording CSVs showed a stable `FrameDuration` of about
+`19987 us` (close to `50 fps`) even though the preview loop itself ran at about
+`31.3 fps`. That is a useful result to preserve for later developers: under
+full load, dual-camera acquisition timing appears to stay near target while the
+operator preview throughput is what gives way first.
