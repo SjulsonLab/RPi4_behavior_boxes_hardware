@@ -32,8 +32,8 @@ def test_apply_display_mode_overrides_sets_qt_preview_for_desktop_mode() -> None
     assert updated["visual_stimulus"] is True
 
 
-def test_apply_display_mode_overrides_sets_drm_preview_for_experiment_mode() -> None:
-    """Experiment mode should force DRM local preview for camera0.
+def test_apply_display_mode_overrides_enables_shared_experiment_media_for_experiment_mode() -> None:
+    """Experiment mode should enable shared DRM media ownership for camera0.
 
     Returns:
         None.
@@ -46,7 +46,12 @@ def test_apply_display_mode_overrides_sets_drm_preview_for_experiment_mode() -> 
 
     updated = apply_display_mode_overrides(session_info, mode="experiment")
 
-    assert updated["camera_preview_modes"] == {"camera0": "drm_local"}
+    assert updated["camera_preview_modes"] == {"camera0": "off"}
+    assert updated["camera_recording_enabled"] is True
+    assert updated["experiment_media_backend"] == "shared_drm"
+    assert updated["experiment_media_preview_camera_id"] == "camera0"
+    assert updated["experiment_media_preview_source_mode"] == "dmabuf_main"
+    assert updated["experiment_media_request_mode"] == "next"
     assert updated["visual_display_backend"] == "drm"
 
 

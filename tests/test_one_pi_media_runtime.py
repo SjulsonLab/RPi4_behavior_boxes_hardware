@@ -476,6 +476,24 @@ def test_behavbox_validate_media_config_rejects_preview_connector_other_than_hdm
             box.validate_media_config()
 
 
+def test_behavbox_validate_media_config_rejects_shared_experiment_preview_connector_other_than_hdmi_a_1() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(
+            _session_info(
+                tmp,
+                visual_stimulus=True,
+                camera_enabled=True,
+                camera_preview_modes={"camera0": "off"},
+                camera_preview_connector="HDMI-A-2",
+                experiment_media_backend="shared_drm",
+                experiment_media_preview_camera_id="camera0",
+            )
+        )
+
+        with pytest.raises(ValueError, match="HDMI-A-1"):
+            box.validate_media_config()
+
+
 def test_behavbox_prepare_session_rejects_visual_connector_other_than_hdmi_a_2() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         box = BehavBox(
@@ -538,3 +556,63 @@ def test_behavbox_start_session_uses_local_camera_manager_and_publishes_runtime_
         assert state_during_run["camera0"]["preview_active"] is True
         assert state_after_stop["camera0"]["recording"] is False
         assert "stop" in calls
+
+
+def test_behavbox_prepare_session_reuses_shared_experiment_media_runtime_for_visualstim() -> None:
+    calls: list[str] = []
+
+    class _FakeSharedExperimentMediaRuntime:
+        def __init__(self, session_info, *, state_callback=None):
+            self.session_info = session_info
+            self.state_callback = state_callback
+            calls.append("init")
+
+        def prepare(self) -> None:
+            calls.append("prepare")
+            if self.state_callback is not None:
+                self.state_callback(
+                    {
+                        "camera0": {
+                            "recording": False,
+                            "preview_active": False,
+                            "preview_mode": "shared_drm",
+                        }
+                    }
+                )
+
+        def start_session(self, owner: str = "automated") -> None:
+            calls.append(f"start:{owner}")
+
+        def stop_session(self) -> None:
+            calls.append("stop")
+
+        def show_grating(self, grating_name: str) -> None:
+            calls.append(f"grating:{grating_name}")
+
+        def close(self) -> None:
+            calls.append("close")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(
+            _session_info(
+                tmp,
+                visual_stimulus=True,
+                camera_enabled=True,
+                camera_preview_modes={"camera0": "off"},
+                experiment_media_backend="shared_drm",
+                experiment_media_preview_camera_id="camera0",
+            ),
+            camera_manager_factory=lambda box_obj: _FakeSharedExperimentMediaRuntime(
+                box_obj.session_info,
+                state_callback=box_obj._handle_camera_runtime_state,
+            ),
+        )
+
+        box.prepare_session()
+        assert box.visualstim is not None
+        assert box.visualstim is box.camera_manager
+        box.show_grating("go_grating")
+        box.close()
+
+        assert calls[:2] == ["init", "prepare"]
+        assert "grating:go_grating" in calls

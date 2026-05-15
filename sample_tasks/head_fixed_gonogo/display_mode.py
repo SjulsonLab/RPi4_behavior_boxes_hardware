@@ -18,7 +18,8 @@ def apply_display_mode_overrides(session_info: dict[str, Any], mode: DisplayMode
       string camera id. Missing values fall back to ``["camera0"]``.
     - ``mode``:
       ``"desktop"`` keeps virtual desktop workflows via ``qt_local`` preview.
-      ``"experiment"`` enables DRM-local preview intended for compositor-free runs.
+      ``"experiment"`` enables compositor-free shared DRM media ownership for
+      live preview on ``HDMI-A-1`` and visual stimulus on ``HDMI-A-2``.
 
     Returns:
         dict[str, Any]: New session-info mapping with preview overrides applied.
@@ -35,12 +36,21 @@ def apply_display_mode_overrides(session_info: dict[str, Any], mode: DisplayMode
         camera_ids = ["camera0"]
     primary_camera_id = str(camera_ids[0])
 
-    preview_mode = "qt_local" if normalized_mode == "desktop" else "drm_local"
-    visual_backend = "xwindow" if normalized_mode == "desktop" else "drm"
-    updated["camera_preview_modes"] = {primary_camera_id: preview_mode}
     if normalized_mode == "desktop":
+        updated["camera_preview_modes"] = {primary_camera_id: "qt_local"}
         updated.setdefault("camera_preview_display", ":0")
-    updated["visual_display_backend"] = visual_backend
+        updated["visual_display_backend"] = "xwindow"
+        updated.pop("experiment_media_backend", None)
+        updated.pop("experiment_media_preview_camera_id", None)
+        return updated
+
+    updated["camera_preview_modes"] = {primary_camera_id: "off"}
+    updated["camera_recording_enabled"] = True
+    updated["experiment_media_backend"] = "shared_drm"
+    updated["experiment_media_preview_camera_id"] = primary_camera_id
+    updated["experiment_media_preview_source_mode"] = "dmabuf_main"
+    updated["experiment_media_request_mode"] = "next"
+    updated["visual_display_backend"] = "drm"
     return updated
 
 

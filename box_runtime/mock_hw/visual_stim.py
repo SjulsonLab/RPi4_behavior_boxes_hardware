@@ -47,6 +47,13 @@ class MockVisualStim:
         # Compatibility shim with real VisualStim API.
         self.show_grating(grating_name)
 
+    def display_gray(self, gray_level_u8):
+        del gray_level_u8
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+        self._end_grating()
+
     def _end_grating(self):
         set_visual_stim_state(
             visual_stim_enabled=True,

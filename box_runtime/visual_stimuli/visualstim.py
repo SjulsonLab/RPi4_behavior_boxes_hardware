@@ -205,6 +205,18 @@ class VisualStim:
         logging.info(";%s;[configuration];queueing stimulus %s", time.time(), grating_name)
         self._runtime.show_grating(canonical_name)
 
+    def display_gray(self, gray_level_u8: int) -> None:
+        """Display a neutral gray frame immediately on the configured screen.
+
+        Args:
+            gray_level_u8: Integer grayscale level in uint8 units ``[0, 255]``.
+
+        Returns:
+            None.
+        """
+
+        self.myscreen.display_greyscale(int(gray_level_u8), blocking=False)
+
     def process_function(self, grating_name: str) -> None:
         """Compatibility shim matching the old process target method signature.
 

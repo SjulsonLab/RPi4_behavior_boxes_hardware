@@ -270,7 +270,7 @@ def test_head_fixed_session_config_enables_visual_stimulus_with_grating_files(tm
     assert vis_gratings[0].name == "go_grating.yaml"
     assert vis_gratings[1].name == "nogo_grating.yaml"
     assert session_info["camera_enabled"] is True
-    assert session_info["camera_ids"] == ["camera0"]
+    assert session_info["camera_ids"] == ["camera0", "camera1"]
     assert session_info["camera_recording_enabled"] is False
-    assert session_info["camera_preview_modes"] == {"camera0": "qt_local"}
+    assert session_info["camera_preview_modes"] == {"camera0": "qt_local", "camera1": "off"}
     assert session_info["camera_preview_connector"] == "HDMI-A-1"

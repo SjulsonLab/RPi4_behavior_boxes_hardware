@@ -536,3 +536,263 @@ stimulus test, both recording CSVs showed a stable `FrameDuration` of about
 `31.3 fps`. That is a useful result to preserve for later developers: under
 full load, dual-camera acquisition timing appears to stay near target while the
 operator preview throughput is what gives way first.
+
+## 2026/05/13
+
+The head-fixed Pi 5 runtime was moved from the earlier debug-only shared-DRM
+direction into the normal task path for `implement_gonogo`. The key design
+decision was to stop treating preview and stimulus as separate DRM clients and
+instead promote a single shared media owner that can drive:
+
+- live preview on `HDMI-A-1`
+- drifting gratings on `HDMI-A-2`
+- H.264 recording and timestamp CSV output for the previewed camera
+
+Code changes:
+
+- `box_runtime/behavior/shared_experiment_media_runtime.py`
+  - added a shared one-Pi experiment runtime that owns both preview and visual
+    stimulus routing in one process,
+  - compiles the session gratings once,
+  - uses the dmabuf preview path with `request_mode="next"`,
+  - records the preview camera while also exposing `show_grating(...)` for task
+    code.
+- `box_runtime/behavior/behavbox.py`
+  - reuses the shared experiment runtime as the active visual runtime when
+    `experiment_media_backend="shared_drm"` is enabled.
+- `sample_tasks/head_fixed_gonogo/display_mode.py`
+  - `desktop` mode keeps `qt_local` preview and the `xwindow` visual backend,
+  - `experiment` mode now switches to the shared DRM media path with preview
+    source mode `dmabuf_main` and `request_mode="next"`.
+
+Regression coverage was added first for:
+
+- shared experiment runtime initialization and state publication,
+- dual-display connector routing,
+- display-mode override expectations,
+- `BehavBox` delegation into the shared experiment visual path.
+
+Validation summary:
+
+- local regression slice passed for the shared experiment path and related
+  head-fixed task wiring,
+- Pi 5 hardware smoke on `10.42.84.10` confirmed:
+  - `camera0` preview path on `HDMI-A-1`,
+  - drifting gratings on `HDMI-A-2`,
+  - compositor-free `experiment` launch via the mode-aware runner.
+
+Files to push to git to save this progress:
+
+- `box_runtime/behavior/shared_experiment_media_runtime.py`
+- `box_runtime/behavior/behavbox.py`
+- `sample_tasks/head_fixed_gonogo/display_mode.py`
+- `tests/test_shared_experiment_media_runtime.py`
+- `tests/test_one_pi_media_runtime.py`
+- `tests/test_head_fixed_display_mode.py`
+- `docs/implementation.md`
+
+## 2026/05/14
+
+The one-Pi experiment path was extended to support SSD-backed session output,
+plain-entrypoint SSD defaults, and dual-camera recording while preserving the
+same monitor topology:
+
+- `camera0`: preview + recording
+- `camera1`: recording only
+- `HDMI-A-1`: operator preview
+- `HDMI-A-2`: drifting gratings
+
+Code changes:
+
+- `sample_tasks/head_fixed_gonogo/output_root.py`
+  - added a shared output-root helper,
+  - on Raspberry Pi, launchers now prefer
+    `/mnt/behavbox_ssd/head_fixed_gonogo_runs` when the SSD mount is present,
+  - otherwise they fall back to `tmp_task_runs`.
+- `sample_tasks/head_fixed_gonogo/run.py`
+  - now bootstraps the repo root onto `sys.path` for direct script execution,
+  - uses the shared output-root helper so the plain entrypoint can also write
+    to the SSD-backed default path.
+- `scripts/run_head_fixed_gonogo_mode.py`
+  - now uses the same shared output-root resolution path.
+- `box_runtime/behavior/shared_dual_camera_recording_source.py`
+  - added a promoted runtime helper that records `camera0` and `camera1` while
+    exposing preview frames only from `camera0`.
+- `box_runtime/behavior/shared_experiment_media_runtime.py`
+  - extended to support `camera_ids=["camera0", "camera1"]`,
+  - keeps `camera0` previewed and recorded,
+  - records `camera1` without preview,
+  - publishes per-camera artifact paths and diagnostics.
+- `sample_tasks/head_fixed_gonogo/session_config.py`
+  - now requests the one-Pi dual-camera recording topology when the shared
+    experiment path is active.
+
+Regression coverage was expanded for:
+
+- SSD output-root selection and fallback behavior,
+- direct script execution of the plain go/no-go entrypoint,
+- `camera0` preview versus `camera1` recording-only behavior,
+- dual-camera runtime diagnostics and artifact-path publication.
+
+Validation summary:
+
+- local regression slices passed for output-root resolution, mode-aware
+  launching, dual-camera shared runtime behavior, and head-fixed task wiring,
+- Pi 5 validation on `10.42.84.10` confirmed:
+  - the SSD mount at `/mnt/behavbox_ssd` was used as the default output root,
+  - the dual-camera experiment runtime wrote:
+    - `camera0_preview_recording_output.h264`
+    - `camera0_preview_recording_timestamp.csv`
+    - `camera1_recording_output.h264`
+    - `camera1_recording_timestamp.csv`
+  - both camera recordings were non-empty in the SSD-backed session
+    directories.
+
+Files to push to git to save this progress:
+
+- `sample_tasks/head_fixed_gonogo/output_root.py`
+- `sample_tasks/head_fixed_gonogo/run.py`
+- `sample_tasks/head_fixed_gonogo/session_config.py`
+- `scripts/run_head_fixed_gonogo_mode.py`
+- `box_runtime/behavior/shared_dual_camera_recording_source.py`
+- `box_runtime/behavior/shared_experiment_media_runtime.py`
+- `tests/test_run_head_fixed_gonogo_mode.py`
+- `tests/test_shared_dual_camera_recording_source_runtime.py`
+- `tests/test_shared_experiment_media_runtime.py`
+- `tests/test_head_fixed_gonogo.py`
+- `tests/test_one_pi_media_runtime.py`
+- `docs/implementation.md`
+
+## 2026/05/15
+
+A separate hardware-stress task was added so the Pi 5 setup can be exercised
+without depending on lick input. This task is intentionally not the scientific
+go/no-go task; it is a bench validation path that combines:
+
+- no-go cue playback
+- no-go drifting grating presentation
+- serial reward-pump actuation
+- treadmill logging
+- dual-camera recording
+- operator preview on `HDMI-A-1`
+- SSD-backed session output
+
+The task was then iterated several times to bring the real hardware behavior
+closer to the intended protocol.
+
+Code changes:
+
+- `sample_tasks/head_fixed_hardware_stress/`
+  - added a new task package with:
+    - `session_config.py`
+    - `run.py`
+    - `task.py`
+  - the task runs no-go-only trials,
+  - reward delivery can be scheduled every `N` trials or on every trial,
+  - all four reward outputs (`reward_left`, `reward_right`, `reward_center`,
+    `reward_4`) are delivered serially through the normal reward path.
+- `scripts/run_head_fixed_hardware_stress_mode.py`
+  - added a mode-aware launcher for the stress task,
+  - reuses the same desktop/experiment lightdm orchestration,
+  - supports bounded runs, reward-cadence overrides, optional audio preflight,
+    and best-effort audio latency checks.
+- `sample_tasks/head_fixed_hardware_stress/session_config.py`
+  - enabled real USB audio on Raspberry Pi via
+    `plughw:CARD=Device,DEV=0`,
+  - keeps mock audio off-Pi,
+  - enables two cameras, treadmill logging, and visual stimulus by default.
+- `box_runtime/audio/sounds/`
+  - added bench cue WAV files:
+    - `001-beep.wav`
+    - `002-buzz.wav`
+    - `003-buzz.wav`
+    - `004-white-noise-44-1-16bit.wav`
+- `sample_tasks/head_fixed_hardware_stress/task.py`
+  - switched the stress task from generated white noise to the tracked
+    WAV-backed white-noise cue `004-white-noise-44-1-16bit.wav`,
+  - bounded cue duration and stimulus duration together,
+  - kept the ITI at `1.0 s`,
+  - added explicit return-to-gray behavior after the stimulus phase and on
+    task stop.
+- `box_runtime/behavior/behavbox.py`
+  - added a generic `display_gray(gray_level_u8)` visual-runtime facade so
+    tasks do not need to know whether the active backend is desktop, fake, or
+    shared-DRM experiment mode.
+- `box_runtime/visual_stimuli/visualstim.py`
+  - added a matching `display_gray(...)` entrypoint for the normal visual
+    runtime.
+- `box_runtime/mock_hw/visual_stim.py`
+  - added a matching `display_gray(...)` path for the mock visual runtime.
+- `box_runtime/behavior/shared_experiment_media_runtime.py`
+  - added an explicit gray-display path,
+  - then tightened it so `display_gray(...)` is authoritative:
+    - clears queued gratings,
+    - interrupts any in-progress grating playback,
+    - serializes stimulus-output access so gray requests and grating frames do
+      not race each other.
+
+The stress-task timing was validated in multiple stages:
+
+- first, the task was updated so cue and visual start together and run for
+  `0.5 s`,
+- second, the ITI gray-state bug was fixed in the shared experiment runtime so
+  the grating does not resume after a brief gray flash,
+- third, a software-side timing probe on the Pi measured the task request skew
+  between `play_sound(...)` and `show_grating(...)`.
+
+Regression coverage added first and then expanded to include:
+
+- stress-task default timing and cue loading,
+- serial reward-order behavior,
+- Raspberry Pi audio-session configuration,
+- mode-aware stress-task launcher behavior,
+- shared experiment gray restore,
+- generic `BehavBox.display_gray(...)` delegation,
+- interrupting an in-progress grating when `display_gray(...)` is requested.
+
+Validation summary:
+
+- local regression slices passed for the stress task, launcher, shared
+  experiment runtime, and `BehavBox` visual delegation,
+- Pi 5 validation on `10.42.84.10` confirmed:
+  - WAV-backed cue playback through the USB audio device,
+  - successful hardware-stress runs with reward delivery on every trial,
+  - SSD-backed treadmill, event-log, and dual-camera artifacts,
+  - stable gray ITIs after the shared-runtime interrupt fix,
+  - software-side visual-request minus sound-request timing of about
+    `0.60 ms` over repeated stress-task trials.
+
+Representative Pi session outputs preserved during this work include:
+
+- `pi5_hardware_stress_smoke_20260514`
+- `pi5_hardware_stress_integrated_every_trial_20260515`
+- `pi5_hardware_stress_gray_interrupt_watch_20260515`
+
+Files to push to git to save this progress:
+
+- `box_runtime/audio/sounds/001-beep.wav`
+- `box_runtime/audio/sounds/002-buzz.wav`
+- `box_runtime/audio/sounds/003-buzz.wav`
+- `box_runtime/audio/sounds/004-white-noise-44-1-16bit.wav`
+- `box_runtime/behavior/behavbox.py`
+- `box_runtime/behavior/shared_dual_camera_recording_source.py`
+- `box_runtime/behavior/shared_experiment_media_runtime.py`
+- `box_runtime/mock_hw/visual_stim.py`
+- `box_runtime/visual_stimuli/visualstim.py`
+- `sample_tasks/head_fixed_hardware_stress/__init__.py`
+- `sample_tasks/head_fixed_hardware_stress/run.py`
+- `sample_tasks/head_fixed_hardware_stress/session_config.py`
+- `sample_tasks/head_fixed_hardware_stress/task.py`
+- `sample_tasks/head_fixed_gonogo/output_root.py`
+- `scripts/run_head_fixed_gonogo_mode.py`
+- `scripts/run_head_fixed_hardware_stress_mode.py`
+- `tests/test_head_fixed_display_mode.py`
+- `tests/test_head_fixed_gonogo.py`
+- `tests/test_head_fixed_hardware_stress.py`
+- `tests/test_one_pi_media_runtime.py`
+- `tests/test_run_head_fixed_gonogo_mode.py`
+- `tests/test_run_head_fixed_hardware_stress_mode.py`
+- `tests/test_shared_dual_camera_recording_source_runtime.py`
+- `tests/test_shared_experiment_media_runtime.py`
+- `tests/test_task_runner.py`
+- `docs/implementation.md`

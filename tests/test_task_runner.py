@@ -247,3 +247,29 @@ def test_behavbox_show_grating_delegates_to_visual_runtime():
         box.show_grating("nogo_grating")
 
         assert fake_visual.calls == ["nogo_grating"]
+
+
+def test_behavbox_display_gray_raises_when_visual_runtime_is_unavailable():
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+
+        with pytest.raises(RuntimeError, match="visual stimulus"):
+            box.display_gray(127)
+
+
+def test_behavbox_display_gray_delegates_to_visual_runtime():
+    class _FakeVisualStim:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def display_gray(self, gray_level_u8: int) -> None:
+            self.calls.append(int(gray_level_u8))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        box = BehavBox(_session_info(tmp))
+        fake_visual = _FakeVisualStim()
+        box.visualstim = fake_visual
+
+        box.display_gray(127)
+
+        assert fake_visual.calls == [127]

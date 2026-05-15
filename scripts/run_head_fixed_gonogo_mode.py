@@ -17,6 +17,7 @@ from sample_tasks.head_fixed_gonogo.display_mode import (
     apply_display_mode_overrides,
     build_lightdm_action_plan,
 )
+from sample_tasks.head_fixed_gonogo.output_root import resolve_output_root
 
 
 def _run_lightdm_action(action: str, *, dry_run: bool) -> None:
@@ -56,7 +57,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run head-fixed go/no-go in desktop or experiment mode.")
     parser.add_argument("--display-mode", choices=["desktop", "experiment"], default="desktop")
     parser.add_argument("--dry-run", action="store_true", help="Print planned commands without running a session.")
-    parser.add_argument("--output-root", default="tmp_task_runs", help="Directory root for task outputs.")
+    parser.add_argument(
+        "--output-root",
+        default=None,
+        help="Directory root for task outputs. When omitted on the Pi, prefer /mnt/behavbox_ssd/head_fixed_gonogo_runs if mounted.",
+    )
     parser.add_argument("--session-tag", default="head_fixed_gonogo_session", help="Basename for the session directory.")
     parser.add_argument("--max-trials", type=int, default=20, help="Maximum number of completed trials before stopping.")
     parser.add_argument("--max-duration-s", type=float, default=600.0, help="Maximum session duration in seconds.")
@@ -74,7 +79,7 @@ def main() -> int:
         print("Dry run complete; no session executed.")
         return 0
 
-    output_root = Path(args.output_root).resolve()
+    output_root = resolve_output_root(args.output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     from sample_tasks.head_fixed_gonogo.session_config import build_session_info
 

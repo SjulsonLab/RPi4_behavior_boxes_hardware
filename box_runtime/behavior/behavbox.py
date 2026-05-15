@@ -317,10 +317,29 @@ class BehavBox(object):
             return None
         if self._camera_manager_factory is not None:
             return self._camera_manager_factory(self)
+        if self._uses_shared_experiment_media():
+            from box_runtime.behavior.shared_experiment_media_runtime import (
+                SharedDrmExperimentMediaRuntime,
+            )
+
+            return SharedDrmExperimentMediaRuntime(
+                self.session_info,
+                state_callback=self._handle_camera_runtime_state,
+            )
         return CameraManager(
             self.session_info,
             state_callback=self._handle_camera_runtime_state,
         )
+
+    def _uses_shared_experiment_media(self) -> bool:
+        """Return whether this session should use unified shared experiment media.
+
+        Returns:
+            bool: ``True`` when ``experiment_media_backend`` is ``"shared_drm"``.
+        """
+
+        backend = str(self.session_info.get("experiment_media_backend", "")).strip().lower()
+        return backend == "shared_drm"
 
     def validate_media_config(self) -> None:
         """Validate one-Pi visual and local camera preview configuration.
@@ -334,6 +353,36 @@ class BehavBox(object):
         visual_connector = str(self.session_info.get("visual_display_connector", "HDMI-A-2")).strip() or "HDMI-A-2"
         if visual_enabled and visual_connector != "HDMI-A-2":
             raise ValueError("Visual stimulus must use HDMI-A-2 in the supported one-Pi topology.")
+
+        if self._uses_shared_experiment_media():
+            if not bool(self.session_info.get("camera_enabled", False)):
+                raise ValueError("Shared experiment media requires camera_enabled=True.")
+            preview_camera_id = str(
+                self.session_info.get("experiment_media_preview_camera_id", "camera0")
+            ).strip() or "camera0"
+            camera_ids = self.session_info.get("camera_ids", ["camera0"])
+            if isinstance(camera_ids, str):
+                camera_ids = [camera_ids]
+            if preview_camera_id not in [str(camera_id) for camera_id in camera_ids]:
+                raise ValueError(
+                    f"Shared experiment preview camera {preview_camera_id!r} must appear in camera_ids."
+                )
+            preview_connector = str(
+                self.session_info.get("camera_preview_connector", "HDMI-A-1")
+            ).strip() or "HDMI-A-1"
+            if preview_connector != "HDMI-A-1":
+                raise ValueError("Local camera preview must use HDMI-A-1 in the supported one-Pi topology.")
+            if visual_enabled and preview_connector == visual_connector:
+                raise ValueError("Visual stimulus and local camera preview cannot share the same DRM connector.")
+            if visual_enabled:
+                visual_backend = "drm" if is_raspberry_pi() else "fake"
+                query_display_config(
+                    backend=visual_backend,
+                    requested_resolution_px=None,
+                    requested_refresh_hz=self.session_info.get("visual_display_refresh_hz"),
+                    requested_connector=visual_connector,
+                )
+            return
 
         preview_modes = self.session_info.get(
             "camera_preview_modes",
@@ -383,6 +432,11 @@ class BehavBox(object):
         )
         if not visual_enabled:
             self.visualstim = None
+            return
+        if self._uses_shared_experiment_media() and self.camera_manager is not None and hasattr(
+            self.camera_manager, "show_grating"
+        ):
+            self.visualstim = self.camera_manager
             return
         try:
             if is_raspberry_pi():
@@ -845,8 +899,26 @@ class BehavBox(object):
         if self.visualstim is None or not hasattr(self.visualstim, "show_grating"):
             raise RuntimeError(
                 "visual stimulus runtime is unavailable; enable visual_stimulus and call prepare_session() first"
-            )
+        )
         self.visualstim.show_grating(str(grating_name))
+
+    def display_gray(self, gray_level_u8: int) -> None:
+        """Display one neutral gray frame through the active visual runtime.
+
+        Data contract:
+        - ``gray_level_u8``: Integer grayscale level in uint8 display units
+          ``[0, 255]``.
+        - Returns ``None``.
+
+        Raises:
+        - ``RuntimeError`` if visual stimulus is unavailable.
+        """
+
+        if self.visualstim is None or not hasattr(self.visualstim, "display_gray"):
+            raise RuntimeError(
+                "visual stimulus runtime is unavailable; enable visual_stimulus and call prepare_session() first"
+            )
+        self.visualstim.display_gray(int(gray_level_u8))
 
     def pulse_output(self, output_name: str, duration_s: Optional[float] = None) -> None:
         """Pulse one named GPIO output.
@@ -897,6 +969,8 @@ class BehavBox(object):
             self.sound_runtime = None
         if getattr(self, "camera_manager", None) is not None:
             self.camera_manager.close()
+            if self.visualstim is self.camera_manager:
+                self.visualstim = None
             self.camera_manager = None
         if getattr(self, "visualstim", None) is not None and hasattr(self.visualstim, "close"):
             try:
