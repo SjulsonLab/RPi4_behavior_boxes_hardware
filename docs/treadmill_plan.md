@@ -1,90 +1,81 @@
 # Treadmill Acquisition: Pi 5 / Trixie Implementation Plan
 
-## 1. Purpose and status
+## 1. Purpose, authority, and status
 
-This document translates `docs/treadmill_spec.md` into a test-first execution
-plan for the active `RPi4_behavior_boxes_hardware` codebase. The specification
-is authoritative when the two documents differ.
+This document sequences implementation of `docs/treadmill_spec.md` in the
+active `RPi4_behavior_boxes_hardware` codebase. The specification owns detailed
+requirements, data contracts, tests, and acceptance criteria. This plan owns
+work order, repository boundaries, Sol/Terra assignments, and evidence gates.
 
-This plan targets only:
+If the documents differ, the specification is authoritative.
+
+Initial target:
 
 - Raspberry Pi 5;
 - 64-bit Raspberry Pi OS / Debian 13 Trixie;
 - system Python 3.13;
-- the official libgpiod v2 Python API.
+- official libgpiod v2 Python binding.
 
-Raspberry Pi 4B support is deferred until the Pi 5 implementation has passed
-production acceptance. Do not add Pi 4 compatibility branches, provisioning,
-tests, or abstractions during the initial implementation.
+Raspberry Pi 4B is deferred until the Pi 5 implementation has passed production
+acceptance.
 
-Plan state as of 2026-10-06:
+Status as of 2026-10-06:
 
 | Item | State |
 |---|---|
-| Specification | Updated for the modern codebase and Pi 5-only target |
-| Plan rewrite | Complete in this document; awaiting user review |
-| Runtime implementation | Not started |
-| Treadmill rewrite tests | Not started |
-| Dependency changes | Not started |
-| Hardware calibration | Required after the framework is runnable |
-| Production acceptance | Not started |
+| Specification and plan documentation | Prepared for review |
+| Runtime implementation | Not started and not authorized by this document |
+| Rewrite tests | Not started |
+| Dependency/provisioning changes | Not started |
+| Hardware calibration and acceptance | Not started |
 
-Updating these documents does not authorize runtime implementation. Before the
-first implementation work package, the Sol coordinator must confirm that the
-user has approved this plan and record that approval in Section 20.
+Documentation approval is not implementation approval. No Sol coordinator may
+assign a `TW-*` implementation activity until the user gives a separate,
+explicit instruction to begin implementation.
 
 ### 1.1 Resume procedure
 
-A fresh implementation chat must:
+Before any future work, the Sol coordinator must:
 
 1. read `AGENTS.md`, `docs/SoftwareDesign.md`, `docs/treadmill_spec.md`, and this
    plan in full;
 2. inspect `git status` and preserve unrelated changes;
-3. inspect the current files and callers named by the next work package;
-4. verify that prerequisite tests, commits, and evidence exist;
-5. update the ledger before assigning or beginning work;
-6. obtain approval if a requirement, public interface, dependency, or package
-   boundary would materially change;
-7. execute only the approved work package and its required verification.
+3. inspect the current files and callers in the assigned package;
+4. confirm prerequisite commits/evidence and explicit user authorization;
+5. update Section 11 before assigning work;
+6. stop for approval if a requirement, dependency, public API, or package
+   boundary must change.
 
-Chat history and worker reports are supporting information, not substitutes
-for repository state, committed tests, or reproducible command output.
+## 2. Fixed decisions
 
-## 2. Approved decisions
+The first implementation uses these approved boundaries:
 
-The following decisions are fixed for the first implementation:
+1. `session_info["treadmill"]` is authoritative.
+2. The public behavior API is `box.treadmill`; the old
+   `box.treadmill_encoder` API is retired.
+3. BCM13 and BCM16 remain owned by the head-fixed manifest and are not copied
+   into treadmill YAML.
+4. Enabled freely-moving treadmill configuration is invalid because those pins
+   are poke inputs in that profile.
+5. Treadmill acquisition uses libgpiod v2 with both edges, kernel monotonic
+   timestamps, and sequence numbers. There is no fallback decoder.
+6. The modern nominal calibration begins explicitly unverified. Legacy
+   calibration is retained only as migration documentation.
+7. Readable defaults live in
+   `box_runtime/input/treadmill/defaults.yaml`; documented session overrides
+   live under `session_info["treadmill_config"]`.
+8. Acquisition and fixed-rate logging use separate processes. The parent facade
+   owns both; logger lifecycle is not routed through the acquisition worker.
+9. Acquisition controls are limited to `ZERO` and `STOP`. Status comes from
+   coherent shared state and heartbeat.
+10. Recording uses the TSV/JSON artifacts defined in specification Section 16.
+11. Archived and external legacy treadmill code remains untouched and
+    unimported.
+12. Sol coordinates bounded Terra worker assignments using Section 8.
 
-1. **Platform:** Pi 5, Trixie, and Python 3.13 only.
-2. **Enablement:** `session_info["treadmill"]` is authoritative.
-3. **Public API:** the modern facade is exposed as `box.treadmill`.
-   `box.treadmill_encoder` is not reused for the new runtime.
-4. **Pins:** the head-fixed manifest remains the sole owner of BCM13 and BCM16.
-   Pin numbers are not duplicated in treadmill YAML.
-5. **Backend:** treadmill GPIO uses libgpiod v2, both edges, kernel monotonic
-   timestamps, and event sequence numbers. There is no fallback decoder.
-6. **Calibration:** the starting value is the explicitly unverified modern
-   nominal value `0.39269908169872414 mm/encoder cycle`. The legacy
-   `0.41095 mm/encoder cycle` value is documentation and migration evidence,
-   not the default.
-7. **Configuration:** readable defaults live in
-   `box_runtime/input/treadmill/defaults.yaml`; session-specific overrides live
-   under `session_info["treadmill_config"]`.
-8. **Recording:** normal output uses versioned TSV and JSON artifacts in the
-   active `SharedIoRecorder` directory. SQLite is not part of this work.
-9. **Lifecycle:** acquisition starts during session preparation; recording
-   starts only when shared recording first opens and stops only when its final
-   owner stops.
-10. **Failure behavior:** unverified calibration is a prominent allowed
-    `DEGRADED` state. Runtime policies are `warn`, `pause`, and `abort`, with
-    `warn` as the default.
-11. **Legacy code:** archived code and the older external behavior repository
-    remain untouched and unimported.
-12. **Execution:** a Sol coordinator may delegate bounded tasks to Terra
-    workers using the simplified protocol in Section 14.
+## 3. Current codebase and intended delta
 
-## 3. Modern baseline and required delta
-
-The active implementation is concentrated in:
+The active integration points are:
 
 ```text
 box_runtime/input/service.py
@@ -98,69 +89,54 @@ environment/rpi5_trixie_verifier.py
 deploy/ansible/pi5_trixie.yml
 ```
 
-Current behavior that must change:
+Current treadmill behavior:
 
-- every head-fixed `InputService` constructs `gpiozero.RotaryEncoder`, even
-  when `session_info["treadmill"]` is false;
-- speed is derived by sampling `.steps` in a thread, normally at 30 Hz;
-- the old artifact is a two-column `treadmill_speed.tsv` in cm/s;
-- the runtime has no event history, sequence-loss detection, worker heartbeat,
-  physical position API, or integrity latch;
-- `box.treadmill_encoder` exposes the low-level gpiozero device;
-- Pi 5 provisioning does not yet declare or verify the required libgpiod v2
-  Python capability set.
+- every head-fixed `InputService` creates `gpiozero.RotaryEncoder`, even when
+  the treadmill flag is false;
+- a thread samples `.steps`, normally at 30 Hz;
+- speed is written to the old two-column `treadmill_speed.tsv`;
+- there is no edge history, sequence-loss detection, heartbeat, integrity
+  latch, or physical position API.
 
-Modern behavior that must remain intact:
+Required integration outcome:
 
-- the manifest owns profile-specific pin assignments;
-- head-fixed and freely-moving profiles remain distinct;
-- user-owned and task-owned recordings may overlap;
-- the first recording owner opens one shared directory;
-- another owner reuses that recording;
-- the final owner closes it;
-- non-treadmill inputs and outputs continue through the existing gpiozero /
-  rpi-lgpio backend;
-- BehavBox preparation and close paths clean up partially initialized
-  resources.
+- disabled head-fixed sessions do not claim BCM13/16, no disabled session
+  creates treadmill resources/artifacts, and freely-moving poke ownership is
+  unchanged;
+- enabled head-fixed sessions expose `box.treadmill`;
+- enabled freely-moving sessions fail before BCM13/16 claims;
+- acquisition begins during `prepare_session()`;
+- first-owner/final-owner recording semantics remain unchanged;
+- recording delegates to the treadmill facade instead of sampling gpiozero;
+- acquisition remains live after recording stops and closes with
+  `InputService`;
+- lick, poke, trigger, user GPIO, output, camera, audio, and general recording
+  behavior is not redesigned.
 
-Existing tests that assert a head-fixed encoder exists while `treadmill=false`
-describe the behavior being replaced and must be rewritten through the normal
-RED/GREEN process. Tests for unrelated lick, poke, trigger, output, camera, and
-recording behavior remain regression requirements.
+Existing tests which expect `treadmill_encoder` while `treadmill=false` describe
+the behavior being replaced. All unrelated tests remain regression gates.
 
-## 4. Architecture
+## 4. Minimal architecture and package layout
 
 ```text
 Manifest BCM13/BCM16
         |
         v
-libgpiod v2 joint line request
-(RP1 resolution, both edges, kernel timestamps and sequence numbers)
+libgpiod v2 joint request on Pi 5 RP1
         |
         v
-Dedicated acquisition process
-        |-- batch event draining
-        |-- pure x4 decoder
-        |-- position, distance, direction, and speed
-        |-- integrity, lag, health, and heartbeat
-        |-- bounded recent-event ring
-        |
-        v
-Single-writer coherent shared state
-        |                              |
-        v                              v
-box.treadmill facade             Logger process while recording
-snapshot/zero/health             treadmill_state.tsv
-                                 metadata/diagnostics/summary JSON
+Acquisition process
+(batch drain -> x4 decode -> health/integrity -> shared state)
+        |                                      |
+        v                                      v
+box.treadmill facade                    Logger process while recording
+                                        TSV/JSON artifacts
 ```
 
-The acquisition process is the only writer of canonical decoder state. The
-BehavBox process and logger process are bounded readers. Behavior work and disk
-latency must not create a blocking path back into event draining.
+The acquisition process is the only canonical decoder-state writer. Behavior
+and logger readers cannot block its edge-draining loop.
 
-## 5. Proposed package and module contracts
-
-Create the package incrementally:
+Create modules only when their tests require them:
 
 ```text
 box_runtime/input/treadmill/
@@ -168,939 +144,413 @@ box_runtime/input/treadmill/
     defaults.yaml
     config.py
     decoder.py
-    state.py
     gpio_backend.py
-    shared_state.py
-    diagnostics.py
+    state.py
     acquisition.py
     recording.py
     runtime.py
 ```
 
-Focused tests live under:
-
-```text
-tests/treadmill/
-```
-
-Do not create empty placeholder modules. Each module is added only after its
-tests require it.
-
-### 5.1 Module responsibilities
-
-| Module | Responsibility | Must not do |
-|---|---|---|
-| `config.py` | Load YAML defaults, merge session overrides, validate types/units/policies, and produce an immutable config | Own pins, import GPIO, start processes, or write artifacts |
-| `decoder.py` | Define the generic edge/internal decoder state and apply deterministic x4, speed, zero, and integrity rules | Import gpiod, multiprocessing, files, or wall-clock time |
-| `state.py` | Define immutable public state, health/policy records, and explicit shared-field conversions | Decode edges or own synchronization primitives |
-| `gpio_backend.py` | Probe the installed gpiod v2 API, resolve the Pi 5 RP1 controller, claim lines, synchronize input state, and adapt event batches | Decode motion, start processes, or write files |
-| `shared_state.py` | Publish and read coherent fixed-layout state without blocking the acquisition writer | Own GPIO, decoder policy, or recording |
-| `diagnostics.py` | Maintain bounded lag aggregates, recent-event records, stable event codes, and summary structures | Perform disk I/O in the acquisition hot path |
-| `acquisition.py` | Run the spawn-safe acquisition worker, controls, heartbeat, state publication, and orderly GPIO shutdown | Perform behavior callbacks or normal disk writes |
-| `recording.py` | Run fixed-rate logger scheduling and incrementally write/version TSV and JSON artifacts | Receive every GPIO edge or block acquisition |
-| `runtime.py` | Compose processes and IPC, implement the behavior-facing facade, and evaluate effective health/policy | Contain quadrature tables or direct task-state mutations |
-| `__init__.py` | Export only the intentionally public facade/state/config/error types | Re-export internal worker or gpiod details |
-
-### 5.2 Design constraints
-
-- Prefer deterministic module-level functions for decoding, validation,
-  scheduling, serialization, and policy evaluation.
-- Use dataclasses for configuration and typed records.
-- Use classes only for cohesive resources with lifecycle or owned state.
-- Keep creation in `runtime.py`; pass narrow dependencies to lower layers.
-- Add a `Protocol` only where production and test implementations genuinely
-  share a behavioral boundary. The initial justified boundary is the edge
-  source used by the acquisition worker.
-- Do not pass full `session_info` below the configuration/integration boundary.
-- Every function and method documents input types, units, returns, side
-  effects, and lifecycle constraints.
-- Avoid generic `models.py`, `utils.py`, or `helpers.py` modules.
-
-## 6. Configuration and public contracts
-
-### 6.1 Configuration precedence
-
-Effective settings are assembled in this order:
-
-1. BCM pins from the selected `BoxProfileManifest`;
-2. tracked values from `defaults.yaml`;
-3. documented keys from `session_info["treadmill_config"]`;
-4. validated immutable runtime configuration;
-5. a serialized effective configuration in session metadata.
-
-The YAML file must not contain A/B pin numbers. A session override cannot
-silently replace manifest pins.
-
-Initial readable defaults match the specification, including:
-
-```yaml
-mm_per_encoder_cycle: 0.39269908169872414
-locomotion_sign: 1
-calibration_verified: false
-calibration_source: nominal_25_mm_roller_200_cycles_per_revolution
-calibration_note: UNVERIFIED - perform physical treadmill calibration
-gpio_bias: pull_up
-debounce_period_us: 0
-kernel_event_buffer_size: 8192
-read_batch_size: 256
-speed_timeout_s: 0.050
-continuous_log_enabled: true
-continuous_log_rate_hz: 200.0
-continuous_log_flush_interval_s: 1.0
-diagnostic_ring_buffer_size: 8192
-raw_edge_logging_enabled: false
-treadmill_required: false
-failure_policy: warn
-continuous_logger_required: false
-```
-
-Heartbeat, lag, startup, shutdown, and expected maximum rate defaults are
-selected only after Pi 5 timing measurements. They must still be explicit and
-validated before production acceptance.
-
-### 6.2 Public state
-
-`TreadmillState` is immutable and includes the physical fields, raw diagnostic
-fields, monotonic timestamps, counters, lag values, health, integrity,
-failure code, and state version required by the specification.
-
-Physical units are:
-
-- position and distance: millimetres;
-- speed: millimetres per second;
-- event and heartbeat time: monotonic nanoseconds;
-- sample UTC alignment: POSIX seconds in the TSV and paired timebase anchors
-  in metadata/summary.
-
-Raw transition counts are diagnostic and must not become the default task API.
-
-### 6.3 BehavBox facade
-
-The stable modern boundary is:
-
-```python
-box.treadmill
-```
-
-Semantics:
-
-- `None` when `session_info["treadmill"]` is false;
-- a `TreadmillRuntime` facade when treadmill acquisition is enabled;
-- for optional startup failure, a facade exposing visible `FAILED` health
-  rather than a silent gpiozero fallback;
-- required startup failure propagates out of `prepare_session()` after cleanup.
-
-The facade provides operations equivalent to:
-
-```text
-start
-snapshot
-zero
-health_report
-require_healthy
-start_recording
-stop_recording
-stop
-close
-```
-
-Do not alias the facade to `box.treadmill_encoder` and do not emulate the old
-`.steps` interface.
-
-## 7. Decoder and GPIO implementation design
-
-### 7.1 Generic event and decoder
-
-Production and synthetic sources use one small ordered event containing:
-
-```text
-timestamp_ns
-channel
-edge_type
-global_sequence_number
-line_sequence_number
-```
-
-The decoder uses the explicit positive sequence:
-
-```text
-00 -> 01 -> 11 -> 10 -> 00
-```
-
-and its reverse. Each valid single-bit transition changes signed transition
-position by one. It never invents an intermediate state after loss.
-
-Position and distance are derived from integer transition totals:
-
-```text
-mm_per_transition = mm_per_encoder_cycle / 4
-
-position_mm =
-    (raw_transition_position - zero_transition_offset)
-    * mm_per_transition
-    * locomotion_sign
-
-distance_travelled_mm =
-    (absolute_transition_total - zero_absolute_offset)
-    * mm_per_transition
-```
-
-Speed uses consecutive valid transition timestamps supplied by the kernel.
-The first transition has no interval-derived estimate. Public speed becomes
-zero after `speed_timeout_s`, while the last-edge estimate remains available.
-
-The tested failure matrix determines whether every anomaly changes state,
-increments counters, resynchronizes A/B, degrades/fails health, or latches
-integrity false. Sequence loss or ambiguous trajectory loss always invalidates
-integrity and never produces a guessed correction.
-
-### 7.2 Pi 5 GPIO backend
-
-The backend must verify the installed official binding rather than assuming an
-API from memory. Required capabilities include:
-
-- one joint request for both lines;
-- both rising and falling edge detection;
-- pull-up bias and explicit zero debounce;
-- monotonic event clock;
-- configurable kernel event buffer;
-- waiting and batched reads;
-- line offset, edge type, timestamp, global sequence, and line sequence.
-
-RP1 resolution must enumerate gpiochips and use chip/line metadata. It must not
-assume `/dev/gpiochip0`, because numbering can change with kernel/device-tree
-configuration. It records all candidates and fails on missing, ambiguous,
-claimed, or invalid lines.
-
-### 7.3 Startup synchronization
-
-Request both lines with edge detection active, then use a bounded
-drain/read/quiet-period procedure. Deterministic boundary-injection tests must
-prove that motion around synchronization is either included exactly once after
-the accepted initial state or explicitly classified as pre-acquisition motion.
-
-The runtime reaches `READY` only after capability checks, controller
-resolution, the joint claim, coherent initial A/B state, initial publication,
-and heartbeat have all succeeded.
-
-### 7.4 Acquisition hot loop
-
-The loop:
-
-1. waits no longer than the next heartbeat/control deadline;
-2. drains available events in bounded batches and kernel order;
-3. decodes all drained events;
-4. publishes an appropriate coherent snapshot;
-5. updates heartbeat on schedule even while stationary;
-6. services a bounded amount of lower-priority control work;
-7. immediately returns to draining if more edges are pending.
-
-It performs no console output, normal file I/O, network work, GUI work,
-behavior callbacks, or unbounded allocation.
-
-## 8. Processes, shared state, health, and lifecycle
-
-### 8.1 Process ownership
-
-The facade owns:
-
-- one acquisition process while treadmill acquisition is active;
-- zero or one logger process while shared recording is active;
-- coherent shared-state storage;
-- bounded commands, acknowledgements, and status channels;
-- startup, heartbeat, and shutdown monitoring.
-
-Use an explicitly selected Python 3.13 multiprocessing start method. Start with
-`spawn` unless Pi 5 tests produce a documented reason to choose differently.
-The child opens and owns the gpiod request; the parent never passes an open GPIO
-request across the process boundary.
-
-### 8.2 Shared state
-
-Implement a measured coherent publication design, initially two fixed-layout
-slots with bounded reader locking and nonblocking writer acquisition.
-
-Required properties:
-
-- readers never observe torn field combinations;
-- a reader stalled on one slot cannot stop writer progress through the other;
-- if both slots are temporarily unavailable, publication is skipped and
-  diagnosed rather than blocking edge draining;
-- reader retry/timeout is bounded;
-- the acquisition process retains canonical state even if publication skips.
-
-### 8.3 Controls and health
-
-Controls include `ZERO`, `START_RECORDING`, `STOP_RECORDING`, `STATUS`, and
-`STOP`. They use bounded communication and matched acknowledgements. Edge
-events never travel through the control queue.
-
-Health states are:
-
-```text
-STARTING
-READY
-DEGRADED
-FAILED
-STOPPED
-```
-
-Heartbeat age and child liveness affect reader-side effective health. A dead
-worker must not look like healthy stationary speed zero. Integrity remains a
-separate latch so logger-only failure does not falsely imply lost encoder
-transitions.
-
-Policy evaluation returns a typed `none`, `warn`, `pause_requested`, or
-`abort_requested` outcome. The treadmill subsystem never directly mutates task
-or presenter state.
-
-### 8.4 Lifecycle
-
-During `BehavBox.prepare_session()`:
-
-1. validate profile, manifest pins, config, and calibration state;
-2. construct `box.treadmill` only when enabled;
-3. start acquisition and complete the startup handshake;
-4. return only after an allowed usable state.
-
-When the first shared recording owner starts:
-
-1. start and validate the logger for the selected directory;
-2. acknowledge one recording-origin zero after pending edges are decoded;
-3. write metadata/timebase information;
-4. begin fixed-rate sampling from the acknowledged state version.
-
-Additional owners do not restart the logger or zero again. The final owner
-stops and finalizes recording, but acquisition remains active until
-`InputService.close()`.
-
-Close is idempotent and bounded. Acquisition drains already available events,
-publishes final state, releases only its lines, and joins. Forced termination
-is a diagnosed last resort.
-
-## 9. Recording artifacts
-
-Normal recordings create these files in the active shared recording directory:
-
-```text
-treadmill_state.tsv
-treadmill_metadata.json
-treadmill_diagnostics.jsonl
-treadmill_summary.json
-```
-
-`treadmill_state.tsv` is a versioned fixed-rate physical-state record. It does
-not reuse the name or schema of the old `treadmill_speed.tsv`.
-
-The initial logger rate is 200 Hz. It uses monotonic deadline advancement:
-
-```text
-next_deadline += period
-```
-
-If late, it records one sample at the real time, increments late/missed counts,
-and advances to the next future deadline. It never writes duplicate catch-up
-rows.
-
-Writes are buffered and flushed at bounded intervals. A complete session is
-never held in RAM, and one physical synchronization per sample is forbidden.
-
-Metadata records effective config, unverified/verified calibration, platform,
-software versions, GPIO resolution, timebase, and schema. Diagnostics use
-stable codes and structured context. The final summary includes counts, gaps,
-integrity, health, lag, logger timing, final position/distance, calibration,
-and shutdown outcome.
-
-The acquisition process retains only a bounded recent-event ring during normal
-operation. Integrity failure preserves a copy outside the hot path. Full raw
-edge recording is explicit debug mode and off by default.
-
-## 10. Modern codebase integration
-
-### 10.1 `InputService`
-
-The expected change is intentionally localized. It should modify roughly
-40-70 lines and remove the old treadmill sampler methods; exact diff size is
-not an acceptance criterion.
-
-Required changes:
-
-1. Remove the active treadmill dependency on `RotaryEncoder`.
-2. Remove old treadmill sampling/calibration fields, file handle, thread, stop
-   event, step baseline, and sample timestamp.
-3. Keep one `self.treadmill` facade reference.
-4. For `treadmill=false`, do not claim BCM13/16 and set `owner.treadmill=None`.
-5. For enabled head-fixed sessions, read `treadmill_1` and `treadmill_2` from
-   the manifest, construct/start the facade, and assign `owner.treadmill`.
-6. Reject enabled freely-moving sessions before any treadmill line claim.
-7. Delegate recording-start and recording-stop hooks to the facade.
-8. Delegate close idempotently.
-9. Delete the old sampler start/stop/loop/write methods.
-
-Do not redesign button construction, lick/poke callbacks, trigger handling,
-user-configurable GPIO, event recording, or safe-close behavior.
-
-### 10.2 `BehavBox`
-
-Expected changes are small:
+Focused tests live under `tests/treadmill/`.
+
+### 4.1 Module ownership
+
+| Module | Cohesive responsibility |
+|---|---|
+| `config.py` | Load/merge/validate readable settings; no GPIO, files, or processes |
+| `decoder.py` | Generic edge, x4 state, speed/zero/integrity rules, decoder counters, and recent decoder events |
+| `gpio_backend.py` | Enabled-only verified gpiod API boundary, RP1 resolution, line ownership, synchronization, and ordered batch adaptation |
+| `state.py` | Immutable public state plus the treadmill-specific coherent double-slot publication/reading implementation |
+| `acquisition.py` | Spawn-safe worker, heartbeat, lag diagnostics, bounded diagnostic emission, `ZERO`/`STOP`, and orderly GPIO cleanup |
+| `recording.py` | Logger process, deadline scheduling, artifact writers, logger diagnostics, summaries, and fallback failure record |
+| `runtime.py` | Composition root and public facade; owns child lifecycle and effective health |
+| `__init__.py` | Intentional public exports only |
+
+Keep data and diagnostics beside the component that interprets them. Do not add
+a catch-all diagnostics/models/helpers module. Use deterministic module-level
+functions where lifecycle ownership is unnecessary, dataclasses for typed
+records, and one narrow edge-source `Protocol` only because production and test
+sources both need the boundary.
+
+### 4.2 Concurrency decisions
+
+- The acquisition process owns the gpiod request and decoder.
+- The logger process reads copied state and owns all treadmill artifact handles.
+- The facade starts/stops the logger directly.
+- A treadmill-specific double-slot shared state prevents a descheduled reader
+  from holding the only writer lock. The writer never blocks: if both slots are
+  unavailable, it diagnoses and skips that publication while retaining
+  canonical internal state.
+- Effective snapshots apply motion timeout and heartbeat timeout at read time.
+  The facade and logger use the same pure materialization function.
+- Do not generalize these mechanisms for unrelated subsystems.
+
+## 5. Integration scope
+
+### 5.1 `InputService`
+
+The final change remains localized to treadmill-specific code. Expected work:
+
+1. remove the active `RotaryEncoder` dependency and old sampling fields;
+2. keep one `self.treadmill` facade reference;
+3. construct/start it only for enabled head-fixed sessions using manifest pins;
+4. assign `owner.treadmill`, or `None` when disabled;
+5. reject enabled freely-moving sessions before BCM13/16 can be claimed as
+   treadmill or poke inputs;
+6. locally unwind partially constructed inputs/treadmill resources before a
+   constructor/startup error escapes;
+7. expose a cheap warning-only health poll used by `BehavBox.poll_runtime()`;
+8. delegate first-owner recording start, final-owner recording stop, and close;
+9. delete the old sampler thread and direct treadmill TSV writer.
+
+The prior 40-70 changed-line estimate is directional only. Correct localized
+behavior and unchanged non-treadmill paths are the acceptance criteria.
+
+### 5.2 `BehavBox`, manifest, and recorder
+
+BehavBox needs only targeted integration:
 
 - initialize `self.treadmill = None`;
-- continue constructing `InputService` during `prepare_session()`;
-- preserve the existing cleanup-on-preparation-failure path;
-- ensure a required logger-start failure rolls back a newly opened shared
-  recording rather than leaving `SharedIoRecorder` active;
-- expose the facade without adding task-specific treadmill polling.
+- retain current `InputService` construction and cleanup ordering;
+- ensure required logger-start failure rolls back a newly opened shared
+  recording;
+- expose the facade without adding automatic task pause/abort behavior;
+- call the nonthrowing treadmill health poll from the existing runtime poll
+  path without changing task state.
+
+The manifest remains the sole BCM13/16 authority. `SharedIoRecorder` ownership
+semantics remain unchanged. Add a recorder rollback mechanism only if the
+tests demonstrate it is required for atomic failure after `started_now=True`.
+Rollback restores ownership flags and closes handles; it need not erase the
+selected directory or failure evidence already written there.
+
+### 5.3 Recording edge cases
+
+Directory existence, artifact opening, and writability are checked during
+facade recording start, after `SharedIoRecorder` selects/creates the directory.
+Static config loading does not validate a future directory.
+
+For `treadmill=false`, create no treadmill artifacts.
+
+For enabled optional acquisition that failed during preparation, recording
+creates header-only state, failed metadata, and diagnostics artifacts and adds
+the failed summary at finalization. If the logger itself cannot create normal
+artifacts, the parent emits an application-log error and may write only the
+clearly incomplete `treadmill_failure.json` fallback.
+
+## 6. Environment and evidence prerequisites
 
-No generic behavior loop automatically pauses or aborts a task. Task code may
-inspect typed policy outcomes when it elects to depend on treadmill state.
+### 6.1 Pi 5 target evidence
 
-### 10.3 Manifest and recorder
+Before adapter code, record from the target Pi 5:
 
-`box_runtime/io_manifest.py` remains authoritative for BCM13/16. The plan does
-not move pin assignments or create a second allocation table.
+- OS release, architecture, Python, kernel, libgpiod, tools, and binding
+  versions;
+- whether the expected Trixie `python3-libgpiod` package provides the binding
+  on the Raspberry Pi OS image;
+- installed Python signatures/event fields and new-request sequence-number
+  convention required by specification Section 9;
+- RP1 gpiochip names, labels, paths, line counts, and BCM13/16 metadata;
+- line permissions and absence of an active owner;
+- actual commands for development tests, hardware tests, verifier execution,
+  and production launch.
 
-`SharedIoRecorder` ownership semantics remain unchanged. A small rollback hook
-may be added only if tests show it is required for atomic failure of a newly
-opened recording. The treadmill subsystem otherwise integrates through the
-existing `started_now` and final-owner stop boundaries.
+Create one tracked `docs/treadmill_validation.md` evidence index in `TW-0` and
+update it through later packages. Large generated artifacts stay outside the
+repository; the index records their paths or durable locations, relevant
+identifiers, commands, dates, and software commits.
 
-### 10.4 Legacy and archive boundary
+The test command must not accidentally hide apt-installed Pi modules. Verify a
+uv-managed environment based on `/usr/bin/python3` with system site packages,
+or document another tested `uv run` approach. Production continues through the
+existing system-Python/apt provisioning path; this project does not introduce a
+repository-wide packaging migration.
 
-Do not modify or import runtime code from:
+### 6.2 Provisional runtime values
 
-```text
-box_runtime/old_hardware/treadmill/
-/home/matt/EinsteinMed Dropbox/Matthew Chin/LabComputerShare/RPi4_behavior_boxes/
-```
+The same initial target work selects conservative positive provisional values
+for:
 
-Those files remain calibration and historical references only.
+- heartbeat interval and failure timeout;
+- startup and shutdown timeout;
+- processing-lag warning threshold.
 
-## 11. Dependencies and Pi 5/Trixie environment
+The actual logger does not exist in `TW-0`, so that package must not build a
+throwaway logger benchmark. Kernel buffer 8192, read batch 256, diagnostic ring
+8192, diagnostic-event queue 256, and logger rate 200 Hz remain implementation
+candidates. `TW-6` compares
+the real logger at 50, 100, and 200 Hz under representative load and selects
+the lowest rate meeting documented behavioral/offline needs. Later physical
+maximum-rate measurements must justify the final buffer and diagnostic-history
+sizes.
 
-### 11.1 Dependency policy
+Before that `TW-6` selection, the user/lab must state the maximum acceptable
+fixed-state sample interval or equivalent offline-analysis requirement. If it
+is still unknown, `TW-6` reports the measurements for all candidates and stops
+for that choice instead of inventing a criterion.
 
-Use:
+`expected_max_transition_rate_hz` remains `null` until physical calibration and
+maximum-speed measurement, then becomes mandatory for production acceptance.
 
-- the existing PyYAML dependency for readable configuration;
-- the official Trixie/libgpiod v2 Python binding for treadmill GPIO;
-- Python standard-library multiprocessing, dataclasses, JSON, CSV/TSV, and
-  timing primitives;
-- pytest for tests.
+### 6.3 Provisioning changes
+
+After the package/API evidence exists:
 
-Do not add SQLite, pandas, HDF5, PyArrow, Numba, Cython, a C extension, or a
-real-time framework for this subsystem.
+- add the confirmed binding package to the Pi 5 Trixie manifest;
+- add module and capability probes to the existing verifier;
+- update the Ansible path only for verified installation/permission needs;
+- write provisioning tests before these changes.
+
+Do not add Pi 4 manifests or refactor provisioning for hypothetical reuse.
 
-The rest of BehavBox continues using gpiozero and rpi-lgpio. Do not remove or
-replace those dependencies as part of treadmill work.
+### 6.4 Dependencies and contracts
 
-### 11.2 Target verification before adapter code
+The only new runtime dependency is the target's official `python3-libgpiod`
+binding. Reuse the already provisioned `python3-yaml`; use the standard library
+for multiprocessing, dataclasses, TSV/JSON, timing, and bounded collections.
+Tests use the existing pytest path. Do not add another GPIO, serialization, IPC,
+or scientific package for this work without a separately reviewed need.
+
+Every new function/method documents input and return types, physical units,
+optional/error semantics, side effects, and lifecycle constraints. Array-shape
+contracts are not applicable unless a later approved utility introduces array
+inputs.
 
-The first environment task must inspect the target Pi 5 and record:
+## 7. Eight work packages and gates
 
-- exact Trixie release and architecture;
-- Python version;
-- kernel version;
-- installed libgpiod library, command-line tools, and Python-binding versions;
-- the Trixie apt package providing the official Python binding;
-- actual Python method signatures and event fields;
-- RP1 gpiochip names, labels, paths, line counts, and BCM13/16 line metadata;
-- permissions required to request those lines.
+Detailed required tests come from specification Section 18. Each software
+package uses separate tests-only RED and implementation GREEN assignments and
+commits. A RED result must fail for the intended missing behavior rather than a
+broken test environment.
 
-Verify the API against official documentation and installed package source.
-Do not write an adapter around an assumed package name or remembered signature.
+### `TW-0`: Pi 5 environment, timing, and provisioning
 
-After verification:
-
-- add the confirmed runtime package to
-  `environment/rpi5_trixie_manifest.json`;
-- add a gpiod module/capability probe to the existing verifier;
-- update the Pi 5 Ansible path if installation or group configuration is
-  required;
-- add tests for those manifest/verifier changes first.
-
-This work does not introduce Pi 4 manifests or generalize the provisioning
-framework. Shared Pi 4/Pi 5 helpers may be considered only in a later,
-separately approved compatibility effort.
+Scope:
 
-### 11.3 Python command policy
-
-Use `uv run` for local Python and pytest commands as required by repository
-policy. Do not turn this work into a repository-wide `pyproject.toml` or
-lockfile migration. Pi hardware packages may remain managed through the
-existing Trixie apt provisioning path.
-
-## 12. Tests written before implementation
-
-Each implementation work package follows RED -> GREEN -> REFACTOR. Tests are
-committed before implementation in a separate commit. The RED result must fail
-for the intended missing behavior, not because of syntax, import, fixture, or
-environment mistakes.
-
-### 12.1 Configuration and state tests
-
-Write tests for:
-
-- exact YAML defaults and units;
-- session override precedence;
-- absence of pins from YAML;
-- manifest-supplied distinct BCM13/16;
-- invalid profile, calibration, sign, bias, rates, buffers, timeouts, and
-  policies;
-- unverified calibration warning/metadata and allowed `DEGRADED` state;
-- immutable state and shared-layout conversions;
-- effective health and typed policy outcomes.
-
-### 12.2 Decoder and diagnostics tests
-
-Write tests for:
-
-- forward/reverse complete cycles and partial cycles;
-- all four initial A/B states;
-- long motion and immediate/repeated reversals;
-- seeded randomized valid traces;
-- exact net and absolute transition totals;
-- modern and legacy calibration conversions;
-- locomotion sign and animal-forward public sign;
-- stationary/moving/repeated zeroing;
-- first-edge speed, known speed, timeout, and reversal;
-- global/per-line gaps, duplicate edges, two-bit jumps, malformed events,
-  timestamp regression, and out-of-order sequence values;
-- declared failure-matrix behavior and latched integrity;
-- bounded recent-event ring and lag aggregates.
-
-### 12.3 GPIO backend tests
-
-Using fake binding objects and synthetic chip inventories, test:
-
-- every required libgpiod capability;
-- Pi 5 RP1 resolution across different gpiochip numbering;
-- missing, ambiguous, claimed, and out-of-range lines;
-- a joint request with both edges, pull-up, zero debounce, monotonic clock, and
-  configured kernel buffer;
-- exact event adaptation and ordering;
-- multi-batch draining;
-- events injected at every synchronization boundary;
-- cleanup after partial startup failure.
-
-The marked hardware smoke test then confirms actual capabilities and event
-fields on the target Pi 5.
-
-### 12.4 Shared-state and lifecycle tests
-
-Write tests proving:
-
-- no torn snapshots under concurrent publication;
-- a stalled reader cannot block acquisition;
-- both slots unavailable causes a diagnosed skip;
-- startup waits for an allowed state and preserves staged error context;
-- heartbeat updates without motion;
-- stale heartbeat and worker death become `FAILED`;
-- matched zero acknowledgements and bounded queue failure;
-- graceful draining, final publication, and idempotent close;
-- forced cleanup is bounded and diagnosed;
-- logger-only degradation and integrity failure remain distinct.
+- collect plan Section 6 target/API evidence without production treadmill code;
+- select provisional runtime values and record, but do not benchmark, the
+  initial logger-rate candidate;
+- add tests, then update Pi 5 provisioning/verifier files;
+- verify the resulting environment on the target Pi.
+
+Exit gate: official v2 capabilities, RP1 mapping, test/production commands, and
+required provisional values are documented and reproducible.
 
-### 12.5 Recording tests
+### `TW-1`: Configuration, state, and pure decoder
+
+Scope:
 
-Using deterministic clocks and temporary directories, test:
+- tests for specification Sections 7, 8, 10, and decoder-owned Section 11
+  behavior, plus the immutable state contract in Section 13.1 and pure
+  timeout/health materialization rules from Section 14;
+- implement defaults/config validation, public optional-value semantics,
+  effective direction/speed timeout, x4 decoding, zeroing, integrity matrix,
+  decoder counters, and bounded recent decoder history;
+- no GPIO or multiprocessing dependency.
 
-- 200 Hz deadline scheduling;
-- real timestamps and no catch-up duplicates;
-- stable/versioned TSV and JSON schemas;
-- monotonic/UTC fields and timebase anchors;
-- bounded buffering and periodic flush;
-- complete orderly shutdown and useful partial output where practical;
-- metadata, diagnostics, summary, and calibration warning content;
-- reconstructable failure-ring dumps;
-- optional raw-edge mode;
-- logger failure never blocks acquisition and reaches the application log;
-- repeated close does not overwrite a completed recording.
+Exit gate: exhaustive and seeded randomized traces are exact; initial/timeout
+state is unambiguous; memory is bounded; pure tests pass off-Pi.
+
+### `TW-2`: Pi 5 GPIO backend
+
+Scope:
 
-### 12.6 Modern integration tests
+- fake-binding and synthetic-inventory tests first;
+- off-Pi treadmill-package imports remain independent of `gpiod`;
+- verified v2 capability checks, dynamic RP1 resolution, joint line request,
+  initial synchronization, ordered batching, and partial-startup cleanup;
+- marked Pi smoke test after fake tests pass.
+
+Exit gate: ambiguity/ownership failures close safely, and target hardware
+observes both edge types, kernel timestamps, and sequence fields on BCM13/16.
 
-Update/add tests proving:
+### `TW-3`: Shared state, acquisition, and public facade
 
-- `treadmill=false` creates no runtime, claims no BCM13/16, and creates no
-  treadmill artifacts;
-- enabled head-fixed sessions use manifest BCM13/16 and expose
-  `box.treadmill`;
-- enabled freely-moving configuration fails before claims;
-- `box.treadmill_encoder` is not the modern API;
-- required startup failure aborts preparation;
-- optional startup failure remains visible and inspectable;
-- first recording owner starts/zeros once;
-- another owner does not restart or re-zero;
-- final owner stops/finalizes recording;
-- required logger-start failure rolls back a newly opened recording;
-- acquisition remains live between recording stop and runtime close;
-- all unaffected input/output/recording tests still pass.
+Scope:
 
-### 12.7 Volume, stress, and hardware tests
+- concurrency/lifecycle tests first;
+- treadmill-specific double-slot state, shared effective-state materialization,
+  treadmill-local spawn context, acquisition process, heartbeat, lag,
+  `ZERO`/`STOP`, and facade lifecycle without changing the application's global
+  multiprocessing method;
+- bounded pre-recording diagnostic retention and nonblocking diagnostic
+  delivery/drop accounting;
+- process/facade behavior from specification Sections 13.2 and 14, excluding
+  logger-specific and BehavBox integration cases owned by later packages;
+- explicit spawn, worker-death, and stalled-reader tests.
 
-Write or prepare tests/utilities for:
+Exit gate: readers see no torn state, cannot block acquisition, and worker
+death cannot appear as healthy stationary data. Start, snapshot, zero, and
+close operations are bounded, and close is idempotent as specified.
 
-- millions of seeded transitions with exact generated/decoded totals;
-- the real process architecture under CPU, disk, camera-like, GUI-like,
-  console, network-like, and sleep load;
-- injected gaps, worker death, and logger death;
-- recorded CPU, memory, event throughput, lag, publication skips, backlog, and
-  storage MB/hour;
-- external deterministic quadrature rate sweeps;
-- physical calibration, direction, reversal, start/stop, and soak acceptance.
+### `TW-4`: Logger and recording artifacts
 
-## 13. Implementation phases and work packages
+Scope:
 
-### Phase 0: target evidence and dependency path
+- deterministic scheduler/schema/failure tests first;
+- logger process and all specification Section 16 artifacts;
+- active-logger contributions to effective health from specification Section
+  14;
+- header-only failed-acquisition recording, heartbeat-aware health samples,
+  pre-recording diagnostic handoff, bounded flush, best-effort handled-failure
+  ring dump, and fallback failure record.
 
-#### `TW-0A` Pi 5/Trixie gpiod inventory
+Exit gate: artifacts are versioned, bounded, incremental, and distinguish
+disabled, failed, degraded, and successful acquisition. Logger failure cannot
+block acquisition; facade recording start/stop is bounded, and an
+unacknowledged origin never produces samples.
 
-- Read-only inspection of the target Pi 5.
-- Record the exact package/API/controller evidence from Section 11.2.
-- Confirm BCM13/16 wiring availability and no active owner.
-- No production adapter code.
+### `TW-5`: Modern BehavBox integration
 
-#### `TW-0B` Provisioning RED/GREEN
+Scope:
 
-- Tests first for the new manifest dependency and verifier capability probe.
-- Update only the Pi 5/Trixie provisioning files and related tests.
-- Run the existing provisioning tests and the verifier on the Pi.
+- authoritative flag/profile/ownership tests first;
+- disabled BehavBox sessions remain independent of `gpiod`;
+- localized `InputService` replacement, `box.treadmill`, shared-recording
+  delegation/rollback, rejection of retired enabled-session treadmill keys,
+  and deletion of old sampler/encoder exposure;
+- required/optional preparation and shared-recording outcomes from
+  specification Sections 14 and 15;
+- complete non-hardware regression suite.
 
-Phase exit: the official binding and required API are proven on the target Pi,
-and the existing provisioning path installs/verifies them reproducibly.
+Exit gate: disabled sessions create no treadmill resources, freely-moving poke
+claims remain intact, shared owners start/zero/finalize exactly once,
+acquisition outlives recording, and unrelated runtime behavior is unchanged.
 
-### Phase 1: configuration, state, decoder, and diagnostics
+### `TW-6`: Synthetic and full-process validation
 
-#### `TW-1A` Configuration and public-state RED/GREEN
+Scope:
 
-- Add tests from Section 12.1.
-- Implement `defaults.yaml`, `config.py`, and `state.py` only.
+- millions-event seeded validation;
+- real acquisition/shared-state/logger processes under representative CPU,
+  disk, camera-like, GUI-like, console, and scheduling load;
+- worker/logger failure injection and saved resource/storage metrics;
+- actual logger comparison at 50, 100, and 200 Hz with selection of the lowest
+  rate that meets the documented timing and offline-analysis need;
+- profile before any optimization.
 
-#### `TW-1B` Nominal decoder RED/GREEN
+If the selected rate differs from the implemented candidate, reopen `TW-1` for
+the tests-first default/config change, then rerun affected logger, integration,
+and stress gates. Apply the same feedback rule in `TW-7` for measured
+buffer/ring settings; rig-specific calibration and maximum rate remain explicit
+rig/session configuration rather than an unjustified global default.
 
-- Add nominal x4, position, distance, speed, direction, and zero tests.
-- Implement the deterministic core in `decoder.py`.
+Exit gate: generated and decoded totals are exact, integrity is valid, gaps are
+zero unless deliberately injected, memory remains bounded, and artifacts are
+interpretable.
 
-#### `TW-1C` Integrity and diagnostics RED/GREEN
+### `TW-7`: Calibration, hardware acceptance, and documentation
 
-- Add the complete failure matrix and bounded diagnostic tests.
-- Implement integrity rules and `diagnostics.py`.
+Scope:
 
-Phase exit: all pure tests pass without GPIO or multiprocessing; randomized
-totals are exact; memory remains bounded.
+- tested calibration/sign/rate utility;
+- user/lab physical calibration and electrical record;
+- expected maximum transition rate and accepted buffer/ring/logger settings;
+- external generator sweep through 2x expected rate;
+- actual behavior stack and required soak;
+- setup, operation, health, artifact, recovery, and migration documentation;
+- completed `docs/treadmill_validation.md` evidence index.
 
-### Phase 2: Pi 5 GPIO backend
+Exit gate: every specification Section 21 checklist item has saved evidence.
+Pi 4 support remains deferred.
 
-#### `TW-2A` Capability and RP1 resolution RED/GREEN
+If stress, calibration, or hardware acceptance exposes a software defect or an
+invalid earlier assumption, reopen the responsible `TW-*` package, add a
+tests-only RED commit, make the bounded correction, and repeat every affected
+downstream gate. Acceptance work must not patch runtime code ad hoc.
 
-- Add fake-binding and synthetic-inventory tests.
-- Implement verified v2 capability checks and dynamic RP1 resolution.
+## 8. Sol coordinator and Terra worker protocol
 
-#### `TW-2B` Request, synchronization, and batching RED/GREEN
+The Sol/Terra model is intentional.
 
-- Add request-shape, boundary-race, event-adaptation, and drain tests.
-- Implement joint line ownership, synchronization, batched reads, and cleanup.
+Sol:
 
-Phase exit: fake tests pass and the marked Pi smoke test observes both edge
-types, kernel timestamps, and sequence fields on BCM13/16.
-
-### Phase 3: shared state, acquisition, and facade
-
-#### `TW-3A` Shared-state RED/GREEN
-
-- Add coherence, stalled-reader, timeout, and publication-skip tests.
-- Implement `shared_state.py`.
-
-#### `TW-3B` Acquisition lifecycle RED/GREEN
-
-- Add spawn/startup/heartbeat/control/death/shutdown tests.
-- Implement `acquisition.py`.
-
-#### `TW-3C` Public runtime RED/GREEN
-
-- Add facade, effective-health, and policy tests.
-- Implement `runtime.py` and intentional exports.
-
-Phase exit: start/snapshot/zero/health/stop/close are bounded and deterministic;
-worker death is detected; readers cannot block acquisition.
-
-### Phase 4: recording and artifacts
-
-#### `TW-4A` Artifact writers RED/GREEN
-
-- Add schema, metadata, diagnostic, summary, and bounded-flush tests.
-- Implement pure/versioned TSV and JSON writing primitives.
-
-#### `TW-4B` Logger process RED/GREEN
-
-- Add deterministic scheduling, lateness, process, and failure tests.
-- Implement the independent logger process in `recording.py`.
-
-#### `TW-4C` Failure dump and fallback RED/GREEN
-
-- Add ring-dump, raw-debug, and failed-logger application-log tests.
-- Complete diagnostic/fallback integration without adding acquisition I/O.
-
-Phase exit: artifacts are versioned, incremental, bounded, and recoverable
-enough for interrupted experimental use; logger failure never blocks edges.
-
-### Phase 5: modern BehavBox integration
-
-#### `TW-5A` InputService enablement RED/GREEN
-
-- Add authoritative flag/profile/manifest/public-facade tests.
-- Replace only the treadmill-specific construction and close path.
-
-#### `TW-5B` Shared recording lifecycle RED/GREEN
-
-- Add first-owner/join/final-owner/rollback/liveness tests.
-- Replace the old sampler hooks with facade recording delegation.
-
-#### `TW-5C` Regression and API cleanup
-
-- Remove old treadmill sampler code and `treadmill_encoder` exposure.
-- Run focused integration tests and the complete non-hardware suite.
-- Review the diff to confirm unrelated InputService behavior is unchanged.
-
-Phase exit: `box.treadmill` is the only modern public treadmill boundary;
-disabled sessions claim nothing; shared ownership is preserved; regressions
-pass.
-
-### Phase 6: synthetic performance and full-process stress
-
-#### `TW-6A` High-volume deterministic validation
-
-- Run millions-event traces with saved seed/config/version evidence.
-- Measure throughput, memory, and lag before optimizing.
-
-#### `TW-6B` Representative process stress
-
-- Exercise acquisition, shared state, logger, and BehavBox-like load together.
-- Require exact totals, zero unexplained gaps, valid integrity, bounded memory,
-  and interpretable artifacts.
-
-Phase exit: synthetic acceptance passes with documented resource and storage
-results on Pi 5.
-
-### Phase 7: calibration, hardware acceptance, and documentation
-
-#### `TW-7A` Calibration/diagnostic utility
-
-- Implement only after the runtime contracts are stable and tests are written.
-- Guide measured-distance calibration, locomotion sign, electrical facts, and
-  expected maximum transition-rate calculation.
-
-#### `TW-7B` Rate sweep and full-stack soak
-
-- Use an external deterministic quadrature source.
-- Test 0.25x, 0.5x, 1x, and 2x expected maximum rate under representative load.
-- Run the actual behavior stack and the required soak duration.
-
-#### `TW-7C` Documentation and final acceptance
-
-- Document setup, configuration, calibration, operation, health, artifact
-  interpretation, recovery, rate tests, and the legacy calibration comparison.
-- Complete the production checklist with saved evidence.
-
-Phase exit: calibration is verified for the rig, 2x rate acceptance and the
-soak pass, and another lab member can operate and interpret the system.
-
-## 14. Sol coordinator and Terra worker protocol
-
-The orchestration model is intentional but kept compact.
-
-### 14.1 Sol coordinator responsibilities
-
-The Sol coordinator:
-
-1. confirms prerequisites and user approval;
-2. assigns one bounded `TW-*` activity with explicit editable files;
-3. reviews every worker diff and reproduces required commands;
+1. confirms user authorization, prerequisites, and editable files;
+2. assigns one bounded RED or GREEN activity;
+3. reviews diffs and reproduces commands;
 4. commits tests before authorizing implementation;
-5. prevents overlapping edits and integrates completed packages;
-6. updates Section 20 after every RED, GREEN, blocker, or phase transition.
+5. prevents overlapping edits and updates Section 11;
+6. owns architecture, integration, user communication, and package gates.
 
-Sol remains responsible for architecture, public-interface decisions, user
-communication, repository-wide regression review, and final acceptance. A
-Terra report is not proof until Sol checks the repository and evidence.
+Each Terra assignment states its package, objective, prerequisite commit,
+editable files, preserved contracts, required commands, and handoff evidence.
+A RED assignment changes tests only. After Sol review and a tests-only commit, a
+separate GREEN assignment implements the approved behavior. The same worker may
+perform both turns.
 
-### 14.2 Terra worker responsibilities
+Terra stops on unexpected worktree changes, unsupported APIs, ambiguous
+requirements, or a needed public-interface change. Hardware observations must
+come from saved target evidence. Parallel workers are allowed only for complete
+prerequisites and disjoint edit ownership. Sol alone edits the ledger.
 
-Each Terra assignment states:
+## 9. Performance and acceptance discipline
 
-- package ID and objective;
-- prerequisite commits/evidence;
-- files allowed for inspection and files allowed for editing;
-- contracts that must remain unchanged;
-- RED tests or GREEN implementation scope;
-- required focused/regression commands;
-- performance/boundedness constraints;
-- expected handoff evidence.
+Correctness and observability precede optimization. Preserve these invariants:
 
-A RED assignment writes tests only and demonstrates the intended failure. After
-Sol review and a tests-only commit, a GREEN assignment implements only enough
-to satisfy the approved tests and specification, then refactors with tests
-passing. The same Terra worker may perform both assignments, but only as two
-separately authorized turns.
+- acquisition performs no normal disk, network, GUI, console, or behavior work;
+- all queues, buffers, histories, and control processing are bounded;
+- sequence continuity and exact generated/decoded displacement determine
+  correctness;
+- behavior and logger readers cannot block acquisition;
+- logger lateness is measured rather than hidden by duplicate catch-up rows;
+- CPU, memory, lag, publication skips, backlog, and MB/hour are recorded.
 
-Terra workers stop and report a blocker on unexpected worktree changes,
-unsupported library behavior, ambiguous requirements, or a needed public API
-change. They do not invent hardware observations.
-
-Parallel Terra tasks are allowed only when dependencies are complete and edit
-ownership is disjoint. The ledger is edited by Sol to avoid conflicts.
-
-## 15. Performance strategy
-
-Correctness and observability precede optimization.
-
-Initial choices:
-
-- dedicated acquisition and logger interpreters;
-- one joint A/B request;
-- batch event reads;
-- integer transition accumulation;
-- explicit-width shared fields;
-- publication after batches/heartbeat deadlines rather than per-edge public
-  object creation;
-- bounded queues, buffers, rings, and histograms;
-- buffered fixed-rate state logging;
-- no normal raw-edge disk stream.
-
-Measure:
-
-- decoded transitions per second;
-- latest/maximum/aggregate processing lag;
-- sequence continuity and exact displacement;
-- publication skips and reader retry behavior;
-- logger late/missed samples;
-- CPU and memory by process;
-- kernel buffer headroom and backlog;
-- artifact storage MB/hour.
-
-If acceptance fails, tune in this order:
+Tune only after representative profiling, in this order:
 
 1. remove blocking work and unnecessary allocation;
-2. improve batch draining;
-3. size the kernel buffer and read batch from evidence;
-4. reduce publication frequency/cost without hiding state;
-5. improve logger buffering;
-6. profile again;
-7. request approval before affinity, priority changes, C extensions, Cython, or
+2. improve batch draining and measured buffer sizes;
+3. reduce publication/logger cost without hiding state;
+4. profile again;
+5. request approval before affinity, priority changes, C/Cython/Numba, or
    another major optimization.
 
-## 16. Calibration and hardware acceptance
+Production acceptance requires specification Sections 19 and 21, including
+verified calibration/sign, independent 2x-rate generation, full-stack behavior,
+and a soak of `max(2 hours, 1.5 * longest expected session)`.
 
-Framework development may proceed with `calibration_verified=false`. Every
-startup and recording must make that state prominent.
+## 10. Deferred scope and known required facts
 
-After the framework is runnable, the user/lab must:
+Deferred:
 
-1. record encoder model, output type/voltage, external pulls, wiring, and roller
-   dimensions;
-2. move through a measured distance over multiple rotations;
-3. calculate `mm_per_encoder_cycle` from decoded cycles/transitions;
-4. repeat in both directions and assess slip/asymmetry;
-5. set `locomotion_sign` from animal-forward motion;
-6. record rig, date, method, operator, and result;
-7. set `calibration_verified=true` only after review;
-8. measure maximum plausible speed and calculate expected transition rate.
+- Raspberry Pi 4B, Bookworm, and older Python support;
+- task-specific movement thresholds or filtering;
+- automatic task pause/resume/abort wiring and unused policy states;
+- alternative persistence formats;
+- reusable concurrency frameworks;
+- unmeasured low-level optimization.
 
-Production rate acceptance uses an independent deterministic quadrature source.
-At 2x expected maximum rate under representative behavior load:
+Required before the corresponding gate:
 
-```text
-generated signed transitions == decoded signed transitions
-generated absolute total      == decoded absolute total
-global sequence gaps          == 0
-unexplained per-line gaps      == 0
-event inconsistencies         == 0
-integrity_valid               == true
-```
-
-The soak duration is `max(2 hours, 1.5 * longest expected session)` after the
-lab records the expected session length.
-
-## 17. Documentation deliverables
-
-Before production acceptance, documentation must cover:
-
-- Pi 5/Trixie package installation and verification;
-- wiring and electrical safety;
-- YAML fields, units, precedence, and examples;
-- modern and legacy calibration values;
-- the mandatory physical calibration procedure;
-- `box.treadmill` task-facing examples;
-- health, integrity, and failure-policy interpretation;
-- artifact schemas and timebase alignment;
-- rate-sweep, full-stack, and soak procedures;
-- interrupted recording and logger/acquisition failure interpretation;
-- explicit statement that Pi 4B is not yet supported.
-
-## 18. Risks and deferred facts
-
-These facts do not block pure-software phases but do block production
-acceptance when indicated:
-
-| Item | When required |
+| Fact | Required before |
 |---|---|
-| Exact Trixie gpiod package/API/version | Before GPIO adapter implementation |
-| RP1 gpiochip metadata and line permissions | Before GPIO adapter implementation |
-| Encoder voltage/output stage and external pulls | Before physical connection/acceptance |
-| Verified calibration and locomotion sign | Before production acceptance |
-| Maximum plausible treadmill speed/rate | Before buffer acceptance and rate sweep |
-| Longest expected session | Before final soak |
-| Heartbeat, lag, startup, and shutdown defaults | Before production acceptance, from Pi 5 measurements |
+| Exact gpiod package/API/RP1 mapping and permissions | `TW-2` implementation |
+| Provisional heartbeat/lag/startup/shutdown values | `TW-1` config implementation |
+| Encoder electrical facts | Physical connection/acceptance |
+| Verified calibration and locomotion sign | Production acceptance |
+| Maximum plausible speed/rate | Final buffer sizing and rate sweep |
+| Maximum acceptable fixed-state sample interval/offline need | `TW-6` logger-rate selection |
+| Longest expected session | Final soak |
 
-Deferred work:
+## 11. Living execution ledger
 
-- Raspberry Pi 4B support;
-- Bookworm or older Python support;
-- task-specific movement thresholds/filtering;
-- automatic task pause/resume wiring;
-- alternative storage formats;
-- low-level optimization without profiling evidence.
+Allowed states are `NOT STARTED`, `IN PROGRESS`, `BLOCKED`, and `COMPLETE`.
+Sol updates this section before assignment and after every RED, GREEN, blocker,
+or gate decision.
 
-## 19. Production acceptance checklist
+### 11.1 Package summary
 
-- [ ] Pi 5/Trixie/Python 3.13 target and official gpiod v2 API verified.
-- [ ] BCM13/16 resolve to the RP1 header controller without conflict.
-- [ ] Electrical interface is safe for Pi GPIO.
-- [ ] Physical calibration and locomotion sign are recorded for the rig.
-- [ ] Both channels and both edge types are observed.
-- [ ] Kernel timestamps drive speed.
-- [ ] Pure decoder and failure-matrix tests pass exactly.
-- [ ] Sequence loss and ambiguous trajectory loss latch integrity false.
-- [ ] Worker death cannot appear as stationary healthy data.
-- [ ] Behavior/logger readers cannot block acquisition.
-- [ ] Disabled and freely-moving profile behavior is correct.
-- [ ] Shared recording ownership starts/zeros/finalizes exactly once.
-- [ ] TSV/JSON artifacts are versioned, bounded, incremental, and interpretable.
-- [ ] Millions-event synthetic tests are exact with bounded memory.
-- [ ] Full process stress is exact under representative load.
-- [ ] External hardware source passes at 2x expected transition rate.
-- [ ] Direction, reversal, start/stop, and zero behavior pass physically.
-- [ ] Full-stack soak passes with stable resources and no loss/backlog.
-- [ ] Documentation is usable by another lab member.
-
-## 20. Living execution ledger
-
-Allowed statuses are `NOT STARTED`, `IN PROGRESS`, `BLOCKED`, and `COMPLETE`.
-Sol updates the ledger before assignment and after every meaningful transition.
-
-### 20.1 Phase summary
-
-| Phase | Status | Evidence | Next gate |
+| Package | Status | Evidence/commit | Next gate |
 |---|---|---|---|
-| 0 - Pi 5 environment | `NOT STARTED` | None | Plan approval and target access |
-| 1 - Pure core | `NOT STARTED` | None | Phase 0 API facts available where relevant |
-| 2 - GPIO backend | `NOT STARTED` | None | `TW-0A/0B` and Phase 1 contracts complete |
-| 3 - Processes/facade | `NOT STARTED` | None | Decoder and shared-state prerequisites complete |
-| 4 - Recording | `NOT STARTED` | None | Public state/process contracts stable |
-| 5 - BehavBox integration | `NOT STARTED` | None | Facade and logger complete |
-| 6 - Stress | `NOT STARTED` | None | Integrated non-hardware system complete |
-| 7 - Hardware acceptance/docs | `NOT STARTED` | None | Stress accepted and hardware available |
+| `TW-0` Environment/provisioning | `NOT STARTED` | None | Separate user authorization |
+| `TW-1` Pure core | `NOT STARTED` | None | `TW-0` provisional config evidence |
+| `TW-2` GPIO backend | `NOT STARTED` | None | `TW-0` API evidence and `TW-1` event contract |
+| `TW-3` Processes/facade | `NOT STARTED` | None | `TW-1` core and required `TW-2` fake boundary |
+| `TW-4` Recording | `NOT STARTED` | None | `TW-3` public/shared-state contract |
+| `TW-5` Integration | `NOT STARTED` | None | `TW-3` and `TW-4` complete |
+| `TW-6` Stress | `NOT STARTED` | None | Integrated non-hardware system complete |
+| `TW-7` Hardware/docs | `NOT STARTED` | None | `TW-6` accepted and hardware available |
 
-### 20.2 Work-package record template
+### 11.2 Work record template
 
 ```markdown
 #### TW-<id>: <name>
@@ -1109,32 +559,28 @@ Sol updates the ledger before assignment and after every meaningful transition.
 - Sol coordinator/date/chat:
 - Terra worker/assignment:
 - Starting branch and commit:
-- Prerequisites checked:
+- Prerequisites and user authorization:
 - Editable files:
-- Tests and RED command/result:
-- Tests-only commit:
-- Implementation files:
-- GREEN and regression command/result:
-- Performance/hardware evidence:
-- Implementation commit:
+- RED tests, command, result, and commit:
+- GREEN files, command, result, and commit:
+- Regression/performance/hardware evidence:
 - Decisions, deviations, or blockers:
-- Working-tree state:
-- Exact next action:
+- Working-tree state and exact next action:
 ```
 
 Do not record "tests pass" without the command and summarized result. Do not
-record a package complete without commit IDs or an explicit statement that the
-work remains uncommitted. Hardware evidence identifies the Pi/rig, wiring,
+mark a package complete without commit IDs or an explicit statement that work
+remains uncommitted. Hardware evidence identifies the Pi/rig, wiring,
 generator, configuration, duration, software commit, and artifact paths.
 
-### 20.3 Current handoff
+### 11.3 Current handoff
 
-- Documentation rewrite only; no treadmill runtime implementation has started.
+- Documentation only; no implementation is authorized or in progress.
 - Pi 5/Trixie/Python 3.13 is the sole initial target.
-- `box.treadmill` is the approved public facade.
-- BCM13/16 remain manifest-owned.
-- TSV/JSON artifacts and modern nominal calibration are approved.
-- Sol/Terra execution is intentional and defined in Section 14.
-- Raspberry Pi 4B is explicitly deferred.
-- Exact next action: user reviews and approves this rewritten implementation
-  plan before Sol assigns `TW-0A` or any tests/implementation activity.
+- `box.treadmill`, manifest BCM13/16, TSV/JSON artifacts, separate acquisition
+  and logger processes, double-slot state, and Sol/Terra execution are approved
+  documentation decisions.
+- Timing values, logger rate, buffer sizing, gpiod API, calibration, and hardware
+  facts require the evidence assigned above.
+- Exact next action: user reviews the documentation. Any implementation requires
+  a separate future instruction.
