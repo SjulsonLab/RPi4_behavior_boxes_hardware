@@ -50,7 +50,8 @@ Importing BehavBox or the treadmill package on an off-Pi development host, and
 running with `treadmill=false`, must not require `gpiod`, inspect gpiochips, or
 start treadmill resources. The binding is loaded/probed only behind the enabled
 hardware-backend boundary; pure and fake-backend tests remain importable without
-it.
+it. Here, fake-backend means injected test doubles for the libgpiod boundary,
+not an enabled runtime treadmill simulator.
 
 ## 3. Existing systems and migration references
 
@@ -170,7 +171,11 @@ The baseline must not require:
 - a real-time Linux kernel;
 - root-only real-time scheduling;
 - CPU affinity;
-- a C extension, Cython, Numba, or another premature optimization.
+- a C extension, Cython, Numba, or another premature optimization;
+- reader generations, leases, abandoned-thread recovery, or another parent
+  concurrency layer beyond the lifecycle `RLock`;
+- a second parent diagnostic buffer, competing live consumer, or exact-once
+  recovery protocol for an already failed logger.
 
 ## 5. Modern integration boundary
 
@@ -200,9 +205,10 @@ repository must remain unchanged.
 
 ### 5.2 Required eventual changes to InputService
 
-The final `InputService` change must be localized to its treadmill-specific
-sections. It must not redesign lick, poke, trigger, profile, or general IO
-recording behavior.
+The final `InputService` change must be localized to its treadmill and shared-
+recording lifecycle integration. It must not redesign lick, poke, trigger,
+profile, or general IO recording behavior beyond the close gate required
+below.
 
 The expected changes are:
 
@@ -220,8 +226,11 @@ The expected changes are:
 7. Expose the facade as `BehavBox.treadmill` for task code. This attribute is
    `None` when treadmill acquisition is disabled and is not an alias for the
    former low-level `treadmill_encoder` object.
-8. During `InputService.close()`, close the treadmill facade idempotently.
-9. Remove the existing treadmill-only sampler thread, step-difference speed
+8. Route shared-recording ownership transitions through the Section 10.6
+   recording/zero/close guard, including when treadmill is disabled.
+9. During `InputService.close()`, set the close gate, clean the shared recorder,
+   and close the treadmill facade idempotently under that guard.
+10. Remove the existing treadmill-only sampler thread, step-difference speed
    calculation, and direct treadmill TSV handle after the replacement is
    accepted.
 
@@ -251,6 +260,61 @@ Resolve and validate this combination before BCM13 or BCM16 is claimed as a
 treadmill or poke input. Other services may already own their disjoint lines;
 the existing preparation cleanup path releases them on failure. No two devices
 or libraries may claim the same GPIO line.
+
+### 5.4 Real and mock execution
+
+The initial enabled treadmill runtime targets the real Pi 5/libgpiod path only.
+It does not preserve the current mock `RotaryEncoder` as a second runtime
+backend. Synthetic edge sources remain test and explicit diagnostic inputs;
+they are not selected silently from production session configuration.
+
+The head-fixed hardware-stress configuration must therefore be mode-aware:
+
+- on an identified real Pi 5, default to real-hardware mode and set
+  `treadmill = true`, `treadmill_required = true`, and
+  `continuous_logger_required = true` so a full-stack acceptance run cannot
+  pass without acquisition and artifacts;
+- on a known non-ARM host, or when a valid true `BEHAVBOX_FORCE_MOCK` value was
+  set before process imports, select mock mode, set `treadmill = false`, and
+  omit treadmill artifacts rather than pretending to exercise the hardware
+  path;
+- on another Raspberry Pi model, fail with an unsupported-platform error unless
+  mock mode was explicitly forced. Pi 4B is not silently treated as either an
+  accepted Pi 5 treadmill host or an off-Pi development host. Perform this
+  validation before creating output directories, changing display-service
+  state, starting the mock server, or constructing BehavBox.
+
+The process-wide real/mock choice is made once near the start of
+`box_runtime.behavior.gpio_backend`, before that module conditionally imports
+the real or mock GPIO classes. `BEHAVBOX_FORCE_MOCK` must therefore already be
+set when the first transitive import of that module occurs. Unset means no
+override. If set, case-insensitive `1`, `true`, `yes`, and `on` mean true;
+`0`, `false`, `no`, and `off` mean false. An empty or any other value is a
+configuration error rather than false.
+
+Host detection produces one explicit immutable result: known non-ARM host,
+identified Raspberry Pi 5, identified unsupported Raspberry Pi, or unknown ARM
+host. On ARM, unreadable, empty, malformed, or unrecognized device-tree model
+data yields unknown rather than off-Pi. A valid true force-mock override selects
+mock mode for any host. Without a valid true override, hardware-stress selects
+mock only on a known non-ARM host, selects real hardware only on an identified
+Pi 5, and fails on unsupported or unknown ARM hardware. Both stress entrypoints
+consume these same process facts for session configuration and mock-server
+startup; they must not set or clear `BEHAVBOX_FORCE_MOCK` afterward. No
+separate real-hardware flag is required: an identified Pi 5 defaults to real
+mode, and valid force-mock is the explicit override.
+
+This strict eligibility rule is specific to the Pi 5 treadmill hardware-stress
+path. Exposing the shared host classification must not by itself remove any
+existing non-stress GPIO support for another identified Raspberry Pi model.
+The display launcher's existing `--dry-run` remains a non-session planning
+path: it may print planned display-service actions before backend selection,
+but must not import/construct hardware, create output, or report hardware
+acceptance.
+
+Any other session which explicitly requests `treadmill = true` without the
+real backend follows the normal required/optional startup rules and must never
+fall back to a simulated or gpiozero encoder.
 
 ## 6. Required architecture
 
@@ -400,11 +464,15 @@ Configuration validation must reject at least:
 - missing or identical A/B manifest pins;
 - a resolved non-head-fixed manifest profile when treadmill acquisition is
   enabled;
-- a `treadmill` value which is not a Boolean;
+- `treadmill`, `calibration_verified`, `treadmill_required`, or
+  `continuous_logger_required` values which are not actual Booleans;
+- a `calibration_source` or `calibration_note` which is not a nonempty string
+  after surrounding whitespace is removed;
 - unknown `treadmill_config` keys;
 - retired top-level treadmill settings in an enabled session;
 - non-finite numeric values, nonpositive calibration/configured
   timeouts/configured rates/buffer sizes, or non-integer count/size fields;
+- a non-integer or nonpositive non-null `processing_lag_warning_ns`;
 - `locomotion_sign` outside `{-1, +1}`;
 - invalid bias or logger-criticality values;
 - a heartbeat failure timeout not greater than its update interval.
@@ -424,6 +492,41 @@ nominal time headroom at that rate and the observed zero-loss margin.
 Recording-directory existence and writability are runtime recording-start
 checks, not static configuration validation, because `SharedIoRecorder`
 selects and creates that directory later.
+
+### 7.3 Internal bounded-operation constants
+
+The following implementation constants are deliberately not user-facing YAML
+settings:
+
+```text
+COHERENT_STATE_READ_TIMEOUT_S
+CONTROL_RESULT_TIMEOUT_S
+LOGGER_START_TIMEOUT_S
+INITIAL_SYNC_QUIET_PERIOD_S
+```
+
+`TW-0` must select positive finite values on the target Pi 5 and record them in
+`docs/treadmill_validation.md` before the tests which depend on them are
+written. Tests may inject shorter values. A coherent-state read may retry only
+within `COHERENT_STATE_READ_TIMEOUT_S`; a control operation includes enqueue,
+direct acknowledgement, and state reconciliation within
+`CONTROL_RESULT_TIMEOUT_S`; and logger startup includes process creation,
+artifact opening, and its ready response within `LOGGER_START_TIMEOUT_S`.
+`CONTROL_RESULT_TIMEOUT_S` must exceed `COHERENT_STATE_READ_TIMEOUT_S`. A zero
+command's worker deadline reserves the final coherent-read interval from the
+overall control deadline:
+
+```text
+worker_deadline = operation_start
+    + CONTROL_RESULT_TIMEOUT_S
+    - COHERENT_STATE_READ_TIMEOUT_S
+```
+
+This leaves a bounded state-reconciliation opportunity after a late or lost
+direct acknowledgement.
+Initial synchronization repeats the quiet-period algorithm until it succeeds
+or the configured `startup_timeout_s` expires; it has no independent unbounded
+retry count.
 
 ## 8. Calibration and units
 
@@ -522,11 +625,14 @@ If a required capability is absent, fail with an actionable error. Do not
 silently fall back to gpiozero, RPi.GPIO, polling, or the archived microcontroller
 path.
 
-Debian 13 currently provides the binding as `python3-libgpiod`; the exact
-Raspberry Pi OS package origin, installed binding/library versions, and Python
-signatures must still be verified from the target Pi and official package
-source before adapter code is written. Provisioning, environment verification,
-and installation docs must then be updated as part of implementation.
+Debian 13 currently provides the binding as `python3-libgpiod`. The `gpiod`
+command-line tools are packaged separately and are a required validation and
+troubleshooting dependency, although the production Python runtime must not
+shell out to them. The exact Raspberry Pi OS package origins, installed
+binding/library/tool versions, and Python signatures must still be verified
+from the target Pi and official package source before adapter code is written.
+Provisioning, environment verification, and installation docs must then be
+updated as part of implementation.
 
 ### 9.2 BCM-to-gpiochip resolution
 
@@ -574,9 +680,9 @@ Before production acceptance, document:
 Acquisition must establish a coherent initial A/B state before reporting
 `READY`. It must account for motion during startup and queued events.
 
-The implementation may use a bounded quiet-period/retry algorithm, but it must
-prove through deterministic tests that an event at any synchronization boundary
-is either:
+Use `INITIAL_SYNC_QUIET_PERIOD_S` for the bounded quiet-period/retry algorithm
+described in Section 7.3. Deterministic tests must prove that an event at any
+synchronization boundary is either:
 
 - included exactly once after the accepted initial state; or
 - explicitly excluded as pre-session startup motion.
@@ -781,16 +887,82 @@ the acquisition layer.
 
 ### 10.6 Zeroing
 
-`zero()` updates offsets in the acquisition process at a defined event boundary
-and returns an acknowledgement containing command identity, timestamp, and
-published state version.
+`zero()` submits an idempotent `ZERO` command with a unique monotonically
+increasing command ID and a worker-visible monotonic deadline. The facade
+allows at most one `ZERO` command in flight. The worker drains already-pending
+edges, resolves the command at that event boundary, and never applies the same
+command ID twice.
 
 Public zeroing requires live acquisition and valid trajectory integrity. It is
-allowed for calibration-only, lag-only, or logger-only degradation when those
-conditions leave acquisition continuity intact. Unavailable or
+allowed for calibration-only or lag-only degradation when those conditions
+leave acquisition continuity intact. Unavailable or
 integrity-invalid acquisition raises a typed health error and does not send or
 apply a zero command. The worker rechecks integrity at the drained event
 boundary so a failure racing the caller's precheck cannot establish an origin.
+
+Public `zero()` is also rejected with a typed lifecycle error while a shared
+recording is active; it does not allocate or enqueue a command. The facade's
+private recording-start sequence may issue the origin zero after logger
+readiness and before the first state sample. Mid-recording zero segmentation is
+not part of the initial artifact schema, so no caller may silently create a
+position discontinuity inside one recording.
+
+`InputService` owns one parent-process `threading.RLock` and one one-way
+close-requested event. Both are injected into the facade but are not exposed
+through `box.treadmill`; neither is shared with the acquisition or logger
+process. Parent-facing `snapshot()`, `health_report()`, `require_healthy()`,
+`zero()`, every shared-recorder ownership transition, and `close()` use this
+same lock. The reentrant form permits a recording transition to call the
+facade's locked internal operations without another concurrency protocol.
+
+Each external operation checks the close event before acquiring the lock and
+again immediately after acquiring it. If close was requested, it follows the
+cached lifecycle behavior below without touching the recorder, control channel,
+diagnostic channel, or treadmill IPC. An operation which already holds the lock
+when close is requested finishes or unwinds within its existing bounded
+operation deadline; internal steps of that admitted operation do not repeat the
+external close check. A genuinely hung parent thread is outside the supported
+operating envelope; no reader-generation or abandoned-thread recovery protocol
+is added.
+
+Public `zero()` holds the lock from its authoritative recording-state check
+through the resolved or timed-out control result. BehavBox delegates each
+shared-recorder ownership transition through `InputService`, which holds the
+same lock. On first-owner start, `InputService` makes the recorder active before
+logger work begins. That state remains true through optional logger/origin
+failure and clears only after a required rollback or final recorder
+finalization. On final-owner stop, the lock remains held through logger and
+shared-recorder finalization.
+
+Joining or leaving an already active multi-owner recording is serialized by the
+same mutex but does not restart or stop the logger. Thus a public zero either
+finishes before a new recording begins or observes the recording state and is
+rejected; it cannot pass a check and apply during recording startup or
+finalization. It is still rejected when optional treadmill failure has stopped
+the logger but the shared recorder remains active. The mutex is a parent-side
+lifecycle guard, not a lock held by the acquisition process. A public zero's
+mutex wait is included in
+`CONTROL_RESULT_TIMEOUT_S` and may wait no later than the already defined
+worker deadline, preserving the final coherent-read interval. Failure to
+acquire it by then raises a typed recording-transition lifecycle error without
+allocating or enqueueing a command.
+
+The coordinated close path sets the close event before acquiring the `RLock`.
+This prevents a waiting operation from entering IPC after the current lock
+owner finishes. Close then holds the lock while it finalizes any active
+recording, closes the shared recorder, stops and joins children, captures final
+state, releases parent-owned treadmill IPC, and publishes the authoritative
+cache. Because every parent IPC reader uses the same lock, close cannot release
+IPC underneath a reader.
+
+After close is requested but before the final cache exists, `snapshot()` raises
+a typed closing lifecycle error and `health_report()` returns cached
+close-in-progress health without IPC: an already `FAILED` state remains
+`FAILED`, otherwise health is `CLOSING`. After close completes, both use the
+final cached behavior defined in Section 13.2. New zero or recording ownership
+transitions raise a typed lifecycle error without changing owner flags or
+touching resources. These rules also apply when treadmill is disabled because
+the same lock protects shared-recorder transitions.
 
 Zeroing must not reset:
 
@@ -801,13 +973,46 @@ Zeroing must not reset:
 - health history;
 - a latched integrity failure.
 
-The acknowledgement is successful only after the zeroed state has been
-published coherently. If publication cannot complete before the command
-deadline, `zero()` fails visibly; recording must not claim that state version
-as its origin. The operation is atomic: an unacknowledged zero does not change
-the canonical offsets. The worker may reserve a writable publication slot
-before changing them or restore the prior offsets before processing more
-events.
+Before changing canonical offsets, the worker must reserve a writable coherent
+publication slot without blocking edge acquisition. If no slot is immediately
+available, it leaves the command pending, continues normal bounded edge/control
+work, and retries only until the worker deadline. The resulting publication
+records at least the resolved command ID, whether it was applied or rejected,
+the last applied zero command ID, the worker resolution timestamp, and the
+resulting state version. If the deadline expires or integrity becomes invalid
+before reservation, the worker rejects the command without changing offsets.
+The worker retains only the in-flight command and the most recently resolved
+command/result. A repeat of either is coalesced or replays that retained result
+without applying another zero. An ID older than the retained resolved ID is
+rejected as a stale internal-protocol request without applying a zero and
+without claiming whether that ID was applied historically; the retained
+last-resolved ID/result is not replaced by the stale request. The facade's
+normal monotonic, one-in-flight protocol never sends such an older ID. This
+bounded rule is the complete idempotency guarantee; it does not require an
+unbounded history of command results.
+
+The direct acknowledgement channel is an optimization, not the authority: an
+acknowledgement can be lost after a successful shared-state publication.
+`zero()` waits only through `CONTROL_RESULT_TIMEOUT_S` and reconciles any
+missing direct acknowledgement against coherent shared state. Its result has
+exactly one of these outcomes:
+
+- `applied`: the requested command ID is published as applied; this is the only
+  successful return and includes the command ID, worker timestamp, and state
+  version;
+- `confirmed_not_applied`: enqueue failed before acceptance or the worker
+  published a rejection for that command ID; offsets are unchanged and a typed
+  error carries the result;
+- `indeterminate`: neither application nor rejection can be established before
+  the bounded deadline, including when coherent state itself cannot be read; a
+  typed error carries the command ID and known context.
+
+Thus loss of a channel acknowledgement does not imply that offsets are
+unchanged. A recording-origin operation may proceed only with `applied`; it
+must abort and follow required/optional rollback policy for either other
+outcome. An indeterminate attempt is recorded prominently because a later
+snapshot may show that its zero was applied even though no recording claimed
+it as an origin.
 
 ## 11. Integrity and diagnostics
 
@@ -816,6 +1021,22 @@ events.
 Track global and per-line sequence continuity when supplied by libgpiod.
 Startup synchronization supplies the baselines described in Section 9.4;
 events explicitly excluded from motion totals still advance those baselines.
+
+Treat the kernel's global and per-line sequence values as unsigned 32-bit
+serial numbers. For each tracker compute
+`delta = (observed - baseline) mod 2^32`:
+
+- `delta == 0` is a duplicate;
+- `1 <= delta < 2^31` is forward, with `delta == 1` contiguous and a larger
+  value missing exactly `delta - 1` events;
+- `delta == 2^31` is ambiguous and is
+  `SEQUENCE_METADATA_INCONSISTENT`; it does not advance the baseline;
+- `2^31 < delta < 2^32` is older/out of order and is
+  `SEQUENCE_ORDER_INVALID`.
+
+These comparisons apply independently to the global and relevant per-line
+trackers and make `0xffffffff -> 0` an ordinary contiguous step. Raw sequence
+values remain unsigned in diagnostics and artifacts.
 
 A forward sequence jump means one or more delivered kernel events were not
 observed by the decoder. It must:
@@ -846,28 +1067,49 @@ never recognized. Hardware signal validation remains separate.
 
 ### 11.2 Event consistency
 
-Track and distinguish at least:
+Track the following decoder/adapter conditions separately; facade/lifecycle
+conditions use the stable codes in Section 14.1. `edge_event_count`
+increments for every delivered event handed to the decoder, including rejected
+events. "Reject" means no transition, distance, direction, or current-speed
+update. Every row is covered directly by deterministic tests before decoder
+implementation.
 
-- global sequence gaps;
-- per-line sequence gaps;
-- duplicate/inconsistent edge type for the remembered line level;
-- timestamp regression or nonpositive speed interval;
-- out-of-order sequence values;
-- malformed channel or edge identifiers;
-- backend read/request failures;
-- processing lag warnings;
-- shared-state publication skips;
-- diagnostic-event channel drops;
-- acquisition and logger process failures.
+| Condition and stable code | A/B and position action | Additional accounting | Health and integrity |
+|---|---|---|---|
+| Global forward sequence gap: `GLOBAL_SEQUENCE_GAP` | Reject the transition, clear the speed baseline, and, if the channel/edge is valid, set that remembered line to the reported level for subsequent diagnostic decoding. | Increment global gap occurrences and global-only estimated missing events; also increment the relevant per-line gap when observed there. | Latch `FAILED`; latch integrity false. |
+| Per-line forward gap without a global jump: `LINE_SEQUENCE_GAP` plus `SEQUENCE_METADATA_INCONSISTENT` | Same reject/resynchronize action as a global gap. | Increment that line's gap and the inconsistency counter; do not add to estimated missing events. | Latch `FAILED`; latch integrity false. |
+| Impossible global/per-line sequence relation not otherwise covered: `SEQUENCE_METADATA_INCONSISTENT` | Reject the event and clear the speed baseline; update a valid reported line level only for diagnostic continuation. | Increment the inconsistency counter without inventing missing-event counts. | Latch `FAILED`; latch integrity false. |
+| Global and relevant per-line sequence values consistently repeat their accepted baselines: `SEQUENCE_DUPLICATE` | Reject without changing remembered A/B. | Increment the inconsistency counter. | Latch `DEGRADED`; integrity remains true. |
+| Global or relevant per-line sequence value is older than its accepted baseline: `SEQUENCE_ORDER_INVALID` | Reject without changing remembered A/B and clear the speed baseline. | Increment the inconsistency counter; never move a baseline backward. | Latch `FAILED`; latch integrity false. |
+| New sequence but edge type already matches the remembered line level: `EDGE_STATE_INCONSISTENT` | Reject; the reported level causes no A/B change; clear the speed baseline. | Increment the inconsistency counter. | Latch `FAILED`; latch integrity false. |
+| Regressing/equal timestamp, or timestamp later than processing time, on an otherwise valid ordered transition: `EVENT_TIMESTAMP_INVALID` | Apply the quadrature position transition in sequence order, do not accept the invalid timestamp into public timestamp fields, and clear the speed baseline. | Increment the inconsistency counter; never compute speed across the event. | Latch `DEGRADED`; integrity remains true. |
+| Malformed channel or edge identifier: `EVENT_FORMAT_INVALID` | Reject because no safe A/B update is possible; clear the speed baseline. | Increment the inconsistency counter and preserve the raw diagnostic. | Latch `FAILED`; latch integrity false. |
+| Simultaneous physical-level check cannot establish one unambiguous boundary: `STATE_RESYNC_AMBIGUOUS` | Do not add motion. Adopt a new A/B baseline only when a later synchronization attempt succeeds. | Increment the inconsistency counter and preserve observed levels/events. | Startup fails, or runtime latches `FAILED`; integrity is false. |
+| Backend wait/read/request API error: `BACKEND_IO_FAILED` | Stop normal decoding and make acquisition unavailable; do not invent a transition or gap. A normal bounded wait which reports no edge is not an error. | Preserve the backend error in diagnostics. | Effective health is `FAILED`; retain the last integrity value unless a separate ambiguity/gap invalidated it. |
+| Processing lag exceeds its threshold: `PROCESSING_LAG_HIGH` | Process the event normally according to any higher-priority row. | Update lag aggregates and increment the exceedance count once for this event. | Latch at least `DEGRADED`; integrity is unchanged. |
+| Coherent publication slot unavailable: `STATE_PUBLICATION_SKIPPED` | Canonical decoding continues; no reader-visible partial update is written. | Increment publication skips in the next successful publication. | Latch `DEGRADED`; integrity is unchanged. |
+| Diagnostic-event queue full: `DIAGNOSTIC_EVENTS_DROPPED` | Canonical decoding and publication continue. | Increment diagnostic drops; retain the bounded in-process ring. | Latch `DEGRADED`; integrity is unchanged. |
 
-Before decoder code is written, tests must define a failure matrix specifying
-for each anomaly:
+When more than one row applies, perform the safest stated event action, update
+all applicable counters/codes, and use the most severe health/integrity result.
+The primary `failure_code` is then selected by Section 14.1; no test may invent
+a different precedence. Acquisition-process, heartbeat, logger, zero-control,
+and shutdown failures are facade/lifecycle conditions covered by the same
+stable-code table rather than decoder events.
 
-- whether the event changes position;
-- whether A/B state is resynchronized;
-- which counters change;
-- whether health becomes `DEGRADED` or `FAILED`;
-- whether integrity latches false.
+Validate sequence metadata before decoding the event payload. A new or forward
+global sequence advances its baseline even if the event is later rejected for
+timestamp, channel, edge-type, or line-state reasons. Advance the per-line
+baseline likewise only when the line is identifiable. Duplicate/out-of-order
+values never move a baseline. This prevents one malformed delivered event from
+creating a second, artificial gap on the next event.
+
+A duplicate or out-of-order sequence is rejected before edge-level or timestamp
+consistency checks, so replaying an already represented edge does not also
+create an `EDGE_STATE_INCONSISTENT` failure. After a forward gap, use a valid
+channel/edge only for the matrix's diagnostic resynchronization action; do not
+classify its relationship to the now-untrusted prior A/B state as a second
+edge-state failure. A malformed payload still records `EVENT_FORMAT_INVALID`.
 
 Because the internal event identifies one channel and one edge, applying one
 well-formed event can change only one remembered A/B bit. A two-bit jump is not
@@ -876,7 +1118,7 @@ checking or resynchronizing physical line levels is instead recorded as a
 state-resynchronization inconsistency. Sequence gaps and any ambiguity which
 can change exact position must always invalidate integrity.
 
-### 11.3 Processing lag
+### 11.3 Processing lag and observed transition rate
 
 For each event:
 
@@ -884,8 +1126,47 @@ For each event:
 processing_lag_ns = processing_monotonic_ns - event.timestamp_ns
 ```
 
-Maintain bounded aggregates such as count, sum, latest, maximum, and a fixed
-histogram. Detailed percentiles may be derived at summary time.
+Maintain bounded lifetime count, sum, latest, exact lifetime maximum, and
+histogram counts. Events with invalid timestamps follow the matrix in Section
+11.2 and do not enter lag or transition-rate aggregates.
+Use these processing-lag bin upper bounds in nanoseconds:
+
+```text
+50_000
+100_000
+250_000
+500_000
+1_000_000
+2_000_000
+5_000_000
+10_000_000
+25_000_000
+50_000_000
+overflow
+```
+
+Summary percentiles are histogram estimates, not exact order statistics. For
+each of p50, p95, and p99, report the upper bound of the first bin whose
+cumulative count reaches `ceil(percentile * count)`. Field names and metadata
+must include `approximate`, and the metadata repeats the bin edges. For an
+overflow result, keep the value numeric at `50_000_000` and set its companion
+`_is_lower_bound` Boolean true; otherwise that flag is false. Recording-window
+histogram counts and sums are final lifetime values minus the baseline captured
+with the applied recording origin. The recording-window approximate maximum is
+the upper bound of the highest nonempty difference bin and uses the same
+lower-bound flag. Values and flags are `null` when no origin was established.
+They are also `null` when an applied-origin recording contains zero valid lag
+samples; its lag count and sum are still zero.
+
+Define `maximum_observed_transition_rate_hz_lifetime` deterministically from
+accepted position-changing transitions with valid non-regressing event
+timestamps. Assign each transition to the aligned 100 ms monotonic bin
+`floor(timestamp_ns / 100_000_000)`, count transitions per bin, divide the
+largest observed bin count by `0.1 s`, and retain the maximum for the
+acquisition lifetime. This fixed-bin diagnostic is a boundary-dependent
+headroom indicator, not an instantaneous electrical edge-rate claim. It is
+explicitly labeled lifetime in public state and summaries; no unsupported
+recording-window maximum is inferred by subtracting scalar maxima.
 
 Large lag is a warning about headroom. It is not proof of event loss if
 sequence numbers remain continuous.
@@ -916,12 +1197,16 @@ always exists. The initial implementation does not add full-session raw-edge
 recording or a second continuous edge transport path.
 
 Low-rate structured lifecycle/health diagnostics use a separate bounded,
-nonblocking channel; they never share the raw-edge path. The parent retains a
-startup/current-health history of at most `diagnostic_event_queue_size` records
-so a logger opened later can write context which predates recording. While
-active, the logger drains new records.
-If the channel is full, acquisition increments an observable drop counter and
-continues; it never waits for diagnostic delivery.
+nonblocking channel; they never share the raw-edge path. While acquisition is
+live, records remain in that channel until the logger starts. The logger is the
+only live consumer. `health_report()` does not drain diagnostic records; it
+uses shared health state and parent-maintained process/logger status.
+
+If the worker-to-consumer channel is full, acquisition increments
+`diagnostic_event_drop_count`, activates `DIAGNOSTIC_EVENTS_DROPPED`, and
+continues; it never waits for diagnostic delivery. The worker's retained health
+bitset makes that loss visible even if its diagnostic record could not be
+queued.
 
 ## 12. Processes and shared state
 
@@ -966,6 +1251,12 @@ deadline records the read failure and skips that row; it must not duplicate the
 last row under a new timestamp. Reader timeout does not by itself invalidate
 encoder trajectory integrity.
 
+The facade's active `STATE_READ_TIMEOUT` condition clears after its next
+successful coherent read, while diagnostics preserve the occurrence. The
+Section 10.6 lifecycle lock prevents a coherent read from overlapping IPC
+teardown. Logger read failures remain recording counters rather than changing
+canonical acquisition health.
+
 ### 12.3 Control channel
 
 The acquisition control channel is deliberately small:
@@ -977,9 +1268,11 @@ STOP
 
 Controls must use bounded communication and must not carry individual GPIO
 events. The acquisition process drains pending edges before lower-priority
-controls. Commands requiring completion return matched acknowledgements.
-Status is read from coherent shared state and heartbeat. The parent facade,
-not the acquisition worker, owns logger-process start and stop.
+controls. `ZERO` follows the command-ID, worker-deadline, idempotency, and
+state-reconciliation contract in Section 10.6. `STOP` also uses a matched
+bounded result, but shutdown completion is finally determined by child exit and
+resource cleanup. Status is read from coherent shared state and heartbeat. The
+parent facade, not the acquisition worker, owns logger-process start and stop.
 
 ### 12.4 Heartbeat
 
@@ -1030,39 +1323,69 @@ publication_skip_count
 diagnostic_event_drop_count
 
 latest_processing_lag_ns
-maximum_processing_lag_ns
+maximum_processing_lag_ns_lifetime
+processing_lag_sample_count
+processing_lag_sum_ns
+processing_lag_histogram_counts
+processing_lag_warning_count
+maximum_observed_transition_rate_hz_lifetime
+
+last_resolved_zero_command_id
+last_applied_zero_command_id
+last_zero_result
 
 health
 integrity_valid
 acquisition_available
 failure_code
+observed_acquisition_health_codes
 state_version
 ```
 
 Convenience fields such as time since last motion may be derived from a
 caller-supplied current monotonic time.
 
-`last_edge_monotonic_ns` is the newest non-regressing kernel timestamp from an
-admitted, identifiable A/B edge, even if that edge is later rejected as a
-duplicate/inconsistent transition. `last_motion_monotonic_ns` advances only for
-an accepted position-changing x4 transition. Malformed identifiers and
-regressing timestamps still increment their diagnostic/event counters but must
-not move either public timestamp backward.
+`last_edge_monotonic_ns` is the newest valid, non-regressing kernel timestamp
+not later than its processing time from an identifiable A/B edge with a new or
+forward sequence, even if that edge is later rejected for a line-state
+inconsistency. `last_motion_monotonic_ns` advances only for an accepted
+position-changing x4 transition with a valid timestamp. Duplicate/out-of-order
+sequences, malformed identifiers, and invalid timestamps still increment their
+diagnostic/event counters but must not alter either public timestamp.
 
 Before the first corresponding event:
 
 - `last_edge_speed_mm_s` is `None`;
 - `last_edge_monotonic_ns` and `last_motion_monotonic_ns` are `None`;
-- `latest_processing_lag_ns` and `maximum_processing_lag_ns` are `None`;
+- `latest_processing_lag_ns` and `maximum_processing_lag_ns_lifetime` are
+  `None`;
+- `processing_lag_sample_count` and `processing_lag_sum_ns` are zero;
+- `processing_lag_histogram_counts` is an eleven-element tuple of zeros ordered
+  by the ten finite bin upper bounds followed by overflow;
+- `processing_lag_warning_count` is zero;
+- `maximum_observed_transition_rate_hz_lifetime` is `0.0`;
+- the zero-command identity/result fields are `None`;
 - `last_encoder_direction` and `locomotion_direction` are zero;
 - `position_mm`, `distance_travelled_mm`, and `speed_mm_s` are `0.0`.
 
 `failure_code` is the deterministic primary stable code and is `None` when no
 current or latched warning/failure applies. If several codes apply, choose by
-health severity and then an explicit stable priority table covered by the
+health severity and then the Section 14.1 priority table covered by the
 failure-matrix tests; do not join free-form strings. `health_report()` returns
-the complete ordered stable-code set plus human-readable context, while
-diagnostics preserve chronology.
+the complete ordered active-code set, the facade-lifetime observed-code set,
+and human-readable context, while diagnostics preserve chronology.
+
+The acquisition worker stores a fixed bitset plus first-observation monotonic
+times keyed by the stable Section 14.1 code order for every
+acquisition/calibration code it has ever activated. It sets a code's bit and
+time before that condition may clear and never clears them during the facade
+lifetime. Coherent readers expose the derived ordered tuple
+`observed_acquisition_health_codes`; the numeric mask and timestamp array are
+not public schema fields. This bounded state makes a transient worker-owned
+code visible and orderable even if its diagnostic record is delivered late.
+Parent-, logger-, zero-, and shutdown-owned codes are merged by the bounded
+facade/logger accumulators in Section 14.3.
+
 Counter fields are nonnegative integers except the signed raw/zeroed position
 fields.
 `edge_event_count` counts admitted kernel events, including rejected or
@@ -1074,6 +1397,11 @@ publications the nonblocking writer could not make.
 `diagnostic_event_drop_count` counts structured diagnostic records omitted
 because their bounded nonblocking channel was full.
 
+`last_zero_result` is `applied` or `rejected` for
+`last_resolved_zero_command_id`; it is never `indeterminate`, because that is a
+facade conclusion when no worker result can be observed. The last applied ID
+remains unchanged by a rejection.
+
 `last_state_update_monotonic_ns` is the acquisition time at which decoder,
 control, or health content last changed; a routine heartbeat alone does not
 change it. `last_heartbeat_monotonic_ns` is refreshed on the heartbeat schedule.
@@ -1082,10 +1410,10 @@ heartbeat is current; it is false for startup failure, unexpected loss, and
 orderly `STOPPED` state. It is a reader-materialized public field, not a claim
 that an abruptly dead worker could write into canonical shared state.
 `state_version` increases for each coherent publication, including heartbeat
-and acknowledged zero publications; readers must not interpret it as an edge
-count. Motion/heartbeat timeout materialization can change effective speed,
-direction, availability, and health without changing `state_version`, because
-the underlying canonical publication has not changed.
+and applied or rejected zero-result publications; readers must not interpret it
+as an edge count. Motion/heartbeat timeout materialization can change effective
+speed, direction, availability, and health without changing `state_version`,
+because the underlying canonical publication has not changed.
 
 The public immutable record uses optional types for fields which can be
 unavailable initially or after acquisition continuity is lost. Fixed-width
@@ -1094,12 +1422,12 @@ an unavailable optional value as an empty field; JSON encodes it as `null`.
 
 ### 13.2 Behavior-facing facade
 
-Routine behavior code should need only operations conceptually equivalent to:
+The facade surface is conceptually equivalent to:
 
 ```python
 treadmill.start()
 state = treadmill.snapshot()
-treadmill.zero()
+zero_result = treadmill.zero()
 report = treadmill.health_report()
 treadmill.require_healthy()
 treadmill.close()
@@ -1108,6 +1436,15 @@ treadmill.close()
 Exact names may follow established repository conventions. Behavior code must
 not need to understand gpiochips, libgpiod objects, transition tables, shared
 memory, or logger processes.
+
+Routine behavior code uses the read, health, and zero operations. `start()` and
+`close()` are lifecycle operations owned by `InputService`; task and user code
+must close the enclosing BehavBox rather than shutting down acquisition
+directly while shared recording may still be active.
+
+On success, `zero()` returns the typed `applied` result from Section 10.6.
+`confirmed_not_applied` and `indeterminate` are typed exceptions carrying the
+same result fields and available context.
 
 The modern BehavBox public boundary is `box.treadmill`. It is `None` when
 `session_info["treadmill"]` is false. When treadmill acquisition is enabled,
@@ -1121,22 +1458,28 @@ For an enabled facade which never published an initial state,
 `snapshot()` and `require_healthy()` raise a typed treadmill-unavailable error.
 When state exists, `require_healthy()` returns only for effective `READY` with
 valid integrity; it raises a typed health error for `DEGRADED`, `FAILED`, or
-`STOPPED`. Callers which intentionally allow an unverified-calibration
+`CLOSING`/`STOPPED`. Callers which intentionally allow an unverified-calibration
 `DEGRADED` state use `health_report()` and make that choice explicitly.
+The report distinguishes currently active ordered codes from the bounded
+facade-lifetime observed-code history defined in Section 14.3.
 
-`start()` is the integration lifecycle operation used once by `InputService`;
-it is not a task-level way to restart a failed acquisition. `close()` sends the
-internal `STOP`, joins owned children, and is idempotent. After close,
+`start()` is used once by `InputService`; it is not a task-level way to restart
+a failed acquisition. The integration-owned `close()` sends the internal
+`STOP`, joins owned children, and is idempotent. After close,
 `health_report()` reports `STOPPED` only after orderly cleanup; forced or
 incomplete child cleanup reports `FAILED`, unavailable, with a stable shutdown
 failure code. `snapshot()` returns the corresponding final cached state when
 one exists, and commands such as `zero()` raise a typed lifecycle error. The
-facade caches that immutable final state before unlinking shared resources;
-post-close reads do not access released IPC. A restart requires a new facade.
+facade captures final worker state before unlinking shared resources, then
+publishes the immutable authoritative cache after cleanup outcomes are known.
+Post-close reads do not access released IPC. A restart requires a new facade.
 
-The facade also has integration-only recording start/stop operations used by
-`InputService`. They are not alternate public BehavBox recording APIs: task and
-user code continue through the existing shared recorder ownership methods.
+The facade also has integration-only logger/origin start and logger stop
+operations used by `InputService` while that service holds the parent lifecycle
+`RLock`. `InputService` owns the surrounding shared-recorder update; these
+facade operations are not alternate public BehavBox
+recording APIs. Task and user code continue through the existing BehavBox
+recording methods.
 
 ## 14. Health and failure reporting
 
@@ -1149,6 +1492,7 @@ STARTING
 READY
 DEGRADED
 FAILED
+CLOSING
 STOPPED
 ```
 
@@ -1165,23 +1509,76 @@ Examples:
   threshold, or a non-required logger has failed;
 - `FAILED`: startup/line/backend failure, sequence loss, ambiguous trajectory,
   stale heartbeat, or acquisition-process death;
+- `CLOSING`: new parent operations no longer access IPC, but final cleanup and
+  final-state caching have not completed;
 - `STOPPED`: orderly requested shutdown completed.
 
 Integrity loss remains latched until an explicit acquisition restart. Zeroing
-must not clear it. A processing-lag threshold crossing also latches acquisition
-health at least `DEGRADED` for that run while leaving `integrity_valid`
-unchanged; the summary preserves when and how often it occurred.
+must not clear it. The first processing-lag threshold exceedance also latches
+acquisition health at least `DEGRADED` for that run while leaving
+`integrity_valid` unchanged; the summary preserves when and how often it
+occurred.
 
 The shared acquisition record contains acquisition/calibration health. The
 parent facade materializes effective subsystem health by also checking child
 liveness, heartbeat age, and the active logger's status. The logger applies the
 same acquisition heartbeat rule to each sample. Logger state is not written
 back through the acquisition process, preserving single-writer decoder state.
-Effective-health precedence is `STOPPED` after orderly close, otherwise
-`FAILED` over `DEGRADED` over `READY`; `STARTING` applies only before the first
-usable publication. Integrity-invalid acquisition failure remains latched.
-Transient heartbeat failure may recover only if the same worker resumes with
-continuous sequences; every failure and recovery remains in diagnostics.
+Effective-health precedence is `STOPPED` after orderly close; while close is in
+progress, an existing `FAILED` state remains `FAILED`, otherwise the
+parent-only cached report is `CLOSING`; before close, precedence is `FAILED`
+over `DEGRADED` over `READY`. `STARTING` applies only before the first usable
+publication. `CLOSING` by itself has no failure code. Integrity-invalid
+acquisition failure remains latched. Transient heartbeat failure may recover
+only if the same worker resumes with continuous sequences; every failure and
+recovery remains in diagnostics.
+
+Within the effective health severity, the first active code in the following
+table is the primary `failure_code`. `health_report()` returns every active code
+in this same order. Codes in the decoder matrix retain the behavior defined
+there; this table only resolves presentation priority.
+
+| Priority | Stable code | Severity and source |
+|---:|---|---|
+| 1 | `SHUTDOWN_INCOMPLETE` | `FAILED`: forced or incomplete close |
+| 2 | `ACQUISITION_PROCESS_EXITED` | `FAILED`: unexpected worker exit |
+| 3 | `HEARTBEAT_STALE` | `FAILED`: live worker heartbeat deadline exceeded |
+| 4 | `ACQUISITION_START_FAILED` | `FAILED`: process creation or startup handshake failed |
+| 5 | `BACKEND_CAPABILITY_MISSING` | `FAILED`: required libgpiod v2 feature absent |
+| 6 | `GPIO_RESOLUTION_FAILED` | `FAILED`: missing or ambiguous RP1/header mapping |
+| 7 | `GPIO_LINE_CLAIM_FAILED` | `FAILED`: unavailable or unclaimable configured line |
+| 8 | `INITIAL_SYNC_FAILED` | `FAILED`: no clean initial boundary before startup deadline |
+| 9 | `BACKEND_IO_FAILED` | `FAILED`: libgpiod request, wait, or read API error |
+| 10 | `GLOBAL_SEQUENCE_GAP` | `FAILED`: authoritative request sequence gap |
+| 11 | `LINE_SEQUENCE_GAP` | `FAILED`: per-line sequence gap |
+| 12 | `SEQUENCE_METADATA_INCONSISTENT` | `FAILED`: impossible global/per-line relationship |
+| 13 | `SEQUENCE_ORDER_INVALID` | `FAILED`: sequence older than accepted baseline |
+| 14 | `STATE_RESYNC_AMBIGUOUS` | `FAILED`: no unambiguous physical A/B boundary |
+| 15 | `EVENT_FORMAT_INVALID` | `FAILED`: unknown channel or edge type |
+| 16 | `EDGE_STATE_INCONSISTENT` | `FAILED`: new event contradicts remembered line level |
+| 17 | `REQUIRED_LOGGER_FAILED` | `FAILED`: required logger start or runtime failure |
+| 18 | `STATE_READ_TIMEOUT` | `DEGRADED`: reader could not obtain a coherent copy |
+| 19 | `ZERO_RESULT_INDETERMINATE` | `DEGRADED`: zero application could not be reconciled |
+| 20 | `ZERO_NOT_APPLIED` | `DEGRADED`: zero could not be enqueued or was confirmed rejected |
+| 21 | `LOGGER_FAILED` | `DEGRADED`: non-required logger failure |
+| 22 | `STATE_PUBLICATION_SKIPPED` | `DEGRADED`: canonical update could not be published immediately |
+| 23 | `SEQUENCE_DUPLICATE` | `DEGRADED`: repeated accepted sequence value |
+| 24 | `EVENT_TIMESTAMP_INVALID` | `DEGRADED`: unusable event timestamp |
+| 25 | `PROCESSING_LAG_HIGH` | `DEGRADED`: configured lag threshold crossed |
+| 26 | `DIAGNOSTIC_EVENTS_DROPPED` | `DEGRADED`: bounded worker diagnostic channel overflow |
+| 27 | `CALIBRATION_UNVERIFIED` | `DEGRADED`: calibration warning required |
+
+Configuration errors raised before a facade becomes usable are typed
+exceptions, not synthetic health codes. Orderly `STOPPED` has no failure code.
+`ACQUISITION_PROCESS_EXITED` applies only to an unexpected exit; a worker which
+exits as the documented cleanup consequence of a published startup or backend
+failure retains the causal code without adding a misleading exit code.
+Likewise, `ACQUISITION_START_FAILED` is emitted only when process creation or a
+startup handshake fails without a more specific published cause. If startup
+publishes any applicable causal failure at priorities 5 through 16, retain
+that actionable code and do not add the generic startup code.
+Adding or renaming a stable code is a public schema change and requires fixture
+and artifact-schema review.
 
 ### 14.2 Required versus optional treadmill
 
@@ -1190,15 +1587,40 @@ establishment behavior:
 
 - if true, inability to reach `READY` or an allowed calibration-only
   `DEGRADED` state prevents session startup;
-- if false, the session may continue after a visible startup failure, but the
-  unavailable/failed state must be exposed and recorded.
+- if false, preparation may also complete with a fully cleaned-up,
+  materialized failure facade: partial child/GPIO resources are gone, while a
+  cached unavailable `FAILED` health report and diagnostics remain available
+  for warnings, metadata, and later header-only recording artifacts.
 
-If an otherwise usable acquisition cannot acknowledge the recording-origin
-zero, a required treadmill causes that newly opened shared recording start to
-fail and roll back its ownership/handles. An optional treadmill leaves the
-other shared IO recording active but finalizes failed, zero-sample treadmill
-artifacts. Rollback does not promise to delete the selected directory or
-already created failure evidence.
+Before releasing startup IPC, the optional-failure path copies everything
+needed for those later artifacts into one immutable JSON-serializable failure
+context: effective configuration and calibration, platform/backend identity,
+cached health and ordered diagnostics, failure timestamps/codes, and any
+last-known public state represented only by primitive values. It contains no
+shared-memory view, queue, lock, process handle, or live backend object. A
+later header-only logger receives this context as serialized startup input and
+must not require acquisition IPC to write and finalize the failure artifact
+set.
+
+If an otherwise usable acquisition cannot establish the recording-origin zero
+as `applied`, a required treadmill causes that newly opened shared
+recording start to fail and roll back its ownership/handles.
+An optional treadmill leaves the other shared IO recording active but
+finalizes failed, zero-sample treadmill artifacts. Rollback does not promise to
+delete the selected directory or already created failure evidence.
+
+Rollback is mandatory for two concrete failure boundaries:
+
+1. `SharedIoRecorder.start_recording()` must restore the caller's prior owner
+   flag and prior in-memory recording state, close any partially opened shared
+   artifact handles, and leave `is_recording = false` if selecting/creating the
+   directory or opening either shared artifact fails. A directory already
+   created on disk may remain.
+2. If the shared recorder returned `started_now = true` but a required
+   treadmill logger/origin step then fails, the BehavBox integration must clear
+   the owner demand asserted by that call, close the newly opened shared
+   handles, and restore the prior in-memory recording state. It must not
+   disturb a recording which was already active for another owner.
 
 The same required/optional rule applies if acquisition is already unavailable
 or integrity-invalid when a new shared recording begins. It does not
@@ -1212,15 +1634,20 @@ and does not block startup.
 
 The initial implementation reports and deduplicates prominent runtime
 warnings; it does not add unused pause/abort policy states or mutate task or
-presenter state. Task-specific automatic pause/abort wiring remains deferred.
+presenter state. Generic automatic pause/abort wiring remains deferred; the
+hardware-stress task has the explicit acceptance policy in Section 14.4.
 Tasks which require valid live treadmill data must call `require_healthy()` at
 their chosen control boundary or explicitly inspect `health_report()`.
 `treadmill_required` does not by itself add hidden task-control behavior.
 
 For baseline visibility, the existing `BehavBox.poll_runtime()` path performs a
 cheap nonthrowing treadmill health check when enabled and emits deduplicated
-application warnings on health/code transitions. This check reads published
-state only; it does not service edges, block acquisition, or alter task state.
+application warnings on health/code transitions. This check reads coherent
+shared health and directly maintained parent/logger status; it never consumes
+the diagnostic channel. It does not service edges, wait for new diagnostics,
+block acquisition, or alter task state. It runs before the current
+`prepared`-state early return so a failure between preparation and session
+start is visible.
 
 While recording is active, a non-required logger failure causes effective
 `DEGRADED` health but does not invalidate otherwise continuous encoder
@@ -1228,10 +1655,130 @@ position. If `continuous_logger_required` is true, logger start failure rolls
 back a newly opened shared recording and runtime logger failure makes effective
 health `FAILED`, without falsely claiming an encoder sequence gap. After a
 clean final-owner logger stop, logger status no longer degrades live acquisition
-health. Any optional treadmill recording failure, including an unacknowledged
-origin zero, remains latched at least `DEGRADED` until that shared recording
-ends even if its logger has already exited. Its summary preserves the failure.
+health. Any optional treadmill recording failure, including a
+`confirmed_not_applied` or `indeterminate` origin zero, remains latched at
+least `DEGRADED` until that shared recording ends even if its logger has
+already exited. Its summary preserves the failure.
 No warning or logger policy may make failed acquisition appear healthy.
+
+The parent facade maintains each stable health code's first-observation
+monotonic time for its lifetime. Its maximum size is the finite Section 14.1
+code table, so this is bounded state rather than a general event history.
+Every parent-side effective-health materialization, including stress/preflight
+checks and logger-status handling, contributes its active codes. Every coherent
+read also merges the worker-published
+`observed_acquisition_health_codes` bitset and first-observation timestamps.
+Consequently preflight and final acceptance do not depend on diagnostic-record
+delivery.
+
+The bounded worker diagnostic channel retains records until a logger starts.
+The logger is the only live diagnostic-channel consumer and drains any queued
+pre-recording records before continuing with new records. `snapshot()`,
+`health_report()`, and `BehavBox.poll_runtime()` never drain this channel.
+Channel overflow remains explicit: the worker increments
+`diagnostic_event_drop_count` and publishes `DIAGNOSTIC_EVENTS_DROPPED` in its
+retained health history.
+
+If acquisition startup fails before any logger exists, the parent first stops
+and joins the worker, then performs one bounded channel drain into the immutable
+failure context before releasing IPC. If a live logger fails, the parent first
+confirms that child is dead and then performs one bounded best-effort drain for
+fallback/application logging. That artifact is already incomplete and cannot
+pass hardware acceptance, so this recovery path does not promise exact-once
+diagnostic delivery.
+
+The health report returns ordered active codes and the current ordered
+facade-lifetime observed codes separately. At recording finalization, the
+facade supplies its accumulator with the logger stop request; the logger merges
+it with the worker's retained codes, its own effective-health samples, and
+drained health-transition diagnostics to produce Section 16.4
+`observed_health_codes`. The matched logger-finalization result returns the
+same bounded first-observation accumulator, and the facade merges it before the
+final-owner stop returns. Thus codes observed only by recording 1's logger are
+still present when recording 2 starts, without adding another channel.
+
+This history is intentionally facade-lifetime, not recording-window state. It
+has no per-recording baseline: a code first observed during recording 1 remains
+in recording 2's summary. A new facade/acquisition lifetime resets it. This is
+the conservative hardware-stress policy and is distinct from explicitly named
+recording-window counters.
+
+Outside an active recording, a later coherent read may replace
+`ZERO_RESULT_INDETERMINATE` with the resolved `applied` or
+`ZERO_NOT_APPLIED` outcome. A resolved `applied` result, or a later successfully
+applied zero, clears the active zero-control code; diagnostics retain every
+earlier outcome. The recording-origin latch above does not clear early.
+
+### 14.4 Hardware-stress acceptance policy
+
+This policy applies only to an identified Pi 5 hardware-stress run with the
+required treadmill and logger enabled. It does not add hidden control behavior
+to other tasks.
+
+After each normal runtime poll, the stress task explicitly inspects
+`box.treadmill.health_report()`. During framework bring-up it may continue only
+when acquisition is available, integrity is valid, current health is either
+`READY` or `DEGRADED` solely because `CALIBRATION_UNVERIFIED` is active, and
+the retained facade-lifetime code list contains no other code. Any other active
+or previously observed code, unavailable acquisition, or invalid integrity
+ends the task as an error before further stimulus or reward output. The
+calibration-only exception permits infrastructure validation but remains
+prominent and does not satisfy production calibration acceptance.
+
+When the display launcher enables audio preflight, it invokes the same
+task-specific health evaluator immediately after `runner.prepare()` and before
+calling the preflight function. A disallowed report prevents all preflight
+audio output and enters the normal nonzero cleanup path. It evaluates health
+again after preflight and before `runner.start()`. Because the evaluator checks
+both active and retained codes, a disallowed transient represented in retained
+startup diagnostics prevents task start even if it has cleared. Mock mode
+remains `not_applicable`; the preflight function does not add its own treadmill
+policy or polling loop.
+
+After final-owner recording stop has finalized the treadmill artifacts, the
+stress task performs a final acceptance check before reporting success. It
+requires a readable schema-valid normal artifact set and summary, an applied
+recording origin, at least one state row, valid final recording integrity, no
+required acquisition/logger failure or forced/incomplete cleanup, and no
+disallowed code observed during the run. It checks the summary's retained
+`observed_health_codes` rather than attempting to infer cleared conditions from
+final health or reparsing diagnostics. This catches a late transient failure
+after the last ordinary task poll even if that code is no longer active at
+logger finalization. The post-close check separately covers shutdown codes
+which occur after the recording summary is complete by inspecting cached
+post-close health and the facade-lifetime observed-code history.
+
+Both stress launchers return zero only after ordinary task completion and that
+final acceptance check. A detected treadmill failure, task/runtime exception,
+startup/origin failure, artifact/finalization failure, or BehavBox/treadmill
+cleanup failure returns nonzero after best-effort finalization and mandatory
+close. User interruption is not a passed stress run and returns a conventional
+nonzero interrupt status. A mock-mode run may return zero for its non-hardware
+functional checks, but its final task state must label treadmill hardware
+acceptance as `not_applicable`; it is never evidence of Pi 5 treadmill
+acceptance. A mock BehavBox cleanup failure still returns nonzero, but it does
+not turn a hardware test which never ran into `failed` hardware acceptance;
+the separate cleanup result records that failure.
+
+When `final_task_state.json` can be written, it includes a
+`treadmill_hardware_acceptance` object with `status`, ordered `reasons`, and the
+summary path or `null`, plus a separate `behavbox_cleanup` object with `status`
+and ordered `reasons`. Task finalization may write real hardware acceptance as
+`pending_cleanup`; mock hardware acceptance is already `not_applicable`.
+`behavbox_cleanup.status` begins as `pending` in either mode. The launcher
+retains the facade reference, runs mandatory close, checks cached post-close
+health, facade-lifetime observed codes, and any aggregate cleanup error, then
+writes both final objects. A file whose cleanup status remains `pending` is not
+a successful run.
+
+Final hardware-acceptance status is `passed`,
+`passed_with_calibration_warning`, `failed`, or `not_applicable`; cleanup status
+is `complete` or `failed`. Real-mode incomplete cleanup makes both hardware
+acceptance and cleanup `failed`. Mock-mode incomplete cleanup leaves hardware
+acceptance `not_applicable`, makes cleanup `failed`, and returns nonzero. Only
+real `passed` is eligible to support production acceptance; the warning status
+may still return zero for the explicitly allowed bring-up run. Failure to write
+the final post-close state is itself a nonzero result.
 
 ## 15. Modern BehavBox lifecycle
 
@@ -1245,8 +1792,10 @@ During `BehavBox.prepare_session()` and `InputService` construction:
 4. Validate backend capabilities and resolve the header GPIO controller.
 5. Claim BCM13 and BCM16 together.
 6. Synchronize initial A/B state.
-7. Publish initial state and heartbeat.
-8. Return only after startup reaches an allowed usable health state.
+7. On success, publish initial state and heartbeat. On optional failure, clean
+   partial resources and cache the unavailable failure report and diagnostics.
+8. Return only after one of those two outcomes reaches the state defined in
+   Section 14.2.
 
 Required startup failure propagates through the existing `prepare_session()`
 cleanup path. Because `BehavBox.input_service = InputService(...)` is assigned
@@ -1259,16 +1808,38 @@ it must not rely on the outer BehavBox reference already existing.
 When `SharedIoRecorder` first opens a recording directory:
 
 1. Confirm the directory exists.
-2. Start the independent treadmill logger; the logger opens the required
-   artifacts and acknowledges successful startup. Treat an open/write failure
-   according to `continuous_logger_required`.
-3. For usable acquisition, apply and acknowledge a recording-origin zero after
+2. Start the independent treadmill logger in live-state mode for usable
+   acquisition, or in header-only failure mode from the immutable Section 14.2
+   context when startup was materialized as failed. Header-only mode receives
+   no acquisition shared memory or control/diagnostic queue. The logger opens
+   the required artifacts and reports successful startup within
+   `LOGGER_START_TIMEOUT_S`. Treat a timeout or open/write failure according
+   to `continuous_logger_required`. A successful live-state logger becomes the
+   diagnostic channel's sole consumer and first drains records already queued.
+3. For usable acquisition, obtain an `applied` recording-origin zero after
    already pending events are decoded. Here, usable means that a state exists,
    the worker and heartbeat are current, and trajectory integrity is valid;
    calibration-only or latched lag `DEGRADED` health is still usable.
 4. Write configuration, platform, GPIO mapping, calibration, and timebase
-   metadata, including the acknowledged state/counter baseline.
-5. Begin fixed-rate samples from the acknowledged state version.
+   metadata, including the applied state/counter baseline and how application
+   was confirmed.
+5. Begin fixed-rate samples from the applied state version.
+
+This sequence holds the Section 10.6 lifecycle `RLock` through logger readiness,
+origin-zero reconciliation, and either successful completion or rollback. A
+close request arriving after admission therefore waits for the sequence; its
+internal reads remain available because they are part of the already admitted
+operation. The same rule covers an admitted public zero and final-owner
+recording stop.
+
+If logger startup fails or times out, stop this sequence before zeroing. A
+required logger triggers the rollback in Section 14.2. A non-required logger
+leaves the shared IO recording active, records the visible logger failure (and
+best-effort fallback artifact when possible), and creates no recording origin
+or treadmill state samples. This branch is controlled by
+`continuous_logger_required` even when live acquisition is required: without a
+logger there is no treadmill artifact whose origin must be established, while
+`treadmill_required` still requires acquisition itself to remain usable.
 
 If another recording owner joins an existing recording, do not start another
 logger and do not zero again.
@@ -1279,30 +1850,41 @@ state logging is part of every enabled treadmill recording; the initial
 implementation has no configuration branch that silently omits the normal
 artifacts.
 
-If the recording-origin zero fails, follow the required/optional behavior in
-Section 14.2. No samples may be labeled as belonging to an origin that was not
-acknowledged.
+No samples may be labeled as belonging to an origin that was not confirmed
+`applied`. Whenever the logger reached ready but no applied origin can be
+established because acquisition is unusable or zero returns
+`confirmed_not_applied`/`indeterminate`, request a bounded failure
+finalization, write and flush the header-only state plus available metadata,
+diagnostics, and summary, close every logger-owned artifact handle, and
+stop/join the logger. If orderly finalization fails, use the bounded
+forced-cleanup and fallback rules. No logger process, open treadmill handle, or
+sampling-active facade state may remain. A required treadmill then rolls back
+the newly opened shared recording under Section 14.2. An optional treadmill
+leaves shared IO recording active but keeps a recording-scoped treadmill
+failure marker until final-owner stop; its treadmill artifacts are already
+final and are not reopened or rewritten at that stop.
 
 If optional treadmill acquisition failed during startup or became unusable
 before recording began, recording still creates the normal state, metadata,
-and diagnostics artifacts and, by recording finalization, the normal summary.
-The state TSV contains only its header, while metadata, diagnostics, and the
-final summary identify the failure, zero samples, `FAILED` health, unavailable
-acquisition, and the last known integrity value. An acquisition which never
-established state reports integrity as false; a later heartbeat/process failure
-does not invent a sequence gap and may retain the last integrity value as true.
-No zero command or fixed-rate sampling occurs. A required treadmill instead
-follows the rollback rule in Section 14.2. This distinguishes a
-requested-but-failed treadmill from `treadmill=false`, which creates no
-treadmill artifacts.
+diagnostics, and summary artifacts under that same immediate finalization rule.
+The state TSV contains only its header, while
+metadata, diagnostics, and the summary identify the failure, zero samples,
+`FAILED` health, unavailable acquisition, and the last known integrity value.
+An acquisition which never established state reports integrity as false; a
+later heartbeat/process failure does not invent a sequence gap and may retain
+the last integrity value as true. No zero command or fixed-rate sampling
+occurs. This distinguishes a requested-but-failed treadmill from
+`treadmill=false`, which creates no treadmill artifacts.
 
 ### 15.3 Recording stop
 
 When the final recording owner stops:
 
-1. Request the logger's final sample and summary.
-2. Flush buffered TSV/JSON output.
-3. Close recording artifacts.
+1. If a logger is active, request its final diagnostic drain, sample, and
+   summary; otherwise preserve any already finalized pre-origin
+   failure/fallback state.
+2. Flush any buffered TSV/JSON output.
+3. Close any open treadmill recording artifacts.
 4. Leave acquisition alive until `InputService.close()` so live state does not
    disappear before overall runtime cleanup.
 
@@ -1310,23 +1892,75 @@ When the final recording owner stops:
 
 Normal close must:
 
-1. stop any active logger;
-2. send `STOP` so acquisition drains already available events, publishes final
+1. set the close-requested event before acquiring the Section 10.6 lifecycle
+   `RLock`, then acquire it after any already admitted parent operation finishes
+   or unwinds;
+2. stop/finalize any active logger or preserve any already finalized failure
+   set;
+3. close the shared IO recorder, clear both owner demands, and close its
+   artifact handles;
+4. send `STOP` so acquisition drains already available events, publishes final
    state/diagnostics, and releases only its owned GPIO lines;
-3. join child processes within bounded timeouts;
-4. cache clean `STOPPED` state, or overlay `FAILED` with a shutdown failure code
-   if forced/incomplete cleanup was required;
-5. clean up every parent-owned treadmill IPC resource using its supported
-   contract: close/join queue feeder resources, close/unlink shared memory, and
-   release synchronization resources/references.
+5. join child processes within bounded timeouts;
+6. capture the final worker state, then clean up every parent-owned treadmill
+   IPC resource using its supported contract: close/join queue feeder
+   resources, close/unlink shared memory, and release synchronization
+   resources/references;
+7. after every cleanup attempt has reported its outcome, cache clean `STOPPED`
+   state or overlay `FAILED` with a shutdown failure code.
+
+The close path holds the same `RLock` through all seven steps, so no parent
+reader or lifecycle transition can touch IPC during teardown. A later
+idempotent `SharedIoRecorder.close()` call by enclosing BehavBox cleanup is a
+no-op; it is not the authoritative first cleanup of recording state.
+
+Close is exception-safe across these steps. Each step is attempted even if an
+earlier step fails, and cleanup errors are accumulated in step order rather
+than raised immediately. Shared-recorder cleanup attempts flush and close on
+each open handle independently; owner flags, handle references, and
+`is_recording` are cleared in `finally` paths even when an operation reports an
+error. Logger failure cannot skip acquisition `STOP`/join, forced termination
+when required, IPC release, or final-state caching, and recorder failure cannot
+skip any treadmill or later BehavBox subsystem cleanup.
+
+When an enabled facade exists, any such error latches `SHUTDOWN_INCOMPLETE` in
+its cached post-close health. InputService/facade cleanup reports its ordered
+errors only after all of its steps have been attempted. Enclosing
+`BehavBox.close()` likewise catches deferred component-cleanup errors, attempts
+cleanup of every remaining owned subsystem, then reports one typed aggregate
+failure. The hardware-stress launcher therefore returns nonzero while its
+retained facade still exposes the shutdown code. A repeated close is safe and
+retains, rather than clears, the prior failure report.
 
 `close()` must be idempotent. Forced termination is a last resort and must be
 diagnosed in the application log and in any still-open or fallback summary.
 Do not rewrite a previously completed recording merely because later
 acquisition shutdown failed. After exhausting its bounded cleanup path, the
-facade records forced/incomplete shutdown in cached health rather than raising
-solely for that condition, so enclosing `BehavBox.close()` can continue
-cleaning unrelated resources.
+facade records forced/incomplete shutdown in cached health and defers any
+cleanup exception until its remaining steps have run, so enclosing
+`BehavBox.close()` can continue cleaning unrelated resources.
+
+After constructing BehavBox, each hardware-stress launcher owns an outer
+`try`/`finally` which calls public, idempotent `box.close()` on every path,
+including prepare, logger/origin start, task runtime, stop, artifact writing,
+and finalization exceptions. It may first attempt lifecycle-appropriate stop
+and finalization to preserve diagnostics, but those best-effort steps never
+replace the unconditional close. A cleanup failure is reported and cannot
+convert the exit to success. The display-mode launcher closes BehavBox before
+its independent best-effort LightDM restoration. `BehavBox.__del__` is not
+part of this correctness contract.
+
+### 15.5 Session metadata
+
+The facade retains an immutable JSON-serializable copy of the validated
+effective treadmill configuration. `BehavBox.finalize_session()` writes a
+top-level `treadmill` object in `session_metadata.json`: disabled sessions use
+`{"enabled": false}`, while enabled sessions use
+`{"enabled": true, "effective_config": ...}`. This is an explicit addition to
+the existing metadata payload; implementation must not rely on mutating the
+caller's original `session_info` mapping as an undocumented side channel.
+Recording-specific platform, mapping, origin, and counter details remain in
+`treadmill_metadata.json`.
 
 ## 16. Recording artifacts
 
@@ -1360,7 +1994,9 @@ last_edge_speed_mm_s
 last_edge_monotonic_ns
 locomotion_direction
 raw_transition_position
+maximum_observed_transition_rate_hz_lifetime
 health
+failure_code
 integrity_valid
 acquisition_available
 state_version
@@ -1412,9 +2048,11 @@ Include at least:
 - bias, debounce, buffer, and batch settings;
 - all effective calibration values and verification state;
 - all effective health/logger settings;
+- internal bounded-operation constants, processing-lag histogram edges, and
+  the 100 ms transition-rate bin width;
 - continuous sample rate;
 - expected maximum transition rate if known;
-- recording-origin acknowledgement status, command identity, monotonic
+- recording-origin result, confirmation source, command identity, monotonic
   timestamp, state version, and counter baselines when established;
 - start monotonic/UTC timebase anchor.
 
@@ -1427,12 +2065,18 @@ treadmill_diagnostics.jsonl
 ```
 
 Record startup stages, GPIO resolution, the first usable state (`READY` or an
-explicitly allowed `DEGRADED`), calibration warning, zero acknowledgements,
-health transitions, lag warnings, gaps/inconsistencies,
+explicitly allowed `DEGRADED`), calibration warning, zero direct results and
+state reconciliations, health transitions, lag warnings, gaps/inconsistencies,
 logger/acquisition errors, and recording/logger shutdown. Acquisition shutdown
 is included only when it occurs while the artifact writer remains open; later
 close failures remain in the application log. Each record includes monotonic
 time, severity, stable event code, message, and structured context.
+
+A successful logger is the channel's only live consumer. It first writes
+records already queued before recording and then continues with new records in
+channel delivery order. If the logger fails, the artifact is marked incomplete
+and the stopped-child fallback drain in Section 14.3 is best effort rather than
+an exact-once recovery protocol.
 
 ### 16.4 Final summary
 
@@ -1445,42 +2089,103 @@ treadmill_summary.json
 Include at least:
 
 ```text
-recording duration
+recording_origin_applied
+state_sample_count
+recording_duration_s
+observed_health_codes (facade lifetime)
 recording-window edge events
 recording-window valid/positive/negative transitions
 recording-window direction reversals
 recording-window global and per-line sequence gaps
 recording-window estimated missing events
 recording-window event inconsistencies
-maximum observed transition rate
-processing-lag aggregates/percentiles
-publication skips
-diagnostic-event drops
-heartbeat/acquisition/logger failures
+maximum_observed_transition_rate_hz_lifetime from aligned 100 ms bins
+maximum_processing_lag_ns_lifetime
+recording-window lag count/sum
+recording-window processing-lag warning count
+approximate_maximum_processing_lag_ns
+approximate_processing_lag_p50_ns
+approximate_processing_lag_p95_ns
+approximate_processing_lag_p99_ns
+approximate_maximum_processing_lag_ns_is_lower_bound
+approximate_processing_lag_p50_ns_is_lower_bound
+approximate_processing_lag_p95_ns_is_lower_bound
+approximate_processing_lag_p99_ns_is_lower_bound
+recording-window publication skips
+recording-window diagnostic-event drops
+heartbeat/acquisition/logger failure diagnostics and timestamps
 logger late/missed samples
 logger shared-state read failures
 final position and distance travelled
 final health, integrity, and acquisition availability
 calibration and verification warning
 resolved GPIO and software versions
-end monotonic/UTC timebase anchor
+recording_end_monotonic_ns and recording-end UTC anchor (null without an applied origin)
+artifact_finalization_monotonic_ns and artifact-finalization UTC time for every outcome
 ```
 
 The summary repeats the artifact-set schema version. A standalone failure-ring
 dump or `treadmill_failure.json` carries its own schema version because it may
 need to be interpreted without a complete metadata file.
 
-Recording-window counters are final lifetime counters minus the baselines saved
-with the recording-origin acknowledgement; zeroing never mutates lifetime
-counters. The summary also includes the baseline and final lifetime counters so
-the calculation is auditable. If no recording origin was acknowledged, set
-`recording_origin_acknowledged=false`, encode recording-window counters as
-`null`, and include any last-known lifetime counters without inventing a
-baseline or zero-valued recording result.
+Failure-diagnostic totals count records actually written into this artifact
+set; they are not inferred by subtracting unrelated decoder counters. The
+worker-owned `diagnostic_event_drop_count` records channel overflow and
+activates the `DIAGNOSTIC_EVENTS_DROPPED` acceptance code.
 
-Final physical values are `null` when trajectory integrity or acquisition
-availability was lost; the summary retains raw delivered-event totals as
-explicitly untrusted diagnostics.
+`observed_health_codes` is the ordered, duplicate-free union defined in
+Section 14.3, with ties resolved by first monotonic observation and then
+Section 14.1 priority. A code remains in this list after it clears.
+Finalization drains health-transition diagnostics already accepted for the
+recording before writing the list; if a diagnostic was dropped,
+`DIAGNOSTIC_EVENTS_DROPPED` is itself included and prevents real
+hardware-stress acceptance. Header-only summaries populate the list from their
+immutable failure context. Shutdown codes arising after artifact finalization
+remain the launcher's post-close responsibility.
+
+This field deliberately has no recording baseline. Later recordings made by
+the same facade repeat earlier codes; consumers must not interpret it as a
+recording-window field. This conservative scope is metadata-visible and resets
+only with a new facade/acquisition lifetime.
+
+`state_sample_count` is the exact number of data rows successfully written to
+`treadmill_state.tsv`; the header is not a sample. It is zero for every
+header-only failure artifact and must agree with a direct row count.
+
+For a normally finalized applied-origin recording, the logger captures the
+recording-end monotonic time after the final sample attempt at the final-owner
+stop boundary and computes:
+
+```text
+recording_duration_s =
+    (recording_end_monotonic_ns - origin_applied_monotonic_ns) / 1e9
+```
+
+It uses monotonic times from the same clock domain. Header-only, failed, or
+incomplete recordings set `recording_duration_s` and the recording-end
+timebase anchor to `null`; artifact-finalization time remains populated.
+
+Recording-window counters are final lifetime counters minus the baselines saved
+with the applied recording origin; zeroing never mutates lifetime
+counters. The summary also includes the baseline and final lifetime counters so
+the calculation is auditable. If no recording origin was applied, set
+`recording_origin_applied=false`, encode recording-window counters as
+`null`, and include any last-known lifetime counters without inventing a
+baseline or zero-valued recording result. Recording-relative final position and
+distance, recording duration, and the recording-end timebase anchor are also
+`null` in that case, even if live acquisition still has physical values
+relative to an earlier zero. The separate artifact-finalization time records
+when the failure set was closed; it must not be mislabeled as the end of the
+still-active shared IO recording.
+
+Final physical values are `null` when final trajectory integrity is invalid or
+final acquisition availability is false because of an unexpected loss.
+Normal completed artifacts retain the health/availability observed when the
+final recording owner stopped and are not rewritten during the later
+acquisition close. Separately, an orderly cached `STOPPED` public snapshot
+retains its last trustworthy physical values as required by Section 10.3. Raw
+delivered-event totals remain available as explicitly untrusted diagnostics
+after a failure.
 
 ### 16.5 Raw-event diagnostics
 
@@ -1560,7 +2265,8 @@ Test that:
 - timing fields selected during `TW-0` are positive and internally
   consistent, while the expected maximum rate may remain `null` only before
   production acceptance;
-- non-Boolean enablement and unknown override keys fail clearly;
+- non-Boolean enablement/verification/criticality fields, empty or non-string
+  calibration provenance fields, and unknown override keys fail clearly;
 - retired enabled-session keys fail with their explicit conversion guidance;
 - invalid units, signs, rates, buffers, timeouts, and logger-criticality values
   fail clearly;
@@ -1570,32 +2276,78 @@ Test that:
 - pins are not duplicated in YAML;
 - `treadmill=false` creates no treadmill claim/process/artifacts while normal
   profile inputs, including freely-moving BCM13/16 pokes, remain unchanged;
+- the hardware-stress configuration disables treadmill in off-Pi/forced-mock
+  mode and enables required acquisition/logger behavior on a real Pi 5;
+- strict force-mock parsing accepts only the documented true/false literals,
+  rejects empty/unknown values, and never treats an invalid value as real mode;
+- known non-ARM, Pi 5, unsupported Pi, and unknown ARM/model-read-failure cases
+  resolve exactly as Section 5.4 requires, including valid force-mock override;
+- subprocess entrypoint tests prove the real/mock decision occurs before any
+  conditional real/mock GPIO class import, is identical in both stress
+  launchers, starts the mock server only in mock mode, and rejects an unforced
+  non-Pi-5 Raspberry Pi before launcher side effects;
+- display `--dry-run` remains side-effect free, loads no hardware backend, and
+  emits no hardware-acceptance result;
+- no enabled runtime silently selects the retired mock `RotaryEncoder`;
 - `treadmill=true` is accepted only for the head-fixed profile;
 - freely-moving treadmill configuration fails before BCM13/16 claims;
 - required startup failure prevents session preparation;
 - partial `InputService` construction failure leaves no treadmill process, IPC,
   or GPIO claim even though owner assignment never completed;
 - optional startup failure remains loud and inspectable;
+- optional startup failure returns only after partial worker, GPIO, and IPC
+  resources are gone and the cached failed facade is inspectable;
 - an enabled facade without initial state returns a failed health report and
   raises the typed unavailable error from `snapshot()`/`require_healthy()`;
 - another recording owner does not restart or re-zero the logger;
-- final-owner stop finalizes treadmill artifacts;
+- final-owner stop finalizes active treadmill artifacts or preserves an
+  already-finalized failure set without rewriting it;
 - a later newly opened recording starts a new logger and establishes one new
   zero without restarting acquisition;
-- enabled optional startup failure creates header-only state plus explicit
-  failed metadata, diagnostics, and summary artifacts;
-- recording-directory open failure follows logger criticality and rolls back a
-  newly opened shared recording when required;
+- enabled optional startup failure immediately finalizes header-only state plus
+  explicit failed metadata, diagnostics, and summary artifacts without leaving
+  an idle logger or open treadmill handle;
+- after optional startup cleanup has removed acquisition IPC, a later
+  header-only logger succeeds using only the immutable serialized failure
+  context;
+- failure while opening either shared-recorder artifact restores prior owner
+  flags, closes partial handles, and leaves recording inactive;
+- required treadmill logger/origin failure after `started_now=true` rolls back
+  only the newly asserted owner and newly opened shared handles;
 - pre-existing treadmill artifact paths are never overwritten or appended and
   follow the same visible logger-failure handling;
-- recording-origin zero failure is atomic and follows treadmill required versus
-  optional behavior without emitting mislabeled samples;
+- recording-origin zero `confirmed_not_applied` and `indeterminate` results
+  follow required versus optional behavior without emitting mislabeled samples;
 - pre-recording acquisition/integrity failure rolls back required treadmill
   recording start but produces failed optional treadmill artifacts;
+- a specific startup cause suppresses generic `ACQUISITION_START_FAILED`, while
+  process creation/handshake failure without a specific cause uses it;
 - non-treadmill lick, poke, trigger, output, and recording tests remain
   unchanged and passing.
 - runtime polling surfaces one warning per treadmill health/code transition
-  without changing task state or warning continuously.
+  before the prepared-state early return, without changing task state or
+  warning continuously;
+- `session_metadata.json` receives the explicit enabled/effective-configuration
+  treadmill object without relying on mutation of input `session_info`.
+- real Pi 5 stress runs stop on every disallowed treadmill report, accept only
+  calibration-only degradation during bring-up, validate the completed summary,
+  and return nonzero on treadmill/artifact failure or interruption;
+- display-mode real Pi 5 stress evaluates the same health policy immediately
+  before audio preflight, skips the preflight on an active or retained failure,
+  and rejects an active or cleared-but-retained preflight failure before task
+  start;
+- mock stress output labels treadmill hardware acceptance `not_applicable`; a
+  mock cleanup failure preserves that status, records
+  `behavbox_cleanup.status=failed`, and exits nonzero;
+- both launchers call `box.close()` after injected preparation/acquisition,
+  logger-start, origin-zero, task-runtime, stop, artifact-writing, and
+  finalization failures, report cleanup failures, and never rely on `__del__`
+  for child cleanup;
+- post-close processing finalizes both hardware acceptance and
+  `behavbox_cleanup`; real success replaces `pending_cleanup`, while mock stays
+  `not_applicable`, and cleanup/final-state-write failure cannot leave a result
+  which is interpreted as successful;
+- display-mode failure cleanup closes BehavBox before restoring LightDM.
 
 ### 18.2 Pure quadrature tests
 
@@ -1627,8 +2379,8 @@ Generate kernel timestamps for known speeds and verify:
 - timeout to zero;
 - retained last encoder direction after current locomotion direction times out;
 - retained last-edge speed after timeout;
-- rejected/regressing events follow the documented last-edge/last-motion
-  timestamp rules;
+- rejected, regressing/equal, and future-timestamp events follow the documented
+  last-edge/last-motion timestamp rules;
 - no dependence on Python processing delay or wall time.
 
 ### 18.4 Failure-injection tests
@@ -1636,6 +2388,8 @@ Generate kernel timestamps for known speeds and verify:
 Inject:
 
 - global and per-line sequence gaps;
+- contiguous and gapped global/per-line sequence transitions across the
+  unsigned 32-bit wrap boundary, plus the exactly-half-range ambiguous case;
 - duplicate/inconsistent rising and falling events;
 - timestamp regression and nonpositive intervals;
 - out-of-order sequences;
@@ -1656,6 +2410,8 @@ invented position corrections.
 With fake binding objects and synthetic chip inventories, test:
 
 - required libgpiod capabilities;
+- provisioning/verifier checks distinguish the `python3-libgpiod` binding from
+  the separately packaged `gpiod` command-line tools;
 - package/BehavBox import and disabled operation when `gpiod` is absent;
 - Pi 5 RP1 resolution under different gpiochip numbering;
 - missing, ambiguous, claimed, and out-of-range lines;
@@ -1676,7 +2432,10 @@ Test that:
 - a stalled reader cannot stop acquisition progress;
 - unavailable publication slots cause diagnosed skips, not blocking;
 - behavior read timeout raises the typed error while health reporting remains
-  nonthrowing and non-healthy;
+  nonthrowing and non-healthy, then clears its active read-timeout code after a
+  successful coherent read while retaining diagnostics;
+- coherent reads, control resolution, logger startup, and synchronization all
+  stop at their documented total deadlines;
 - startup waits for usable health and reports staged failures;
 - spawn-mode worker targets and injected sources serialize without import-time
   process or GPIO side effects;
@@ -1686,10 +2445,49 @@ Test that:
   multiprocessing context;
 - heartbeat updates without motion;
 - stale heartbeat or a killed worker becomes `FAILED`;
-- zero acknowledgements match command and state version;
-- an unacknowledged zero leaves canonical offsets unchanged;
+- a worker-owned health code which activates and clears between two reader
+  snapshots remains in `observed_acquisition_health_codes` with deterministic
+  first-observation ordering even when its diagnostic delivery is delayed;
+- zero command IDs are idempotent and direct acknowledgements match the
+  published command ID and state version;
+- the in-flight and most recently resolved command IDs replay without another
+  application, while an older stale ID is rejected without application or an
+  unbounded result history;
+- loss of a direct zero acknowledgement reconciles to `applied` from coherent
+  state when publication succeeded;
+- enqueue failure or a published rejection yields `confirmed_not_applied` and
+  leaves canonical offsets unchanged;
+- unreadable/unresolved state yields `indeterminate`, and a recording never
+  uses that command as its origin;
+- later readable state resolves a non-recording indeterminate zero without
+  reapplying it and follows the documented active-code clearing rules;
 - zero rejects unavailable/integrity-invalid acquisition but remains available
   for degradation that leaves trajectory continuity intact;
+- public zero is rejected without offset change during active recording, while
+  the private pre-sample recording-origin path remains allowed;
+- deterministic barriers exercise both orderings between public zero and
+  first-owner start, and between public zero and final-owner stop, proving that
+  zero resolution cannot interleave logger/origin startup or final sampling;
+- the recording-state callback remains true after optional logger/origin
+  failure and becomes false only after required rollback or final recorder
+  finalization, so public zero remains rejected for the full shared recording;
+- public zero's mutex wait respects its total control deadline and timeout does
+  not allocate or enqueue a command;
+- parameterized before/after-lock barriers cover `snapshot()`,
+  `health_report()`, `zero()`, and recording start/stop versus close: an
+  operation already holding the lifecycle lock completes or unwinds within its
+  existing deadline before cleanup, while one queued behind the close request
+  rechecks the flag and touches no IPC, recorder, or logger resource. The
+  admitted cases include lost-ack zero reconciliation and logger-ready/origin
+  setup;
+- coordinated close holds the lifecycle mutex through logger finalization,
+  shared-recorder owner/handle cleanup, acquisition shutdown, and treadmill IPC
+  release; the later enclosing recorder close is idempotent;
+- injected flush and close failures on each shared-recorder handle do not skip
+  the other handles, acquisition STOP/join/forced cleanup, final cache update,
+  treadmill IPC release, or later BehavBox subsystem cleanup; recorder owner
+  flags/references become inactive, errors are aggregated afterward, and cached
+  health contains `SHUTDOWN_INCOMPLETE`;
 - close drains pending fake events and is idempotent;
 - forced cleanup is bounded and diagnosed;
 - forced treadmill cleanup does not prevent the enclosing BehavBox cleanup
@@ -1698,7 +2496,9 @@ Test that:
   resource behind;
 - post-close snapshots use the cached final state, do not touch released IPC,
   preserve clean `STOPPED` versus forced `FAILED` shutdown, and commands follow
-  the documented facade lifecycle.
+  the documented facade lifecycle;
+- orderly `STOPPED` retains trustworthy final physical values, while an
+  unexpected availability loss exposes them as unavailable.
 
 ### 18.7 Logger and artifact tests
 
@@ -1715,21 +2515,53 @@ Using deterministic clocks and temporary directories, test:
 - complete normal shutdown;
 - useful partial files after interruption where practical;
 - logger failure never blocks acquisition;
+- logger-start failure or timeout occurs before any origin zero; required mode
+  rolls back and optional mode continues shared IO with visible failure/fallback
+  evidence but no treadmill state samples;
+- after logger readiness, either non-applied origin outcome stops/joins the
+  logger and closes all treadmill handles; required mode then has no active
+  recording facade after rollback, while optional mode immediately finalizes
+  its header-only failed artifacts and keeps only the recording-scoped failure
+  marker until shared recording ends;
 - acquisition death cannot leave later logger samples marked healthy;
 - an optional recording failure remains visible until the shared recording
   ends and does not invalidate intact acquisition trajectory;
 - metadata and summary contain units, calibration, versions, health, and
   integrity;
+- `observed_health_codes` preserves first-observation order without duplicates,
+  includes startup context and transient health-transition diagnostics, and
+  does not remove codes which later clear;
+- a second recording on the same facade repeats codes first observed during the
+  first recording, including codes seen only by its logger, while a new facade
+  starts with a fresh history;
+- `state_sample_count` equals the number of TSV data rows, is zero for
+  header-only output, and normal duration uses the exact monotonic
+  origin-to-final-stop formula while failed/incomplete duration is null;
+- aligned 100 ms lifetime transition-rate maxima and recording-window lag
+  histogram subtraction/approximate percentile labels follow Section 11.3;
 - startup/pre-recording diagnostic context reaches a later logger, and a full
   diagnostic channel increments the published/summary drop counter without
   blocking acquisition;
+- pre-recording and active-recording health checks never consume diagnostic
+  records, while retained shared health still exposes transient codes to
+  preflight;
+- a record queued before recording is later written by the successful logger,
+  which remains the only live channel consumer;
+- worker-channel overflow increments `diagnostic_event_drop_count` and retains
+  `DIAGNOSTIC_EVENTS_DROPPED` in shared observed health;
+- acquisition startup failure stops the worker before one bounded drain into
+  the immutable failure context and releases IPC afterward;
+- unexpected logger failure marks the artifact incomplete and, only after the
+  child is confirmed dead, performs one bounded best-effort fallback drain
+  without claiming exact-once delivery;
 - handled-failure ring dumps are reconstructable and abrupt-loss summaries do
   not claim a dump exists;
 - repeated close does not overwrite a completed recording;
 - requested-but-failed and disabled treadmill recordings remain
   distinguishable from their artifact sets and metadata;
-- failed recordings without an acknowledged origin use null window counters
-  while preserving any known lifetime counters.
+- failed recordings without an applied origin use null window counters
+  and null recording duration/end/relative physical values while preserving
+  any known lifetime counters and recording the artifact-finalization time.
 
 ### 18.8 Volume and process stress tests
 
@@ -1749,6 +2581,15 @@ the behavior process performs representative:
 
 Require exact displacement, zero injected/unexplained sequence gaps, valid
 integrity, live processes, and recorded resource/lag metrics.
+
+For the real Pi 5 hardware-stress path, inject acquisition death, required
+logger death, late finalization failure, a transient disallowed code after the
+last ordinary task poll which clears before summary finalization, and
+calibration-only degradation. Also inject a disallowed preflight code which
+clears before the second gate. Verify immediate error stop for active failures,
+no task start for the retained preflight failure, bounded cleanup and nonzero
+exit, final-summary rejection of both persistent and cleared late failures, and
+a clearly non-production pass for calibration-only bring-up.
 
 ## 19. Hardware calibration and acceptance
 
@@ -1857,6 +2698,23 @@ Require:
 - head-fixed/freely-moving validation;
 - BehavBox live-state exposure;
 - current shared-recording ownership preserved;
+- close-gated recording ownership transitions and shared-recorder cleanup under
+  the single parent lifecycle `RLock`;
+- parent reads serialized with close so IPC is never released under a reader;
+- one live diagnostic consumer: the logger;
+- exception-safe recorder, treadmill, and enclosing BehavBox cleanup with
+  aggregate post-cleanup error reporting;
+- mandatory rollback for partial shared-artifact and required treadmill-start
+  failures;
+- effective treadmill configuration in session metadata;
+- treadmill-disabled mock stress and treadmill-required real Pi 5 stress
+  configuration;
+- strict, immutable stress-host/force-mock selection without changing
+  unrelated non-stress GPIO support;
+- task-specific real-stress health and artifact acceptance, nonzero failure
+  exits, and guaranteed bounded launcher cleanup after BehavBox construction;
+- separate hardware-acceptance and BehavBox-cleanup results, including mock
+  `not_applicable` semantics;
 - archived and external legacy code unchanged.
 
 ### 20.3 Recording and diagnostics
@@ -1865,6 +2723,7 @@ Require:
 - `treadmill_metadata.json`;
 - `treadmill_diagnostics.jsonl`;
 - `treadmill_summary.json`;
+- ordered retained `observed_health_codes` for acceptance;
 - bounded recent-event ring;
 - best-effort handled-failure ring dump;
 - application-log fallback for logger failure.
@@ -1876,8 +2735,10 @@ Require:
 - setup and dependency instructions for Pi 5 Trixie;
 - calibration procedure;
 - health/integrity interpretation guide;
+- hardware-stress launch instructions covering Pi 5 real default, pre-import
+  force-mock use, and unsupported Pi models;
 - hardware rate-sweep and soak-test procedure;
-- migration note containing modern and legacy calibration values.
+- migration note containing modern and legacy calibration values;
 - one tracked `docs/treadmill_validation.md` record linking the target API,
   timing, calibration, stress, rate-sweep, soak, commands, commits, and external
   artifact locations used for acceptance.
@@ -1897,9 +2758,18 @@ The system is not production-ready until saved evidence shows:
 - [ ] sequence gaps and ambiguous trajectory loss latch integrity false;
 - [ ] worker death cannot appear as stationary healthy data;
 - [ ] behavior and logger readers cannot block acquisition;
+- [ ] parent readers cannot race close or IPC release;
 - [ ] fixed-rate artifacts are bounded, incremental, aligned, and versioned;
+- [ ] the final summary retains every observed health code needed for
+      acceptance, including cleared transients;
+- [ ] summary row count and monotonic origin-to-stop duration agree with the
+      recorded state artifact;
 - [ ] synthetic million-event tests are exact;
 - [ ] full process stress tests are exact under representative load;
+- [ ] real Pi 5 stress failure injection cannot exit zero or leave acquisition
+      or logger children running;
+- [ ] injected recorder flush/close failures still attempt every later cleanup
+      and latch `SHUTDOWN_INCOMPLETE`;
 - [ ] external hardware generator passes at 2x expected rate;
 - [ ] full-stack direction/reversal/start/stop tests pass;
 - [ ] long soak passes with stable resources and no loss/backlog;
