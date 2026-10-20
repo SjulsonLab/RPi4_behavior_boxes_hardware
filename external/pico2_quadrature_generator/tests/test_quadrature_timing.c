@@ -11,6 +11,7 @@ typedef struct {
     uint32_t expected_delay_counter;
 } required_timing_case_t;
 
+/** Verify exact, dimensionless PIO timing values for all six required rates. */
 static void test_required_frequency_pairs(void)
 {
     static const required_timing_case_t cases[] = {
@@ -37,6 +38,7 @@ static void test_required_frequency_pairs(void)
     }
 }
 
+/** Verify accepted timing boundaries and rejection of invalid scalar inputs. */
 static void test_timing_boundaries_and_invalid_inputs(void)
 {
     quadrature_timing_t timing = {0u, 0u};
@@ -53,6 +55,7 @@ static void test_timing_boundaries_and_invalid_inputs(void)
     assert(!quadrature_calculate_timing(120000000u, 6u, 1000u, NULL));
 }
 
+/** Verify the dimensionless N-minus-one encoding over its complete input range. */
 static void test_cycle_counter_encoding(void)
 {
     uint32_t encoded_count = 0u;
@@ -71,10 +74,22 @@ static void test_cycle_counter_encoding(void)
     assert(!quadrature_encode_cycle_count(UINT64_C(1), NULL));
 }
 
+/** Verify the compile-time GPIO relationship expression for valid and invalid pins. */
+static void test_pin_configuration_validation(void)
+{
+    assert(QUADRATURE_PIN_CONFIGURATION_IS_VALID(2u, 3u, 15u, 25u, 30u));
+    assert(!QUADRATURE_PIN_CONFIGURATION_IS_VALID(2u, 4u, 15u, 25u, 30u));
+    assert(!QUADRATURE_PIN_CONFIGURATION_IS_VALID(2u, 3u, 2u, 25u, 30u));
+    assert(!QUADRATURE_PIN_CONFIGURATION_IS_VALID(2u, 3u, 15u, 3u, 30u));
+    assert(!QUADRATURE_PIN_CONFIGURATION_IS_VALID(29u, 30u, 15u, 25u, 30u));
+}
+
+/** Run all host timing contract checks; returns zero when every assertion holds. */
 int main(void)
 {
     test_required_frequency_pairs();
     test_timing_boundaries_and_invalid_inputs();
     test_cycle_counter_encoding();
+    test_pin_configuration_validation();
     return 0;
 }

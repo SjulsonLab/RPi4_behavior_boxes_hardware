@@ -1,0 +1,48 @@
+.program quadrature_burst
+
+; The CPU supplies two words before the first output transition:
+;   1. X = requested quadrature cycles minus one
+;   2. ISR = reusable Y delay-loop preload
+;
+; SET values use A as the least-significant pin and B as the next pin:
+;   A/B 10 -> SET 1, 00 -> SET 0, 01 -> SET 2, 11 -> SET 3.
+;
+; Each quarter-period has four fixed instruction cycles plus Y additional
+; loop cycles. The NOP after each of the first three phases balances the
+; fourth phase's JMP X--, so the cycle boundary is not stretched.
+
+.wrap_target
+    pull block
+    mov x, osr
+    pull block
+    mov isr, osr
+
+cycle_start:
+    set pins, 1
+    mov y, isr
+delay_ab_10:
+    jmp y-- delay_ab_10
+    nop
+
+    set pins, 0
+    mov y, isr
+delay_ab_00:
+    jmp y-- delay_ab_00
+    nop
+
+    set pins, 2
+    mov y, isr
+delay_ab_01:
+    jmp y-- delay_ab_01
+    nop
+
+    set pins, 3
+    mov y, isr
+delay_ab_11:
+    jmp y-- delay_ab_11
+    jmp x-- cycle_start
+
+    ; Set IRQ 0 and stall until the CPU acknowledges completion. Clearing the
+    ; flag lets the state machine wrap to the first blocking PULL at idle 11.
+    irq wait 0
+.wrap
