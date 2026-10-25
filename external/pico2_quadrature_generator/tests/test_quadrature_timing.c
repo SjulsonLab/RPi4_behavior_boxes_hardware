@@ -74,14 +74,15 @@ static void test_cycle_counter_encoding(void)
     assert(!quadrature_encode_cycle_count(UINT64_C(1), NULL));
 }
 
-/** Verify the compile-time GPIO relationship expression for valid and invalid pins. */
-static void test_pin_configuration_validation(void)
+/** Verify the compile-time MCU signal-pin relationship expression. */
+static void test_signal_pin_configuration_validation(void)
 {
-    assert(QUADRATURE_PIN_CONFIGURATION_IS_VALID(2u, 3u, 15u, 25u, 30u));
-    assert(!QUADRATURE_PIN_CONFIGURATION_IS_VALID(2u, 4u, 15u, 25u, 30u));
-    assert(!QUADRATURE_PIN_CONFIGURATION_IS_VALID(2u, 3u, 2u, 25u, 30u));
-    assert(!QUADRATURE_PIN_CONFIGURATION_IS_VALID(2u, 3u, 15u, 3u, 30u));
-    assert(!QUADRATURE_PIN_CONFIGURATION_IS_VALID(29u, 30u, 15u, 25u, 30u));
+    assert(QUADRATURE_SIGNAL_PIN_CONFIGURATION_IS_VALID(2u, 3u, 15u, 30u));
+    assert(!QUADRATURE_SIGNAL_PIN_CONFIGURATION_IS_VALID(2u, 4u, 15u, 30u));
+    assert(!QUADRATURE_SIGNAL_PIN_CONFIGURATION_IS_VALID(2u, 3u, 2u, 30u));
+    assert(!QUADRATURE_SIGNAL_PIN_CONFIGURATION_IS_VALID(2u, 3u, 3u, 30u));
+    assert(!QUADRATURE_SIGNAL_PIN_CONFIGURATION_IS_VALID(29u, 30u, 15u, 30u));
+    assert(!QUADRATURE_SIGNAL_PIN_CONFIGURATION_IS_VALID(2u, 3u, 30u, 30u));
 }
 
 /** Run all host timing contract checks; returns zero when every assertion holds. */
@@ -90,6 +91,6 @@ int main(void)
     test_required_frequency_pairs();
     test_timing_boundaries_and_invalid_inputs();
     test_cycle_counter_encoding();
-    test_pin_configuration_validation();
+    test_signal_pin_configuration_validation();
     return 0;
 }
