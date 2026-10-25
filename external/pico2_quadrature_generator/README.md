@@ -1,19 +1,19 @@
-# Pico 2 known-count quadrature burst generator
+# Pico 2 W known-count quadrature burst generator
 
-This standalone Raspberry Pi Pico 2 firmware emits an exact, finite burst of
+This standalone Raspberry Pi Pico 2 W firmware emits an exact, finite burst of
 quadrature transitions for testing a separate Pi or Teensy decoder. It does
 not require a serial terminal or a host computer after flashing.
 
-The firmware has passed host timing tests, PIO static review, and a Pico 2
+The firmware has passed host timing tests, PIO static review, and a Pico 2 W
 build only when recorded as such in the repository handoff. Electrical
 behavior must not be described as validated until the hardware checks below
-have been completed with a Pico 2 and a scope or logic analyzer.
+have been completed with a Pico 2 W and a scope or logic analyzer.
 
 ## Wiring
 
 GPIO names and physical header-pin numbers are different:
 
-| Purpose | Pico 2 GPIO | Physical header pin | Connection |
+| Purpose | Pico 2 W GPIO | Physical header pin | Connection |
 |---|---:|---:|---|
 | Quadrature A | GP2 | 4 | Receiver encoder A input |
 | Quadrature B | GP3 | 5 | Receiver encoder B input |
@@ -61,15 +61,17 @@ Command-line build:
 
 ```sh
 export PICO_SDK_PATH=/path/to/pico-sdk
-cmake -S . -B build -DPICO_BOARD=pico2
+cmake -S . -B build -DPICO_BOARD=pico2_w
 cmake --build build
 ```
 
 The result is `build/pico2_quadrature_generator.uf2`. Hold BOOTSEL while
-connecting the Pico 2, then copy that UF2 file to the mounted `RP2350` drive.
+connecting the Pico 2 W, then copy that UF2 file to the mounted `RP2350` drive.
 
 The same directory can be opened with the Raspberry Pi Pico VS Code extension.
-Select the non-wireless `pico2` board before building.
+Select the `pico2_w` board before building. The firmware links
+`pico_cyw43_arch_none` only to operate the onboard LED; it does not initialize
+a network stack or connect to Wi-Fi.
 
 ## Operation
 

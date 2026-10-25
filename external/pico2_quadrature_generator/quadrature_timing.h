@@ -10,21 +10,17 @@
 /*
  * Validate dimensionless GPIO numbers as a constant expression. All arguments
  * must be non-negative integer values; gpio_count is the exclusive upper pin
- * bound. Outputs must be adjacent and all four owned GPIOs must be distinct.
+ * bound. Outputs must be adjacent and all three signal GPIOs must be distinct.
  */
-#define QUADRATURE_PIN_CONFIGURATION_IS_VALID(a_pin, b_pin, start_pin, led_pin, gpio_count) \
-    (                                                                                       \
-        (a_pin) < (gpio_count) &&                                                           \
-        (b_pin) < (gpio_count) &&                                                           \
-        (start_pin) < (gpio_count) &&                                                       \
-        (led_pin) < (gpio_count) &&                                                         \
-        (b_pin) > (a_pin) &&                                                                \
-        ((b_pin) - (a_pin)) == 1u &&                                                        \
-        (start_pin) != (a_pin) &&                                                           \
-        (start_pin) != (b_pin) &&                                                           \
-        (led_pin) != (a_pin) &&                                                             \
-        (led_pin) != (b_pin) &&                                                             \
-        (led_pin) != (start_pin)                                                            \
+#define QUADRATURE_SIGNAL_PIN_CONFIGURATION_IS_VALID(a_pin, b_pin, start_pin, gpio_count) \
+    (                                                                                     \
+        (a_pin) < (gpio_count) &&                                                         \
+        (b_pin) < (gpio_count) &&                                                         \
+        (start_pin) < (gpio_count) &&                                                     \
+        (b_pin) > (a_pin) &&                                                              \
+        ((b_pin) - (a_pin)) == 1u &&                                                      \
+        (start_pin) != (a_pin) &&                                                         \
+        (start_pin) != (b_pin)                                                            \
     )
 
 /** Timing values loaded into the PIO generator for one configured frequency. */

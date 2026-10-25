@@ -4,6 +4,7 @@
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/pio.h"
+#include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 
 #include "quadrature_burst.pio.h"
@@ -26,14 +27,13 @@
 #define OUTPUT_PIN_MASK ((UINT32_C(1) << A_PIN) | (UINT32_C(1) << B_PIN))
 
 _Static_assert(
-    QUADRATURE_PIN_CONFIGURATION_IS_VALID(
+    QUADRATURE_SIGNAL_PIN_CONFIGURATION_IS_VALID(
         A_PIN,
         B_PIN,
         START_BUTTON_PIN,
-        PICO_DEFAULT_LED_PIN,
         NUM_BANK0_GPIOS
     ),
-    "Quadrature, START, and LED pins must be valid, distinct, and adjacent where required"
+    "Quadrature and START pins must be valid, distinct, and adjacent where required"
 );
 _Static_assert(SYSTEM_CLOCK_HZ > 0u, "SYSTEM_CLOCK_HZ must be positive");
 _Static_assert(PIO_CLOCK_DIVIDER > 0u, "PIO_CLOCK_DIVIDER must be positive");
@@ -66,20 +66,32 @@ static void initialize_idle_outputs(void)
 }
 
 /**
- * Initialize the active-low START input and the ready indicator.
+ * Initialize the active-low START input.
  *
- * Inputs: none. Outputs: START_BUTTON_PIN is a pulled-up input and the onboard
- * LED is a digital output initially off. Returns no value.
+ * Inputs: none. Output: START_BUTTON_PIN is a pulled-up input. Returns no
+ * value.
  */
-static void initialize_control_gpio(void)
+static void initialize_start_button(void)
 {
     gpio_init(START_BUTTON_PIN);
     gpio_set_dir(START_BUTTON_PIN, GPIO_IN);
     gpio_pull_up(START_BUTTON_PIN);
+}
 
-    gpio_init(PICO_DEFAULT_LED_PIN);
-    gpio_set_dir(PICO_DEFAULT_LED_PIN, GPIO_OUT);
-    gpio_put(PICO_DEFAULT_LED_PIN, false);
+/**
+ * Initialize the Pico 2 W wireless chip solely to control its onboard LED.
+ *
+ * Inputs: none. Output: the CYW43-controlled onboard LED is initially off.
+ * Returns true when the CYW43 driver initialized successfully, false otherwise.
+ * No network stack or wireless connection is configured.
+ */
+static bool initialize_ready_indicator(void)
+{
+    if (cyw43_arch_init() != 0) {
+        return false;
+    }
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, false);
+    return true;
 }
 
 /**
@@ -90,7 +102,19 @@ static void initialize_control_gpio(void)
  */
 static void set_ready_indicator(bool ready)
 {
-    gpio_put(PICO_DEFAULT_LED_PIN, ready);
+    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, ready);
+}
+
+/**
+ * Stop forever before the CYW43 ready indicator is available.
+ *
+ * Inputs: none. Returns: never. The waveform outputs remain at idle A/B=11.
+ */
+static _Noreturn void halt_without_ready_indicator(void)
+{
+    while (true) {
+        tight_loop_contents();
+    }
 }
 
 /**
@@ -236,10 +260,13 @@ int main(void)
     uint32_t encoded_cycle_count;
 
     initialize_idle_outputs();
-    initialize_control_gpio();
-
     if (!configure_system_clock()) {
-        halt_safely();
+        halt_without_ready_indicator();
+    }
+
+    initialize_start_button();
+    if (!initialize_ready_indicator()) {
+        halt_without_ready_indicator();
     }
     if (!quadrature_calculate_timing(
             clock_get_hz(clk_sys),

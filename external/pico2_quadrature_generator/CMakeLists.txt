@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.13)
 
-set(PICO_BOARD pico2 CACHE STRING "Target Raspberry Pi Pico board")
-if(NOT PICO_BOARD STREQUAL "pico2")
-    message(FATAL_ERROR "This firmware targets the non-wireless Raspberry Pi Pico 2 (PICO_BOARD=pico2)")
+set(PICO_BOARD pico2_w CACHE STRING "Target Raspberry Pi Pico board")
+if(NOT PICO_BOARD STREQUAL "pico2_w")
+    message(FATAL_ERROR "This firmware targets Raspberry Pi Pico 2 W (PICO_BOARD=pico2_w)")
 endif()
 
 include(pico_sdk_import.cmake)
@@ -25,16 +25,15 @@ target_link_libraries(
     pico2_quadrature_generator
     PRIVATE
         pico_stdlib
+        pico_cyw43_arch_none
         hardware_clocks
         hardware_pio
 )
 
-target_compile_options(
-    pico2_quadrature_generator
-    PRIVATE
-        -Wall
-        -Wextra
-        -Werror
+set_source_files_properties(
+    main.c
+    PROPERTIES
+        COMPILE_OPTIONS "-Wall;-Wextra;-Werror"
 )
 
 pico_enable_stdio_usb(pico2_quadrature_generator 0)

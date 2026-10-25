@@ -1,8 +1,8 @@
-# Pico 2 Known-Count Quadrature Burst Generator
+# Pico 2 W Known-Count Quadrature Burst Generator
 
 ## 1. Purpose and scope
 
-Implement a small, standalone firmware project for a **Raspberry Pi Pico 2 (non-wireless)** using the **official Pico C/C++ SDK**, buildable with the Raspberry Pi Pico VS Code extension or the SDK command-line tools.
+Implement a small, standalone firmware project for a **Raspberry Pi Pico 2 W** using the **official Pico C/C++ SDK**, buildable with the Raspberry Pi Pico VS Code extension or the SDK command-line tools.
 
 The firmware has one job:
 
@@ -180,7 +180,7 @@ The physical RUN-to-GND button restarts the firmware. It does not count as START
 
 ## 7. Minimal user feedback
 
-Use the onboard LED if helpful: on when ready for a fresh START press, off during the delay/burst and while waiting for release. Keep this to one simple indication rather than a blinking status system.
+Use the Pico 2 W onboard LED: on when ready for a fresh START press, off during the delay/burst and while waiting for release. The LED is controlled through the CYW43 wireless chip rather than an RP2350 GPIO. Initialize CYW43 only through the SDK's no-network architecture needed for LED access; do not initialize a network stack or connect to Wi-Fi. Configure the system clock before CYW43 initialization so the driver's internal PIO timing is based on the final clock. Keep feedback to this one simple indication rather than a blinking status system.
 
 USB serial is not required for normal use. The device must work from USB power without an attached computer or open terminal. Do not add interactive serial controls or continuous logging. Optional development messages must remain outside the timed output and must not gate operation on a host connection.
 
@@ -199,7 +199,7 @@ pico2_quadrature_generator/
     README.md
 ```
 
-Use the SDK's PIO assembler to generate its header. Target `PICO_BOARD=pico2` and produce a `.uf2` file. Do not require Arduino libraries, MicroPython, an RTOS, networking, multicore execution, a custom host application, or a reusable waveform-generation framework.
+Use the SDK's PIO assembler to generate its header. Target `PICO_BOARD=pico2_w`, link the SDK's `pico_cyw43_arch_none` support for onboard-LED access, and produce a `.uf2` file. Do not require Arduino libraries, MicroPython, an RTOS, a network stack, wireless connectivity, multicore execution, a custom host application, or a reusable waveform-generation framework. CYW43 and the quadrature generator each claim a PIO state machine; initialize the clock before either driver and fail safely if either claim cannot be satisfied.
 
 Prefer a few plainly named functions over classes, abstract backends, or extra packages. Comments should explain the pin/bit mapping, PIO loop count, timing calculation, button rearming, and safe idle behavior.
 
@@ -209,7 +209,7 @@ The README should cover wiring, editable constants, SDK/VS Code build and UF2 up
 
 Do enough checking to trust the diagnostic source without creating another large testing project.
 
-**Build and static review.** Build for Pico 2. Explain the PIO instruction timing and counter initialization for N=1, 2, and 3. Check that every quarter-cycle, including the loop boundary, has the intended duration. Keep this explanation beside the PIO code or in the README; no separate simulator is required.
+**Build and static review.** Build for Pico 2 W. Explain the PIO instruction timing and counter initialization for N=1, 2, and 3. Check that every quarter-cycle, including the loop boundary, has the intended duration. Confirm the CYW43 driver and quadrature generator can claim separate PIO state machines. Keep this explanation beside the PIO code or in the README; no separate simulator is required.
 
 **Small-count hardware check.** With a scope or logic analyzer, check N=1, 2, 3, and 10 at a required frequency. Confirm 4N total transitions, N rising edges on each channel, the specified ordering, idle 11, and no extra transition after completion. Observe repeated button presses, a held button, presses during the delay/burst, and START held at reset. Confirm the configured pre-burst delay after press acceptance.
 
@@ -235,4 +235,4 @@ There are no extra cycles, no automatic repetition, no CPU-timed stopping, and n
 
 ## Reference basis
 
-Hardware/API facts should be checked against the official Raspberry Pi Pico SDK documentation (`hardware_pio`, `hardware_clocks`, and `hardware_gpio`), the Pico 2 board documentation, and the official Pico C/C++ build/UF2 documentation. The logical positive sequence matches the supplied treadmill specification, Section 10.2. All proposed defaults and scope restrictions above are requirements for this generator, not evidence of completed implementation or hardware validation.
+Hardware/API facts should be checked against the official Raspberry Pi Pico SDK documentation (`hardware_pio`, `hardware_clocks`, `hardware_gpio`, and `pico_cyw43_arch`), the Pico 2 W board documentation, and the official Pico C/C++ build/UF2 documentation. The logical positive sequence matches the supplied treadmill specification, Section 10.2. All proposed defaults and scope restrictions above are requirements for this generator, not evidence of completed implementation or hardware validation.
