@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +37,54 @@ def test_runtime_package_group_contains_required_media_and_plotting_packages() -
         "rsync",
     ):
         assert package_name in packages
+
+
+def test_treadmill_binding_and_cli_tools_are_separate_runtime_requirements() -> None:
+    """The binding, import, and diagnostic executables must all be provisioned."""
+    manifest = load_manifest()
+    assert "python3-libgpiod" in runtime_apt_packages()
+    assert "gpiod" in runtime_apt_packages()
+    assert "gpiod" in manifest["python_modules"]["runtime"]
+    assert {"gpiodetect", "gpioinfo"} <= set(manifest["commands"]["runtime"])
+
+
+@pytest.mark.parametrize("missing", [None, "line_seqno", "global_seqno", "wait_edge_events"])
+def test_treadmill_capability_probe_rejects_incomplete_bindings(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], missing: str | None,
+) -> None:
+    """An importable v1/incomplete binding must not pass the v2 capability gate."""
+    probe = next(
+        (probe for probe in runtime_repo_probes(include_dev=False) if probe["name"] == "treadmill_gpiod_v2"),
+        None,
+    )
+    assert probe is not None, "missing treadmill libgpiod v2 capability probe"
+    event_fields = {name: object() for name in (
+        "timestamp_ns", "line_offset", "event_type", "global_seqno", "line_seqno",
+    )}
+    methods = {name: object() for name in (
+        "get_values", "wait_edge_events", "read_edge_events", "release",
+    )}
+    if missing in event_fields:
+        del event_fields[missing]
+    if missing in methods:
+        del methods[missing]
+    binding = SimpleNamespace(
+        request_lines=object(), LineSettings=object(), Chip=object(),
+        LineRequest=SimpleNamespace(**methods),
+        EdgeEvent=SimpleNamespace(__dataclass_fields__=event_fields),
+        line=SimpleNamespace(
+            Direction=SimpleNamespace(INPUT=object()), Edge=SimpleNamespace(BOTH=object()),
+            Bias=SimpleNamespace(PULL_UP=object(), PULL_DOWN=object(), DISABLED=object()),
+            Clock=SimpleNamespace(MONOTONIC=object()),
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "gpiod", binding)
+    if missing is None:
+        exec(probe["code"], {})
+        assert capsys.readouterr().out.strip() == probe["expected_stdout"]
+    else:
+        with pytest.raises((AssertionError, AttributeError)):
+            exec(probe["code"], {})
 
 
 def test_combined_package_group_adds_dev_packages_without_duplicates() -> None:
