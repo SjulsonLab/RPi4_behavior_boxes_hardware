@@ -293,16 +293,21 @@ def test_backend_error_forces_latest_state_and_status_before_cadence(run_worker)
 def test_stationary_worker_keeps_heartbeat_without_one_khz_idle_wakes(run_worker):
     """Use empty input to verify the existing 50 ms heartbeat and bounded wake count."""
     context = run_worker([], stop_after_ns=130_000_000)
-    live = [
-        (now, state) for now, state in context.successes if state.health != "STOPPED"
-    ]
-    assert [now - START_NS for now, state in live] == [
+    # When STOP arrives exactly on a heartbeat, its final snapshot can carry
+    # that heartbeat without an extra live snapshot at the same instant.
+    heartbeat_times = {
+        state.last_heartbeat_monotonic_ns - START_NS
+        for now, state in context.successes
+    }
+    assert sorted(heartbeat_times) == [
         0,
         50_000_000,
         100_000_000,
         150_000_000,
     ]
-    assert all(state.last_heartbeat_monotonic_ns == now for now, state in live)
+    assert all(
+        state.last_heartbeat_monotonic_ns == now for now, state in context.successes
+    )
     assert len(context.source.waits) == 3
 
 
