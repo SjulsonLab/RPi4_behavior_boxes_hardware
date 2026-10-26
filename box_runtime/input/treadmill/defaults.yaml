@@ -1,0 +1,23 @@
+# Nominal calibration; verify each mechanical rig before experimental use.
+mm_per_encoder_cycle: 0.39269908169872414
+locomotion_sign: 1
+calibration_verified: false
+calibration_source: nominal_25_mm_roller_200_cycles_per_revolution
+calibration_note: UNVERIFIED - perform physical treadmill calibration
+gpio_bias: pull_up
+debounce_period_us: 0
+kernel_event_buffer_size: 8192
+read_batch_size: 256
+speed_timeout_s: 0.050
+continuous_log_rate_hz: 200.0
+continuous_log_flush_interval_s: 1.0
+diagnostic_ring_buffer_size: 8192
+diagnostic_event_queue_size: 256
+heartbeat_interval_s: 0.05
+heartbeat_failure_timeout_s: 0.5
+processing_lag_warning_ns: 50000000
+startup_timeout_s: 5.0
+shutdown_timeout_s: 3.0
+treadmill_required: false
+continuous_logger_required: false
+expected_max_transition_rate_hz: null
