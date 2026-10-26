@@ -239,3 +239,104 @@ def test_standalone_rejects_invalid_duration(duration):
     with pytest.raises(SystemExit) as error:
         treadmill_counter.main(["--duration-s",duration])
     assert error.value.code != 0
+
+
+def test_close_does_not_hide_worker_death_if_no_reader_saw_it(runtime):
+    """Close must detect an unexpected exit even between the last read and close."""
+    wait_count(runtime)
+    runtime._process.terminate()
+    runtime._process.join(2)
+    runtime.close()
+    assert runtime.health_report().health == "FAILED"
+    assert runtime.health_report().failure_code == "ACQUISITION_PROCESS_EXITED"
+    assert runtime.snapshot().position_mm is None
+
+
+def test_failed_startup_context_survives_without_ipc():
+    """Later recording can inspect the serialized failure after startup cleanup."""
+    instance=TreadmillRuntime(config(),source_factory=FailingSource)
+    instance.start()
+    context=instance.failure_context
+    assert context["effective_config"]["mm_per_encoder_cycle"] > 0
+    assert context["health"]["failure_code"] == "GPIO_LINE_CLAIM_FAILED"
+    assert context["diagnostics"]
+    context["health"]["failure_code"]="mutated copy"
+    assert instance.failure_context["health"]["failure_code"] == "GPIO_LINE_CLAIM_FAILED"
+    assert instance._shared is None
+    instance.close()
+
+
+def test_zero_control_full_is_confirmed_not_applied(runtime,monkeypatch):
+    """Failure to enqueue must never be confused with an applied zero."""
+    from queue import Full
+    wait_count(runtime)
+    before=runtime.snapshot()
+    def full(message):
+        """Reject an enqueue before the worker can receive it."""
+        raise Full
+    monkeypatch.setattr(runtime._controls,"put_nowait",full)
+    with pytest.raises(ZeroError) as error:
+        runtime.zero()
+    assert error.value.result.status == "confirmed_not_applied"
+    assert runtime.snapshot().raw_transition_position == before.raw_transition_position
+    monkeypatch.undo()
+
+
+def test_zero_indeterminate_later_read_reconciles_without_reapplication(runtime,monkeypatch):
+    """A lost result can become readable later and clear its active parent code."""
+    wait_count(runtime)
+    real_read=runtime._read_locked
+    calls=0
+    def read_once(**kwargs):
+        """Allow admission, then simulate bounded read failure until zero returns."""
+        nonlocal calls
+        calls+=1
+        if calls == 1:
+            return real_read(**kwargs)
+        raise StateReadError("injected unreadable publication")
+    monkeypatch.setattr(runtime,"_wait_result",lambda *args: None)
+    monkeypatch.setattr(runtime,"_read_locked",read_once)
+    with pytest.raises(ZeroError) as error:
+        runtime.zero()
+    assert error.value.result.status == "indeterminate"
+    monkeypatch.undo()
+    state=runtime.snapshot()
+    assert state.last_applied_zero_command_id == error.value.result.command_id
+    assert "ZERO_RESULT_INDETERMINATE" not in runtime.health_report().active_codes
+    assert "ZERO_RESULT_INDETERMINATE" in runtime.health_report().observed_health_codes
+
+
+def test_stalled_reader_on_one_slot_cannot_stop_acquisition(runtime):
+    """A reader holding one shared slot leaves the other slot writable."""
+    state=wait_count(runtime)
+    held=runtime._shared._active.value
+    runtime._shared._locks[held].acquire()
+    try:
+        time.sleep(0.12)
+        latest=runtime.snapshot()
+        assert latest.last_heartbeat_monotonic_ns > state.last_heartbeat_monotonic_ns
+    finally:
+        runtime._shared._locks[held].release()
+
+
+def test_clean_close_releases_parent_ipc_references(runtime):
+    wait_count(runtime)
+    runtime.close()
+    assert runtime._shared is None and runtime._channels == []
+    assert runtime._controls is runtime._results is runtime._diagnostics is None
+
+
+def test_worker_replays_current_zero_and_rejects_older_id(runtime):
+    """Worker protocol idempotency is bounded to the latest result, not a history."""
+    wait_count(runtime)
+    first=runtime.zero()
+    second=runtime.zero()
+    before=runtime.snapshot()
+    runtime._controls.put_nowait(("ZERO",second.command_id,time.monotonic_ns()+500_000_000))
+    replay=runtime._wait_result("ZERO",second.command_id,time.monotonic()+1)
+    assert replay.worker_timestamp_ns == second.worker_timestamp_ns
+    runtime._controls.put_nowait(("ZERO",first.command_id,time.monotonic_ns()+500_000_000))
+    stale=runtime._wait_result("ZERO",first.command_id,time.monotonic()+1)
+    assert stale.status == "confirmed_not_applied"
+    after=runtime.snapshot()
+    assert after.last_applied_zero_command_id == before.last_applied_zero_command_id
