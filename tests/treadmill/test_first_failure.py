@@ -1,6 +1,8 @@
 """First-integrity-failure context, bounded shutdown transport and CLI output."""
 
 from dataclasses import FrozenInstanceError, replace
+from functools import partial
+import multiprocessing
 import time
 
 import pytest
@@ -205,12 +207,18 @@ class FinalExtraEdgeSource(ExtraEdgeSource):
 
 
 class StalledAfterFailureSource(ExtraEdgeSource):
-    """A source that stops servicing controls after publishing the failing burst."""
+    """A source that signals when it stops servicing controls after its burst."""
+
+    def __init__(self, settings, *, stalled):
+        """Store validated config and a same-context multiprocessing.Event; return None."""
+        super().__init__(settings)
+        self.stalled = stalled
 
     def read_batch(self, timeout_s: float) -> list[EdgeEvent]:
         """Return the finite burst, then stall to exercise forced cleanup."""
         batch = super().read_batch(timeout_s)
         if not batch:
+            self.stalled.set()
             time.sleep(30)
         return batch
 
@@ -280,13 +288,18 @@ def test_clean_stop_has_no_failure_report():
 
 
 def test_forced_cleanup_without_delivery_keeps_report_unavailable():
+    """Wait for the deliberate backend stall; verify bounded forced cleanup and no report."""
+    stalled = multiprocessing.get_context("spawn").Event()
     runtime = TreadmillRuntime(
         config(processing_lag_warning_ns=1_000_000_000, shutdown_timeout_s=0.7),
-        source_factory=StalledAfterFailureSource,
+        source_factory=partial(StalledAfterFailureSource, stalled=stalled),
     )
     runtime.start()
     try:
-        wait_count(runtime, 801)
+        # Coalescing can leave the final tail unpublished when this intentionally
+        # broken backend blocks. Synchronize with the stall rather than that tail.
+        assert stalled.wait(3)
+        assert not runtime.snapshot().integrity_valid
         started = time.monotonic()
         with pytest.raises(LifecycleError):
             runtime.close()
