@@ -193,6 +193,23 @@ def test_busy_stop_delivers_context_through_full_result_queue(make_runtime):
     assert runtime.first_failure_diagnostic.event_number == 9
 
 
+def test_lost_busy_stop_reply_cannot_turn_partial_counts_into_clean_stop(
+    make_runtime, monkeypatch
+):
+    runtime = make_runtime(ContinuousFailureSource)
+    wait_count(runtime, 81)
+
+    def lose_reply(*args):
+        """Accept control-wait arguments; simulate loss of the STOP result."""
+        return None
+
+    monkeypatch.setattr(runtime, "_wait_result", lose_reply)
+    with pytest.raises(LifecycleError, match="partial"):
+        runtime.close()
+    assert runtime.first_failure_diagnostic is None
+    assert runtime.health_report().failure_code == "SHUTDOWN_INCOMPLETE"
+
+
 def test_stop_does_not_apply_pending_zero_on_busy_input(make_runtime):
     runtime = make_runtime(ContinuousSource)
     wait_count(runtime, 80)
