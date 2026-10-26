@@ -19,12 +19,12 @@ Initial target:
 Raspberry Pi 4B is deferred until the Pi 5 implementation has passed production
 acceptance.
 
-Status as of 2026-10-07:
+Status as of 2026-10-26:
 
 | Item | State |
 |---|---|
 | Specification and plan documentation | Revised after implementation-readiness review |
-| Runtime implementation | Not started and not authorized by this document |
+| Runtime implementation | User authorized TW-0 through TW-3 on 2026-10-26; TW-0 in progress |
 | Rewrite tests | Not started |
 | Dependency/provisioning changes | Not started |
 | Hardware calibration and acceptance | Not started |
@@ -81,8 +81,17 @@ The first implementation uses these approved boundaries:
     recording; the private origin zero occurs after logger readiness and before
     the first sample.
 11. Recording uses the TSV/JSON artifacts defined in specification Section 16.
-12. Archived and external legacy treadmill code remains untouched and
-    unimported.
+12. Archived, external, and existing debug legacy treadmill code remains
+    untouched and available for intentional comparisons; no existing legacy
+    treadmill file is deleted or repurposed by this work. It is not imported
+    by the new production runtime. In particular, do not delete or rewrite
+    `debug/treadmill_legacy_step_counter.py`,
+    `debug/treadmill_decoder_legacy.py`, or
+    `debug/treadmill_step_counter.py`, and retain the existing
+    `box_runtime.behavior.gpio_backend.RotaryEncoder` compatibility wrapper
+    used by the latter. Their focused tests remain regression gates. This
+    preservation supports intentional old-versus-new measurements; it does not
+    make either older decoder a production fallback or a Pi 5 acceptance path.
 13. The first implementation has no runtime mock treadmill backend. Synthetic
     edge sources are test/diagnostic inputs only; off-Pi and force-mock
     hardware-stress sessions disable treadmill.
@@ -153,7 +162,10 @@ Required integration outcome:
   behavior is not redesigned.
 
 Existing tests which expect `treadmill_encoder` while `treadmill=false` describe
-the behavior being replaced. All unrelated tests remain regression gates.
+the behavior being replaced. Tests for the standalone legacy/comparison tools
+and their supporting decoder/wrapper remain regression gates; removal of the
+active BehavBox path must not remove those tools. All other unrelated tests
+remain regression gates.
 
 ## 4. Minimal architecture and package layout
 
@@ -215,7 +227,31 @@ functions where lifecycle ownership is unnecessary, dataclasses for typed
 records, and one narrow edge-source `Protocol` only because production and test
 sources both need the boundary.
 
-### 4.2 Concurrency decisions
+### 4.2 Standalone acquisition diagnostic
+
+Add one thin entry point at `debug/treadmill_counter.py` around the production
+treadmill runtime. It must not construct BehavBox, load a behavior/task, or
+start camera, stimulus, audio, shared-I/O recording, or treadmill artifact
+logging. It starts acquisition on the configured treadmill lines, runs until
+Ctrl-C by default or until an optional duration expires, always closes the
+runtime, and then prints a final receiver-side summary containing:
+
+- elapsed acquisition time;
+- admitted kernel edge events and valid x4 quadrature transitions;
+- signed raw transition position, positive and negative transition counts, and
+  direction reversals;
+- global, A-line, and B-line sequence-gap counts, estimated missing events,
+  and event inconsistencies;
+- integrity, health, and primary failure code;
+- maximum observed transition rate and maximum processing lag.
+
+The entry point does not accept expected transition totals or expected signed
+position. A deterministic external generator records its own emitted totals,
+which are compared with this receiver summary during hardware validation. Keep
+the entry point as presentation/lifecycle glue over the production facade; do
+not add another decoder, acquisition path, or diagnostic framework.
+
+### 4.3 Concurrency decisions
 
 - The acquisition process owns the gpiod request and decoder.
 - The logger process reads copied state and owns all treadmill artifact handles.
@@ -540,6 +576,9 @@ Scope:
   is completed in `TW-4`;
 - process/facade behavior from specification Sections 13.2 and 14, excluding
   logger-specific and BehavBox integration cases owned by later packages;
+- tests first for standalone-diagnostic Ctrl-C, optional-duration, final-summary,
+  and exception-safe cleanup behavior, followed by the thin
+  `debug/treadmill_counter.py` entry point defined in Section 4.2;
 - explicit spawn, worker-death, and stalled-reader tests.
 
 Exit gate: readers see no torn state, cannot block acquisition, and worker
@@ -548,7 +587,8 @@ close operations are bounded, direct-ack loss has an unambiguous reconciled
 outcome whenever state is readable, shared-recording state remains
 authoritative after logger failure, and close is idempotent without racing a
 parent read, zero, or recording transition against recorder cleanup or released
-IPC.
+IPC. The production acquisition path can also be run and inspected through the
+standalone diagnostic without constructing BehavBox or any behavior runtime.
 
 ### `TW-4`: Logger and recording artifacts
 
@@ -593,6 +633,10 @@ Scope:
 
 - authoritative flag/profile/ownership tests first;
 - disabled BehavBox sessions remain independent of `gpiod`;
+- removal of the active InputService `RotaryEncoder` use and
+  `treadmill_encoder` exposure does not delete the retained debug comparison
+  tools, their tests, `debug/treadmill_decoder_legacy.py`, or the compatibility
+  `RotaryEncoder` wrapper they require;
 - subprocess import-order/strict-mode/unknown-platform tests for both
   hardware-stress entrypoints before in-process integration tests;
 - localized `InputService` replacement, `box.treadmill`, shared-recording
@@ -660,7 +704,9 @@ interpretable.
 
 Scope:
 
-- tested calibration/sign/rate utility;
+- reuse the tested TW-3 standalone diagnostic for receiver-side
+  calibration/sign/rate checks; the generator records expected totals
+  independently rather than passing them into the receiver;
 - user/lab physical calibration and electrical record;
 - expected maximum transition rate and accepted buffer/ring/logger settings;
 - external generator sweep through 2x expected rate;
@@ -759,8 +805,8 @@ or gate decision.
 
 | Package | Status | Evidence/commit | Next gate |
 |---|---|---|---|
-| `TW-0` Environment/provisioning | `NOT STARTED` | None | Separate user authorization |
-| `TW-1` Pure core | `NOT STARTED` | None | `TW-0` provisional config evidence |
+| `TW-0` Environment/provisioning | `COMPLETE` | RED `6131cd8`; GREEN/evidence in following commit; 27 tests pass, target verifier zero failures | Complete |
+| `TW-1` Pure core | `IN PROGRESS` | TW-0 target/API/timing evidence recorded | Commit pure-core RED tests |
 | `TW-2` GPIO backend | `NOT STARTED` | None | `TW-0` API evidence and `TW-1` event contract |
 | `TW-3` Processes/facade | `NOT STARTED` | None | `TW-1` core and required `TW-2` fake boundary |
 | `TW-4` Recording | `NOT STARTED` | None | `TW-3` public/shared-state contract |
@@ -793,7 +839,15 @@ generator, configuration, duration, software commit, and artifact paths.
 
 ### 11.3 Current handoff
 
-- Documentation only; no implementation is authorized or in progress.
+- User authorized work through TW-3 on 2026-10-26, targeting the standalone
+  quadrature diagnostic. TW-4 through TW-7 implementation remains out of scope.
+- Starting commit: `88ed91dc7d697d32a6a22c9f14f3bbf7cddd5913` on `dev2`.
+- Target supplied by the user: `pi@10.42.84.10`. The former
+  `10.49.98.223` address was unreachable; do not reuse it for this work.
+- Initial focused baseline: `uv run --offline --with pytest --with pyyaml
+  python -m pytest tests/test_rpi5_trixie_provisioning.py
+  tests/test_treadmill_step_counter.py tests/test_treadmill_legacy_step_counter.py
+  tests/test_treadmill_decoder_legacy.py -q`: 22 passed.
 - Pi 5/Trixie/Python 3.13 is the sole initial target.
 - `box.treadmill`, manifest BCM13/16, TSV/JSON artifacts, separate acquisition
   and logger processes, double-slot state, and Sol/Terra execution are approved
@@ -805,5 +859,12 @@ generator, configuration, duration, software commit, and artifact paths.
   buffer unless an implementation test or hardware result demonstrates a
   concrete failure that the documented `RLock`/single-consumer model cannot
   handle.
-- Exact next action: no implementation action until a separate user
-  instruction; then begin the `TW-0` evidence/provisioning package.
+- Preserve the two user-owned untracked `external/treadmillADC.ino` and
+  `external/treadmill_counts.ino` files and all retained comparison code.
+- TW-0: RED `6131cd8` (5 intended failures, 9 passes); GREEN focused command
+  above now reports 27 passes. The updated manifest, supplied over stdin to
+  the target's existing verifier, reports `FAILURE_COUNT 0` without overwriting
+  the Pi checkout. Required packages were already installed; no target apt or
+  Ansible changes were needed.
+- Exact next action: TW-1 pure-core RED tests, then configuration/state/decoder
+  implementation. Every software package retains tests-first commits.

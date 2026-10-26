@@ -8,11 +8,13 @@
     "runtime": [
       "alsa-utils",
       "ffmpeg",
+      "gpiod",
       "python3-alsaaudio",
       "python3-colorama",
       "python3-flask",
       "python3-gpiozero",
       "python3-kms++",
+      "python3-libgpiod",
       "python3-matplotlib",
       "python3-numpy",
       "python3-picamera2",
@@ -33,6 +35,7 @@
       "colorama",
       "flask",
       "gpiozero",
+      "gpiod",
       "matplotlib",
       "numpy",
       "picamera2",
@@ -51,6 +54,8 @@
     "runtime": [
       "arecord",
       "ffmpeg",
+      "gpiodetect",
+      "gpioinfo",
       "rsync"
     ],
     "dev_test": [
@@ -59,6 +64,11 @@
   },
   "repo_probes": {
     "runtime": [
+      {
+        "name": "treadmill_gpiod_v2",
+        "code": "import gpiod; assert all(hasattr(gpiod, name) for name in ('request_lines', 'LineSettings', 'Chip', 'LineRequest', 'EdgeEvent')); assert all(hasattr(gpiod.LineRequest, name) for name in ('get_values', 'wait_edge_events', 'read_edge_events', 'release')); assert {'timestamp_ns', 'line_offset', 'event_type', 'global_seqno', 'line_seqno'} <= set(gpiod.EdgeEvent.__dataclass_fields__); assert gpiod.line.Direction.INPUT is not None; assert gpiod.line.Edge.BOTH is not None; assert gpiod.line.Clock.MONOTONIC is not None; assert all(hasattr(gpiod.line.Bias, name) for name in ('PULL_UP', 'PULL_DOWN', 'DISABLED')); print('ok')",
+        "expected_stdout": "ok"
+      },
       {
         "name": "local_camera_runtime_import",
         "code": "from box_runtime.video_recording.local_camera_runtime import LocalCameraRuntime; print('ok')",
