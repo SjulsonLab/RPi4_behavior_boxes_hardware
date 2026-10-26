@@ -204,6 +204,17 @@ class FinalExtraEdgeSource(ExtraEdgeSource):
         return initial
 
 
+class StalledAfterFailureSource(ExtraEdgeSource):
+    """A source that stops servicing controls after publishing the failing burst."""
+
+    def read_batch(self, timeout_s: float) -> list[EdgeEvent]:
+        """Return the finite burst, then stall to exercise forced cleanup."""
+        batch = super().read_batch(timeout_s)
+        if not batch:
+            time.sleep(30)
+        return batch
+
+
 @pytest.fixture
 def failing_runtime():
     """Yield a spawned synthetic failure runtime and always close it afterward."""
@@ -266,6 +277,24 @@ def test_clean_stop_has_no_failure_report():
     finally:
         runtime.close()
     assert runtime.first_failure_diagnostic is None
+
+
+def test_forced_cleanup_without_delivery_keeps_report_unavailable():
+    runtime = TreadmillRuntime(
+        config(processing_lag_warning_ns=1_000_000_000, shutdown_timeout_s=0.7),
+        source_factory=StalledAfterFailureSource,
+    )
+    runtime.start()
+    try:
+        wait_count(runtime, 801)
+        started = time.monotonic()
+        with pytest.raises(LifecycleError):
+            runtime.close()
+        assert time.monotonic() - started < 1.5
+        assert runtime.first_failure_diagnostic is None
+        assert runtime.health_report().failure_code == "SHUTDOWN_INCOMPLETE"
+    finally:
+        runtime.close()
 
 
 @pytest.mark.parametrize("interrupt", [False, True])
