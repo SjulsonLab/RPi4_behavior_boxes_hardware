@@ -145,6 +145,22 @@ Run until Ctrl-C instead:
 uv run debug/treadmill_counter.py
 ```
 
+For temporary A=BCM23 and B=BCM24 wiring, select pins on the command line:
+
+```bash
+uv run debug/treadmill_counter.py --a-pin 23 --b-pin 24
+```
+
+The same flags work with `--duration-s 5`. Each omitted channel uses its
+head-fixed manifest default (currently A=13, B=16). These are BCM GPIO numbers,
+not physical header numbers. Selections must be distinct integers in 0..27
+and cannot use manifest-reserved pins such as GPIO9. Invalid selections fail
+before runtime construction; the backend still rejects lines already owned.
+The standalone override does not change BehavBox's manifest or treadmill YAML.
+Remove any previous hardcoded `settings = replace(settings, a_bcm_pin=23,
+b_bcm_pin=24)` line added to the counter locally; the CLI now supplies that
+override. The ready message and failure context display the selected pins.
+
 The command prints readiness, warns about unverified physical calibration,
 then reports final edge/x4 counts, signed and positive/negative transitions,
 reversals, sequence gaps, estimated missing events, inconsistencies, integrity,
@@ -212,3 +228,18 @@ Separate known sizing correction: the inspected
 caps the requested event FIFO at `GPIO_V2_LINES_MAX * 16`, or 1,024 events.
 The configured 8,192 value is a request, not evidence of 8,192 allocated slots.
 Final buffer/headroom acceptance must account for that cap.
+
+## Adjustable standalone pins: software evidence
+
+Tests-only RED `72a9265`: 17 intended failures for absent pin arguments/help
+and validation, 2 existing-default behaviors passed. GREEN `12d5ae3`: all 19
+pin-selection tests pass. Cases include manifest-derived defaults, separate
+or paired overrides, BCM range/type errors, duplicate/reserved selections,
+actual-pin labels in failure context, and unchanged cached manifest/normal
+session config after a standalone override. No GPIO or child process is used
+by these new argument-boundary tests.
+
+The focused software command above now reports 248 passed. Ruff checks,
+`git diff --check`, and `uv run --offline python debug/treadmill_counter.py
+--help` pass. There are no new dependencies or per-event processing changes.
+Pi verification follows the existing Git pull workflow; no files were copied.

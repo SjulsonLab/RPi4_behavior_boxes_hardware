@@ -25,7 +25,7 @@ Status as of 2026-10-26:
 |---|---|
 | Specification and plan documentation | Revised after implementation-readiness review |
 | Runtime implementation | TW-1 core, TW-2 adapter and TW-3 standalone acquisition implemented; Pi runtime validation pending |
-| Rewrite tests | Committed RED/GREEN stages; focused local suite 229 passed |
+| Rewrite tests | Committed RED/GREEN stages; focused local suite 248 passed |
 | Dependency/provisioning changes | TW-0 complete; target packages already installed |
 | Hardware calibration and acceptance | Not started |
 
@@ -244,6 +244,13 @@ runtime, and then prints a final receiver-side summary containing:
   and event inconsistencies;
 - integrity, health, and primary failure code;
 - maximum observed transition rate and maximum processing lag.
+
+Optional `--a-pin` and `--b-pin` arguments select BCM GPIO numbers for this
+standalone diagnostic only. Each omitted channel uses its head-fixed manifest
+default. Reject non-integer/out-of-range BCM0..27 selections, duplicate A/B
+pins, and manifest-reserved pins before constructing the runtime. Apply valid
+overrides to a frozen config copy without mutating the manifest, YAML defaults,
+or normal BehavBox configuration. Backend ownership checks remain in effect.
 
 The entry point does not accept expected transition totals or expected signed
 position. A deterministic external generator records its own emitted totals,
@@ -808,7 +815,7 @@ or gate decision.
 | `TW-0` Environment/provisioning | `COMPLETE` | RED `6131cd8`; GREEN `05bea6c`; 27 tests pass, target verifier zero failures | Complete |
 | `TW-1` Pure core | `COMPLETE` | RED `11d943c`, `efa740f`; GREEN `cf50432`; focused suite 137 passed | Complete |
 | `TW-2` GPIO backend | `IN PROGRESS` | RED `1eaf754`; GREEN `cf378fd`; fake GPIO gates pass | Pi software run, then external-generator physical edge smoke |
-| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure RED `7d7357e`, `1d2a7cf`, GREEN `f2258b8`; focused local suite 229 passed | Pull dev2 and reproduce the single extra-event failure with automatic context |
+| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure GREEN `f2258b8`; pin CLI GREEN `12d5ae3`; focused local suite 248 passed | Pull dev2 and reproduce the single extra-event failure with automatic context |
 | `TW-4` Recording | `NOT STARTED` | None | `TW-3` public/shared-state contract |
 | `TW-5` Integration | `NOT STARTED` | None | `TW-3` and `TW-4` complete |
 | `TW-6` Stress | `NOT STARTED` | None | Integrated non-hardware system complete |
@@ -892,13 +899,19 @@ generator, configuration, duration, software commit, and artifact paths.
 - Local seven-pair synthetic benchmark against `6b406e2`: median 50,000-event
   decode time 0.142458 s before versus 0.146681 s after (1.0296 ratio). This is
   Python 3.12 development-host evidence, not Pi throughput or rate acceptance.
+- Standalone pin arguments are implemented in `12d5ae3`, following RED
+  `72a9265` (17 intended failures, 2 passes). All 19 pin-selection tests pass;
+  the focused regression command in the validation index reports 248 passed.
+  `--a-pin 23 --b-pin 24` replaces manual source edits for bench wiring. This
+  changes argument/config handling only, with no acquisition hot-loop cost.
 - The Pico is now connected directly to the Pi after the breakout-board path
   failed connectivity checks. User testing exercises real GPIO; the 10 kHz
   extra-event anomaly is still unresolved, and 100 kHz fails integrity checks.
 - Deployment remains Git-only: push `dev2`, then the user pulls onto the Pi.
   Do not copy files to the Pi. No implementation files have been copied and no
-  Pi-side Git pull has been performed here. Preserve any temporary GPIO23/24
-  override in the user's Pi checkout; the ready message now uses actual config.
+  Pi-side Git pull has been performed here. Remove any old hardcoded pin
+  override from the Pi counter and use the CLI flags; the ready message uses
+  the selected config.
 - Exact next action: after pulling `dev2`, repeat the 10 kHz/50,000-cycle burst
   and inspect the first-failure context printed after shutdown. ARM software
   tests, exact zero-anomaly physical counts and full-stack acceptance still need
