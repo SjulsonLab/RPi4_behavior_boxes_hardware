@@ -24,9 +24,9 @@ Status as of 2026-10-26:
 | Item | State |
 |---|---|
 | Specification and plan documentation | Revised after implementation-readiness review |
-| Runtime implementation | User authorized TW-0 through TW-3 on 2026-10-26; TW-0 in progress |
-| Rewrite tests | Not started |
-| Dependency/provisioning changes | Not started |
+| Runtime implementation | TW-1 core, TW-2 adapter and TW-3 standalone acquisition implemented; Pi runtime validation pending |
+| Rewrite tests | Committed RED/GREEN stages; focused local suite 206 passed |
+| Dependency/provisioning changes | TW-0 complete; target packages already installed |
 | Hardware calibration and acceptance | Not started |
 
 Documentation approval is not implementation approval. No Sol coordinator may
@@ -805,10 +805,10 @@ or gate decision.
 
 | Package | Status | Evidence/commit | Next gate |
 |---|---|---|---|
-| `TW-0` Environment/provisioning | `COMPLETE` | RED `6131cd8`; GREEN/evidence in following commit; 27 tests pass, target verifier zero failures | Complete |
-| `TW-1` Pure core | `IN PROGRESS` | TW-0 target/API/timing evidence recorded | Commit pure-core RED tests |
-| `TW-2` GPIO backend | `NOT STARTED` | None | `TW-0` API evidence and `TW-1` event contract |
-| `TW-3` Processes/facade | `NOT STARTED` | None | `TW-1` core and required `TW-2` fake boundary |
+| `TW-0` Environment/provisioning | `COMPLETE` | RED `6131cd8`; GREEN `05bea6c`; 27 tests pass, target verifier zero failures | Complete |
+| `TW-1` Pure core | `COMPLETE` | RED `11d943c`, `efa740f`; GREEN `cf50432`; focused suite 137 passed | Complete |
+| `TW-2` GPIO backend | `IN PROGRESS` | RED `1eaf754`; GREEN `cf378fd`; fake GPIO gates pass | Pi software run, then external-generator physical edge smoke |
+| `TW-3` Processes/facade | `IN PROGRESS` | RED `484a3d7`, `a7a34bd`, `91b8ef5`; GREEN `05cfd69`; focused local suite 206 passed | Pull dev2 on Pi; run ARM process/coherence tests and stationary CLI checks |
 | `TW-4` Recording | `NOT STARTED` | None | `TW-3` public/shared-state contract |
 | `TW-5` Integration | `NOT STARTED` | None | `TW-3` and `TW-4` complete |
 | `TW-6` Stress | `NOT STARTED` | None | Integrated non-hardware system complete |
@@ -866,5 +866,26 @@ generator, configuration, duration, software commit, and artifact paths.
   the target's existing verifier, reports `FAILURE_COUNT 0` without overwriting
   the Pi checkout. Required packages were already installed; no target apt or
   Ansible changes were needed.
-- Exact next action: TW-1 pure-core RED tests, then configuration/state/decoder
-  implementation. Every software package retains tests-first commits.
+- TW-1 RED `11d943c` proved the package absent; additional boundary RED
+  `efa740f` found logger-health masking and duplicate-speed changes, both fixed
+  in GREEN `cf50432`. Focused suite: 137 passed. The InputService package export
+  is now lazy, preserving its public name while pure imports avoid GPIO/UI
+  side effects.
+- TW-2 fake-boundary tests pass, including alias deduplication, chip rejection,
+  exact request settings, ordered batching, startup-boundary injections and
+  startup-gap cleanup. Hardware acceptance remains pending external edges.
+- TW-3 standalone implementation is committed in `05cfd69`. Local process tests
+  cover exact synthetic counts, stationary heartbeat, coherent concurrent
+  readers, stalled readers, zero acknowledgement loss/reconciliation, stale
+  command rejection, recording rejection, worker death, close gating, partial
+  startup cleanup, reported cleanup errors, forced shutdown, cached post-close
+  reads, and Ctrl-C/optional-duration CLI behavior. Focused local suite: 206
+  passed; Ruff static checks passed.
+- The microcontroller is not attached. The user requested software/stationary
+  work first and specified Git-only deployment: push `dev2`, then the changes
+  will be pulled onto the Pi. Do not copy files to the Pi. No implementation
+  files have been copied and no Pi-side Git pull has been performed here.
+- Exact next action: after `dev2` is pulled onto `pi@10.42.84.10`, run the
+  commands in `docs/treadmill_validation.md` for ARM software and stationary
+  standalone checks. External-edge counts and the physical TW-2 gate remain
+  pending until the generator is attached; full-stack acceptance remains later.

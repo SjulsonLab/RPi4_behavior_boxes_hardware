@@ -94,3 +94,64 @@ The new manifest was supplied over SSH stdin to the target's existing
 per-probe limits. All imports, commands, and runtime probes passed
 (`FAILURE_COUNT 0`). The target checkout was not overwritten. GPIO edge smoke,
 ARM coherent-state tests, and standalone diagnostic checks are pending.
+
+## TW-1 through TW-3 software evidence
+
+Pure-core RED commits: `11d943c`, `efa740f`; GREEN: `cf50432`.
+GPIO adapter RED: `1eaf754`; GREEN: `cf378fd`.
+Process/standalone RED commits: `484a3d7`, `a7a34bd`, `91b8ef5`;
+GREEN: `05cfd69`.
+
+Local development tests use Python 3.12. They verify software contracts but are
+not evidence of ARM shared-state behavior or real GPIO acquisition. This
+focused command passed 206 tests:
+
+```bash
+uv run --offline --with pytest --with pyyaml --with flask --with numpy --with scipy --with colorama --with pillow python -m pytest tests/treadmill tests/test_rpi5_trixie_provisioning.py tests/test_treadmill_step_counter.py tests/test_treadmill_legacy_step_counter.py tests/test_treadmill_decoder_legacy.py tests/test_input_service.py tests/test_input_gpio_compat.py tests/test_mock_hardware.py -q
+```
+
+Ruff 0.15.4 formatting and static checks passed for the new treadmill package,
+standalone entry point, and tests. All existing legacy counter/decoder files
+and the old RotaryEncoder compatibility wrapper remain unchanged.
+
+## Next Pi checks after pulling dev2
+
+Deployment is by Git only: the user will pull `dev2` onto the target. No files
+have been copied to the Pi by this work. The following commands are the next
+checks; they have not yet been run on the target implementation.
+
+From `/home/pi/RPi4_behavior_boxes_hardware`, first run the software tests on
+ARM with its apt-installed Python modules:
+
+```bash
+/home/pi/.local/bin/uv run --offline --no-project --python /usr/bin/python3 python -m pytest tests/treadmill tests/test_rpi5_trixie_provisioning.py -q
+```
+
+The software tests inject sources and do not claim GPIO. Next, with BCM13/16
+available, run the production GPIO source for a short stationary check:
+
+```bash
+/home/pi/.local/bin/uv run --offline --no-project --python /usr/bin/python3 python debug/treadmill_counter.py --duration-s 5
+```
+
+Run until Ctrl-C instead:
+
+```bash
+/home/pi/.local/bin/uv run --offline --no-project --python /usr/bin/python3 python debug/treadmill_counter.py
+```
+
+The command prints readiness, warns about unverified physical calibration,
+then reports final edge/x4 counts, signed and positive/negative transitions,
+reversals, sequence gaps, estimated missing events, inconsistencies, integrity,
+rate, lag, publication/diagnostic drops, and retained health codes. Counts are
+dimensionless x4 transitions, not full quadrature cycles. An ordinary Ctrl-C is
+a normal stop; acquisition or cleanup failure returns nonzero. Run one counter
+at a time because the old and new tools claim the same lines.
+
+The microcontroller is not yet attached. Start the receiver first and wait for
+readiness before starting an independently counted generator burst. Stop the
+generator and allow pending input to drain before stopping the receiver.
+Compare the receiver's valid-transition total and signed raw position with the
+generator's independently recorded totals; expected counts are not receiver
+arguments. Physical electrical compatibility and both-edge/count verification
+remain pending. Zero counts with idle inputs validate lifecycle only.
