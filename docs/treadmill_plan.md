@@ -570,6 +570,10 @@ Scope:
   idempotent command-ID/deadline/reconciliation `ZERO`, bounded `STOP`, and
   facade lifecycle without changing the application's global multiprocessing
   method;
+- STOP checks between event batches, a deadline-limited nonblocking final
+  drain, reserved release/report/join time, and explicit partial-count failure
+  if an empty queue cannot be established; ZERO still applies only at a
+  drained boundary;
 - bounded zero idempotency storage plus facade use of an injected
   lifecycle `RLock`, close flag, and state callbacks, with deterministic
   facade-level zero/recording/close serialization tests;
@@ -815,7 +819,7 @@ or gate decision.
 | `TW-0` Environment/provisioning | `COMPLETE` | RED `6131cd8`; GREEN `05bea6c`; 27 tests pass, target verifier zero failures | Complete |
 | `TW-1` Pure core | `COMPLETE` | RED `11d943c`, `efa740f`; GREEN `cf50432`; focused suite 137 passed | Complete |
 | `TW-2` GPIO backend | `IN PROGRESS` | RED `1eaf754`; GREEN `cf378fd`; fake GPIO gates pass | Pi software run, then external-generator physical edge smoke |
-| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure GREEN `f2258b8`; pin CLI GREEN `12d5ae3`; focused local suite 248 passed | Pull dev2 and reproduce the single extra-event failure with automatic context |
+| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure GREEN `f2258b8`; pin CLI GREEN `12d5ae3`; STOP RED `b2a9595`/`9156f52` now GREEN; focused local suite 258 passed | Pull dev2 and repeat the single extra-event failure with bounded shutdown/context |
 | `TW-4` Recording | `NOT STARTED` | None | `TW-3` public/shared-state contract |
 | `TW-5` Integration | `NOT STARTED` | None | `TW-3` and `TW-4` complete |
 | `TW-6` Stress | `NOT STARTED` | None | Integrated non-hardware system complete |
@@ -904,6 +908,16 @@ generator, configuration, duration, software commit, and artifact paths.
   the focused regression command in the validation index reports 248 passed.
   `--a-pin 23 --b-pin 24` replaces manual source edits for bench wiring. This
   changes argument/config handling only, with no acquisition hot-loop cost.
+- STOP-starvation correction follows tests-first commits `b2a9595` (7 intended
+  failures, 2 passes) and `9156f52` (lost STOP reply must retain partial-count
+  failure). Controls are checked between batches; final draining has an
+  explicit cutoff, with time reserved for GPIO release, diagnostic delivery,
+  orderly join and forced cleanup. A cutoff before an empty read returns the
+  captured context and marks final counts partial/`SHUTDOWN_INCOMPLETE`.
+  ZERO's drained-boundary rule remains in place. Synthetic sustained-backlog
+  reproduction establishes the shutdown defect; it does not establish the
+  cause of the user's finite-burst GPIO anomaly. All 258 focused local tests
+  pass, along with Ruff and diff checks. Pi retesting remains pending.
 - The Pico is now connected directly to the Pi after the breakout-board path
   failed connectivity checks. User testing exercises real GPIO; the 10 kHz
   extra-event anomaly is still unresolved, and 100 kHz fails integrity checks.

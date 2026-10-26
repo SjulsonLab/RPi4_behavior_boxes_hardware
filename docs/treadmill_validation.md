@@ -2,7 +2,7 @@
 
 This index records measured evidence, not production acceptance. Work is
 authorized through TW-3; full-stack tests and production acceptance are later
-gates. No external quadrature generator has been exercised yet.
+gates. User bench results are recorded below; production acceptance is pending.
 
 ## TW-0 target evidence, 2026-10-26
 
@@ -243,3 +243,44 @@ The focused software command above now reports 248 passed. Ruff checks,
 `git diff --check`, and `uv run --offline python debug/treadmill_counter.py
 --help` pass. There are no new dependencies or per-event processing changes.
 Pi verification follows the existing Git pull workflow; no files were copied.
+
+## STOP starvation correction
+
+The next user run reported 125,982 delivered events, 125,981 valid positive
+transitions, one inconsistency, no sequence gaps, forced termination and
+unavailable first-failure context. The user confirmed one finite 5 s,
+50,000-cycle burst. Those are aborted-run counts, not the final burst total.
+
+A continuously nonempty synthetic source reproduced the forced-cleanup errors:
+the worker stayed in event draining without checking STOP. A separate finite
+200,001-event synthetic run on the Pi completed its STOP report, so this is a
+confirmed shutdown defect, not a proven cause of that particular GPIO run.
+
+Tests-first RED `b2a9595`: 7 intended failures, 2 passes. Follow-up RED
+`9156f52` proves that losing the STOP reply must not turn partial counts into
+clean shutdown. Ten new process/CLI tests cover continuous healthy/failing
+input, a finite 200,000-transition backlog plus one extra event, complete
+finite draining, full result queues, lost replies, ZERO expiration and drained
+application, and final diagnostic output. The large synthetic source uses
+5 s worth of 10 kHz-cycle timestamps and delayed reads to maintain backlog;
+it is not a real-time GPIO throughput measurement.
+
+STOP is checked after every bounded batch. A nonblocking final drain ends at
+an empty read or an absolute cutoff; it reserves time for GPIO release and
+report delivery before the parent's reply/join/forced-cleanup deadlines. The
+existing STOP report includes whether draining completed. An incomplete drain
+still returns captured first-failure context, reports final counts as partial,
+and retains `SHUTDOWN_INCOMPLETE`, including through the existing status path
+if the STOP reply is lost. A genuinely blocked backend still uses forced
+cleanup and may leave context unavailable. No new dependencies, configuration
+fields, public shared-state fields, or IPC channels were added.
+
+The focused software command above reports 258 passed on the development host.
+Ruff static/format checks and `git diff --check` pass. These results establish
+software behavior with injected sources, not Pi GPIO throughput or acceptance.
+
+After pulling `dev2`, repeat the single 10 kHz/50,000-cycle burst using the
+existing counter invocation and selected BCM pins. Verify prompt shutdown and
+save the first-failure context if the inconsistency recurs. That electrical
+or capture anomaly remains unresolved; this change does not waive integrity
+checks or establish an accepted physical count/rate.

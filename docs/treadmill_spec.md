@@ -712,8 +712,10 @@ The acquisition hot loop must:
 5. update canonical state;
 6. publish a coherent snapshot after an appropriate batch;
 7. update heartbeat on schedule even while stationary;
-8. service only a bounded amount of lower-priority control work after pending
-   edge events are drained.
+8. check the bounded control channel between batches so `STOP` cannot starve;
+9. apply `ZERO` only after pending edge events are drained. An expired or
+   integrity-rejected `ZERO` may be rejected between batches without applying
+   an offset.
 
 The hot path must contain no:
 
@@ -1267,12 +1269,22 @@ STOP
 ```
 
 Controls must use bounded communication and must not carry individual GPIO
-events. The acquisition process drains pending edges before lower-priority
-controls. `ZERO` follows the command-ID, worker-deadline, idempotency, and
-state-reconciliation contract in Section 10.6. `STOP` also uses a matched
-bounded result, but shutdown completion is finally determined by child exit and
-resource cleanup. Status is read from coherent shared state and heartbeat. The
-parent facade, not the acquisition worker, owns logger-process start and stop.
+events. Acquisition checks controls between bounded event batches. `ZERO`
+follows the command-ID, worker-deadline, idempotency, drained-boundary and
+state-reconciliation contract in Section 10.6. `STOP` takes priority over a
+pending `ZERO` and begins a nonblocking drain with an absolute cutoff. It does
+not require the input stream to become stationary indefinitely.
+
+The matched STOP result carries final state, bounded first-failure context,
+and a Boolean drain-complete indication. Complete draining requires an actual
+empty read before the cutoff. If that cannot be established, GPIO is still
+released and the report delivered within the remaining budget; final counts
+are explicitly partial and the facade reports `SHUTDOWN_INCOMPLETE`. The
+existing worker status channel also carries that failure so a lost STOP reply
+cannot make an incomplete drain appear clean. Shutdown completion is finally
+determined by child exit and resource cleanup. Status is read from coherent
+shared state and heartbeat. The parent facade, not the acquisition worker,
+owns logger-process start and stop.
 
 ### 12.4 Heartbeat
 
@@ -1899,8 +1911,9 @@ Normal close must:
    set;
 3. close the shared IO recorder, clear both owner demands, and close its
    artifact handles;
-4. send `STOP` so acquisition drains already available events, publishes final
-   state/diagnostics, and releases only its owned GPIO lines;
+4. send `STOP` so acquisition drains already available events until an empty
+   read or its drain cutoff, releases only its owned GPIO lines, and publishes
+   final state/diagnostics with the complete/partial drain outcome;
 5. join child processes within bounded timeouts;
 6. capture the final worker state, then clean up every parent-owned treadmill
    IPC resource using its supported contract: close/join queue feeder
@@ -1908,6 +1921,16 @@ Normal close must:
    resources/references;
 7. after every cleanup attempt has reported its outcome, cache clean `STOPPED`
    state or overlay `FAILED` with a shutdown failure code.
+
+Acquisition and the parent derive drain, reply, and orderly-exit deadlines
+from the same configured shutdown budget. Reserve up to 0.4 s each for GPIO
+release/report delivery and forced cleanup, plus up to 0.1 s for orderly join;
+short timeouts scale these reserves to one quarter, one quarter, and one
+eighth of the total respectively. With the provisional 3 s timeout, cutoffs
+are 2.1 s for draining, 2.5 s for the reply, and 2.6 s for orderly exit. Each
+already admitted batch finishes in order; a blocked backend still requires
+the parent's bounded forced-cleanup fallback. A partial drain remains a
+shutdown failure even when GPIO release and child exit succeed.
 
 The close path holds the same `RLock` through all seven steps, so no parent
 reader or lifecycle transition can touch IPC during teardown. A later

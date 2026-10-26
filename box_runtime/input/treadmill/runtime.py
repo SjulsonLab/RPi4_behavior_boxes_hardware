@@ -7,7 +7,12 @@ from queue import Empty, Full
 import threading
 import time
 
-from .acquisition import ControlResult, acquisition_worker
+from .acquisition import (
+    INCOMPLETE_DRAIN_MESSAGE,
+    ControlResult,
+    acquisition_worker,
+    shutdown_deadlines,
+)
 from .config import TreadmillConfig
 from .decoder import FirstFailureDiagnostic
 from .gpio_backend import GpiodSource
@@ -385,24 +390,31 @@ class TreadmillRuntime:
             if self._process is not None and self._process.is_alive():
                 stop_requested = True
                 deadline = time.monotonic() + self.config.shutdown_timeout_s
+                _, reply_deadline_ns, exit_deadline_ns = shutdown_deadlines(
+                    int(deadline * 1e9), self.config.shutdown_timeout_s
+                )
                 self._command_id += 1
                 try:
                     self._controls.put_nowait(
                         ("STOP", self._command_id, int(deadline * 1e9))
                     )
-                    result = self._wait_result("STOP", self._command_id, deadline - 0.5)
-                    self._process.join(max(0, deadline - time.monotonic() - 0.4))
+                    result = self._wait_result(
+                        "STOP", self._command_id, reply_deadline_ns / 1e9
+                    )
+                    self._process.join(
+                        max(0, exit_deadline_ns / 1e9 - time.monotonic())
+                    )
                     if result is None and self._process.is_alive():
                         errors.append("Acquisition did not acknowledge/complete STOP")
                 except Exception as exc:
                     errors.append(str(exc))
                 if self._process.is_alive():
                     self._process.terminate()
-                    self._process.join(0.2)
+                    self._process.join(max(0, (deadline - time.monotonic()) / 2))
                     errors.append("Acquisition required forced termination")
                     if self._process.is_alive():
                         self._process.kill()
-                        self._process.join(0.2)
+                        self._process.join(max(0, deadline - time.monotonic()))
                 self._poll_status()
             if self._shared is not None:
                 try:
@@ -545,6 +557,9 @@ class TreadmillRuntime:
                 if kind == "STOP":
                     self._final_worker_state = final.state
                     self._first_failure_diagnostic = final.first_failure_diagnostic
+                    if not final.drain_complete:
+                        self._observe("SHUTDOWN_INCOMPLETE")
+                        self._failure_message = INCOMPLETE_DRAIN_MESSAGE
                 return result
         return None
 
