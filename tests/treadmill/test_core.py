@@ -237,3 +237,51 @@ def test_package_import_does_not_import_hardware():
         "assert 'gpiod' not in sys.modules; assert 'gpiozero' not in sys.modules"],
         capture_output=True,text=True,check=False)
     assert completed.returncode == 0, completed.stderr
+
+
+def test_required_logger_failure_does_not_mask_valid_acquisition_values():
+    """Logger criticality changes subsystem health, not edge-capture integrity."""
+    state = decode([1]*4).snapshot(1_004_010_000)
+    effective = materialize_state(state,1_004_010_000,config(),extra_codes=("REQUIRED_LOGGER_FAILED",))
+    assert effective.health == "FAILED"
+    assert effective.acquisition_available
+    assert effective.position_mm == state.position_mm
+
+
+@pytest.mark.parametrize("lag,bin_index", [(50_000,0),(50_001,1),(50_000_000,9),(50_000_001,10)])
+def test_exact_lag_histogram_boundaries(lag, bin_index):
+    decoder = Decoder(config())
+    event = trace([1])[0]
+    decoder.process_event(event,event.timestamp_ns+lag)
+    state = decoder.snapshot(event.timestamp_ns+lag)
+    assert state.processing_lag_histogram_counts[bin_index] == 1
+    assert sum(state.processing_lag_histogram_counts) == 1
+
+
+def test_gap_is_accounted_once_and_next_valid_motion_remains_untrusted():
+    decoder = Decoder(config(calibration_verified=True))
+    events = trace([1]*8)
+    for event in (events[0],*events[3:]):
+        decoder.process_event(event,event.timestamp_ns+100)
+    state = decoder.snapshot(1_008_000_100)
+    assert state.global_sequence_gap_count == 1
+    assert state.estimated_missing_event_count == 2
+    assert state.a_line_sequence_gap_count == state.b_line_sequence_gap_count == 1
+    assert not state.integrity_valid and state.position_mm is None
+    assert state.failure_code == "GLOBAL_SEQUENCE_GAP"
+
+
+def test_sequence_duplicate_does_not_clear_speed_or_double_apply_position():
+    decoder = decode([1,1])
+    before = decoder.snapshot(1_002_010_000)
+    event = trace([1,1])[-1]
+    decoder.process_event(event,event.timestamp_ns+20000)
+    after = decoder.snapshot(event.timestamp_ns+20000)
+    assert after.raw_transition_position == before.raw_transition_position
+    assert after.speed_mm_s == before.speed_mm_s
+    assert after.event_inconsistency_count == 1
+
+
+def test_legacy_calibration_remains_an_explicit_conversion_option():
+    decoder = decode([1]*4,mm_per_encoder_cycle=0.41095)
+    assert decoder.snapshot(1_004_010_000).position_mm == pytest.approx(0.41095)
