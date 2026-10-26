@@ -49,7 +49,9 @@ class TreadmillConfig:
     expected_max_transition_rate_hz: float | None
 
 
-def load_config(session_info: Mapping[str, object], manifest: BoxProfileManifest) -> TreadmillConfig | None:
+def load_config(
+    session_info: Mapping[str, object], manifest: BoxProfileManifest
+) -> TreadmillConfig | None:
     """Merge defaults and overrides, returning validated config or disabled None.
 
     Args:
@@ -69,7 +71,11 @@ def load_config(session_info: Mapping[str, object], manifest: BoxProfileManifest
         return None
     if manifest.profile_name != "head_fixed":
         raise ConfigurationError("Enabled treadmill requires the head_fixed profile")
-    for key in ("treadmill_speed_hz", "treadmill_wheel_diameter_cm", "treadmill_pulses_per_rotation"):
+    for key in (
+        "treadmill_speed_hz",
+        "treadmill_wheel_diameter_cm",
+        "treadmill_pulses_per_rotation",
+    ):
         if key in session_info:
             raise ConfigurationError(
                 f"Retired {key}: migrate to treadmill_config; mm_per_encoder_cycle = "
@@ -80,18 +86,34 @@ def load_config(session_info: Mapping[str, object], manifest: BoxProfileManifest
     except KeyError as exc:
         raise ConfigurationError("Manifest must provide both treadmill lines") from exc
     if any(type(pin) is not int or pin < 0 for pin in pins) or pins[0] == pins[1]:
-        raise ConfigurationError("Manifest treadmill pins must be distinct nonnegative BCM integers")
-    defaults = yaml.safe_load(Path(__file__).with_name("defaults.yaml").read_text(encoding="ascii"))
+        raise ConfigurationError(
+            "Manifest treadmill pins must be distinct nonnegative BCM integers"
+        )
+    defaults = yaml.safe_load(
+        Path(__file__).with_name("defaults.yaml").read_text(encoding="ascii")
+    )
     overrides = session_info.get("treadmill_config", {})
     if not isinstance(overrides, Mapping):
         raise ConfigurationError("treadmill_config must be a mapping")
     unknown = set(overrides) - set(defaults)
     if unknown:
-        raise ConfigurationError(f"Unknown treadmill_config keys: {sorted(unknown, key=str)}")
+        raise ConfigurationError(
+            f"Unknown treadmill_config keys: {sorted(unknown, key=str)}"
+        )
     values = {**defaults, **overrides}
-    integer_fields = {"debounce_period_us", "kernel_event_buffer_size", "read_batch_size",
-                      "diagnostic_ring_buffer_size", "diagnostic_event_queue_size", "processing_lag_warning_ns"}
-    boolean_fields = {"calibration_verified", "treadmill_required", "continuous_logger_required"}
+    integer_fields = {
+        "debounce_period_us",
+        "kernel_event_buffer_size",
+        "read_batch_size",
+        "diagnostic_ring_buffer_size",
+        "diagnostic_event_queue_size",
+        "processing_lag_warning_ns",
+    }
+    boolean_fields = {
+        "calibration_verified",
+        "treadmill_required",
+        "continuous_logger_required",
+    }
     for name, value in values.items():
         if name in boolean_fields:
             valid = type(value) is bool
@@ -104,11 +126,15 @@ def load_config(session_info: Mapping[str, object], manifest: BoxProfileManifest
         elif name == "expected_max_transition_rate_hz" and value is None:
             valid = True
         elif name in integer_fields:
-            valid = type(value) is int and (value >= 0 if name == "debounce_period_us" else value > 0)
+            valid = type(value) is int and (
+                value >= 0 if name == "debounce_period_us" else value > 0
+            )
         else:
             valid = type(value) in (int, float) and math.isfinite(value) and value > 0
         if not valid:
             raise ConfigurationError(f"Invalid {name}: {value!r}")
     if values["heartbeat_failure_timeout_s"] <= values["heartbeat_interval_s"]:
-        raise ConfigurationError("heartbeat_failure_timeout_s must exceed heartbeat_interval_s")
+        raise ConfigurationError(
+            "heartbeat_failure_timeout_s must exceed heartbeat_interval_s"
+        )
     return TreadmillConfig(a_bcm_pin=pins[0], b_bcm_pin=pins[1], **values)

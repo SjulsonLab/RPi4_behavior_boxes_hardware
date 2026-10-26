@@ -406,7 +406,7 @@ def test_worker_replays_current_zero_and_rejects_older_id(runtime):
 
 
 def test_source_release_failure_is_not_clean_shutdown():
-    instance = TreadmillRuntime(config(),source_factory=CloseFailureSource)
+    instance = TreadmillRuntime(config(), source_factory=CloseFailureSource)
     instance.start()
     with pytest.raises(LifecycleError):
         instance.close()
@@ -415,33 +415,39 @@ def test_source_release_failure_is_not_clean_shutdown():
 
 
 def test_forced_shutdown_is_bounded_and_diagnosed():
-    instance = TreadmillRuntime(config(shutdown_timeout_s=0.7),source_factory=StalledSource)
+    instance = TreadmillRuntime(
+        config(shutdown_timeout_s=0.7), source_factory=StalledSource
+    )
     instance.start()
-    started=time.monotonic()
+    started = time.monotonic()
     with pytest.raises(LifecycleError):
         instance.close()
-    assert time.monotonic()-started < 1.5
+    assert time.monotonic() - started < 1.5
     assert instance.health_report().failure_code == "SHUTDOWN_INCOMPLETE"
     instance.close()
 
 
-def test_queue_cleanup_error_cannot_skip_later_queues(runtime,monkeypatch):
+def test_queue_cleanup_error_cannot_skip_later_queues(runtime, monkeypatch):
     wait_count(runtime)
-    results=runtime._results
-    original_close=results.close
-    closed=[]
+    results = runtime._results
+    original_close = results.close
+    closed = []
+
     def report_error():
         """Close the queue and simulate a reported cleanup failure."""
         original_close()
         raise OSError("injected queue close error")
-    last=runtime._failure_ring
-    last_close=last.close
+
+    last = runtime._failure_ring
+    last_close = last.close
+
     def record_close():
         """Record that later cleanup still occurs."""
         closed.append(True)
         last_close()
-    monkeypatch.setattr(results,"close",report_error)
-    monkeypatch.setattr(last,"close",record_close)
+
+    monkeypatch.setattr(results, "close", report_error)
+    monkeypatch.setattr(last, "close", record_close)
     with pytest.raises(LifecycleError):
         runtime.close()
     assert closed and runtime.health_report().failure_code == "SHUTDOWN_INCOMPLETE"
