@@ -73,6 +73,9 @@ def test_history_disabled_does_not_mask_backend_exception_status():
             pytest.fail("Backend failure status was not delivered")
         assert "BACKEND_IO_FAILED" in report.observed_health_codes
         assert runtime._failure_ring is None
+        # Status may arrive while the failed child is still unwinding. This
+        # test covers status delivery, not racing STOP against that unwind.
+        runtime._process.join(1)
     finally:
         runtime.close()
 
