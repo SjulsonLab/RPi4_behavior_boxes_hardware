@@ -255,8 +255,24 @@ or normal BehavBox configuration. Backend ownership checks remain in effect.
 The entry point does not accept expected transition totals or expected signed
 position. A deterministic external generator records its own emitted totals,
 which are compared with this receiver summary during hardware validation. Keep
-the entry point as presentation/lifecycle glue over the production facade; do
-not add another decoder, acquisition path, or diagnostic framework.
+the production entry point as presentation/lifecycle glue over the facade;
+do not add another quadrature decoder or diagnostic framework. Its default
+runtime disables the unused large failure-history channel while preserving
+the small first-failure STOP report. The runtime's default history behavior
+remains available for the planned logger; this is not a new session setting.
+
+For the user-authorized GPIO-capture comparison, add
+`debug/treadmill_raw_counter.py`. It directly reads the same `GpiodSource` and
+config in one process, without constructing `Decoder`, shared-state slots,
+worker queues or a behavior runtime. Share BCM/duration parsing with the normal
+counter. Count all received rising/falling events per channel, report sequence
+and timestamp anomalies plus repeated edge target levels, and retain at most
+eight anomalous rows. Continue through anomalies until duration/Ctrl-C and
+print the summary only after source release. Finish an admitted batch when
+stopping; unread queued events are outside the totals, so stop after a finite
+generator burst when comparing complete counts. This probe does not produce
+a quadrature position or certify physical capture integrity. Gap observations
+can reflect reordering and are not an exact lost-edge estimate.
 
 ### 4.3 Concurrency decisions
 
@@ -819,7 +835,7 @@ or gate decision.
 | `TW-0` Environment/provisioning | `COMPLETE` | RED `6131cd8`; GREEN `05bea6c`; 27 tests pass, target verifier zero failures | Complete |
 | `TW-1` Pure core | `COMPLETE` | RED `11d943c`, `efa740f`; GREEN `cf50432`; focused suite 137 passed | Complete |
 | `TW-2` GPIO backend | `IN PROGRESS` | RED `1eaf754`; GREEN `cf378fd`; fake GPIO gates pass | Pi software run, then external-generator physical edge smoke |
-| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure GREEN `f2258b8`; pin CLI GREEN `12d5ae3`; STOP RED `b2a9595`/`9156f52` now GREEN; focused local suite 258 passed | Pull dev2 and repeat the single extra-event failure with bounded shutdown/context |
+| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure GREEN `f2258b8`; pin CLI GREEN `12d5ae3`; STOP GREEN `ff0dbb5`; raw/history RED `7907312` now GREEN; focused local suite 284 passed | Pull dev2 and compare raw/normal receivers on finite bursts |
 | `TW-4` Recording | `NOT STARTED` | None | `TW-3` public/shared-state contract |
 | `TW-5` Integration | `NOT STARTED` | None | `TW-3` and `TW-4` complete |
 | `TW-6` Stress | `NOT STARTED` | None | Integrated non-hardware system complete |
@@ -921,12 +937,24 @@ generator, configuration, duration, software commit, and artifact paths.
 - The Pico is now connected directly to the Pi after the breakout-board path
   failed connectivity checks. User testing exercises real GPIO; the 10 kHz
   extra-event anomaly is still unresolved, and 100 kHz fails integrity checks.
+- The subsequent BCM23/24 run returned first-failure context: a same-level A
+  falling event with consecutive sequences, followed by cross-line receipt of
+  global sequence 21029 before 21028. The bounded drain returned partial
+  counts without forced termination. Neither the electrical waveform nor
+  kernel capture is exonerated by that report.
+- User approved a minimal raw-counter comparison and disabling unused large
+  history transfer for standalone acquisition. RED `7907312` covers missing
+  raw entry point and 3 intended history failures (1 default-history pass);
+  `640e3cf` isolates backend-status cleanup from the intentionally exiting
+  child. The raw source/settings match the normal counter; no new dependency,
+  application configuration field or production decoder policy is introduced.
 - Deployment remains Git-only: push `dev2`, then the user pulls onto the Pi.
   Do not copy files to the Pi. No implementation files have been copied and no
   Pi-side Git pull has been performed here. Remove any old hardcoded pin
   override from the Pi counter and use the CLI flags; the ready message uses
   the selected config.
-- Exact next action: after pulling `dev2`, repeat the 10 kHz/50,000-cycle burst
-  and inspect the first-failure context printed after shutdown. ARM software
+- Exact next action: after pulling `dev2`, compare raw and normal counters on
+  separate 10 kHz/50,000-cycle bursts, three trials each. Stop the raw counter
+  after the generator finishes; it continues through anomalies. ARM software
   tests, exact zero-anomaly physical counts and full-stack acceptance still need
   their own recorded evidence.

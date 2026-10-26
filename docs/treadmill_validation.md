@@ -284,3 +284,72 @@ existing counter invocation and selected BCM pins. Verify prompt shutdown and
 save the first-failure context if the inconsistency recurs. That electrical
 or capture anomaly remains unresolved; this change does not waive integrity
 checks or establish an accepted physical count/rate.
+
+## Raw-source comparison and unused-history suppression
+
+The next BCM23/24 report returned first-failure context at admitted event
+21,027: another A falling event following A falling, with consecutive global
+and A-line sequences. Following rows included global 21,029 before 21,028,
+with timestamps reversed in the same received order. Final counts were partial
+because STOP's drain cutoff expired during ongoing input; forced termination
+was no longer reported. This evidence does not identify the first anomaly as
+electrical noise, generator error, or a kernel-capture limitation.
+
+A read-only Pi serialization benchmark used 8,192 synthetic EventRecords:
+five-run median pickle time was 57.021 ms for the 408,989-byte history versus
+0.075 ms for 13 records (750 bytes). This measures serialization, not the
+exact pause imposed by the multiprocessing feeder. It makes the unused history
+transfer a plausible contributor to later loss; it cannot explain the first
+anomaly, which precedes that transfer. At 40,000 delivered events/s, a
+1,024-event FIFO represents 25.6 ms of buffering.
+
+`debug/treadmill_counter.py` now disables only the unused large-history
+channel. It retains the normal decoder, shared-state/worker architecture and
+small first-failure STOP result. `TreadmillRuntime` keeps its existing history
+default for other callers. Shared `debug/treadmill_options.py` supplies both
+diagnostics with identical BCM validation, manifest defaults and optional
+duration, without changing normal session configuration.
+
+The raw comparison reads the same production GPIO source directly in one
+process. It creates no decoder, shared-state transport or diagnostic queues.
+Run it on the current bench pins:
+
+```bash
+uv run debug/treadmill_raw_counter.py --a-pin 23 --b-pin 24
+```
+
+It runs until Ctrl-C, or accepts `--duration-s` like the normal counter. Start
+the receiver before triggering the Pico, let the full burst finish, then stop
+the receiver. Duration is measured from receiver readiness, not generator
+start. SIGINT/duration finishes the current admitted batch; there is no final
+drain, and unread queued events are outside the printed totals. Prefer Ctrl-C
+after the finite burst for complete-count comparisons.
+
+The raw counter continues through anomalies. It reports total events,
+A/B rising/falling counts, maximum processing lag and per-code anomaly
+observations, retaining at most eight anomalous events in receipt order.
+Sequence comparisons use the previous received event, including reordered
+events; gap observations are not an exact lost-edge count. Repeated target
+levels are observations and can also follow gaps/replays. Exit status is
+nonzero for any raw anomaly or source/cleanup error. Zero anomalies alone do
+not prove all physical edges were captured, and the probe does not compute
+quadrature position, distance, speed or physical calibration.
+
+For the first comparison, use separate 10 kHz, 50,000-cycle bursts with the raw
+and normal counters, three trials each. Full raw totals should be 200,000
+events: 50,000 rising and 50,000 falling on each channel. Expected totals stay
+on the generator/test worksheet; they are not receiver arguments. The normal
+counter still stops on failed integrity, so an aborted total is not a complete
+burst comparison. If raw capture passes while normal acquisition fails,
+investigate decoder/publication cost. If raw also fails, inspect the common
+GPIO backend/kernel and the waveform at the Pi header, then repeat at lower
+rates. Neither outcome by itself proves an electrical or kernel cause.
+
+Tests-first RED `7907312`: the raw module was absent, 3 intended history
+failures and 1 existing-default pass. Follow-up test-isolation correction:
+`640e3cf`. The focused development-host command above now reports 284 passed,
+including 26 new raw/history cases. These tests use injected sources and do
+not establish real Pi GPIO throughput. Ruff static/format checks, diff checks,
+and both simple `uv run <file> --help` invocations pass, including launching
+the raw counter from `debug/`. Pi comparison remains pending the user's Git
+pull; no implementation files have been copied to the target.

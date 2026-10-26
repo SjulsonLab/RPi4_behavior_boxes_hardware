@@ -85,7 +85,8 @@ def acquisition_worker(
         results: Bounded matched-result queue; shared zero state is authoritative.
         diagnostics: Bounded low-rate record queue, reserved for the later logger.
         status: Bounded startup/backend-failure metadata channel to the parent.
-        failure_ring: Capacity-one best-effort failure-history channel.
+        failure_ring: Capacity-one best-effort failure-history channel, or None
+            when no large-history consumer exists (the standalone counter).
         source_factory: Importable callable(config) -> EdgeSource; child owns it.
 
     Returns:
@@ -188,7 +189,11 @@ def acquisition_worker(
                         if not _offer(diagnostics, {"monotonic_ns": now, "code": code}):
                             decoder.counters["diagnostic_event_drop_count"] += 1
                             decoder.note_code("DIAGNOSTIC_EVENTS_DROPPED", now)
-                if not decoder.integrity_valid and not ring_sent:
+                if (
+                    failure_ring is not None
+                    and not decoder.integrity_valid
+                    and not ring_sent
+                ):
                     ring_sent = True
                     _offer(failure_ring, tuple(decoder.recent_events))
 
@@ -290,7 +295,7 @@ def acquisition_worker(
         if decoder is not None:
             decoder.note_code(code, now)
             _publish(decoder, shared, now, heartbeat, version)
-            if not ring_sent:
+            if failure_ring is not None and not ring_sent:
                 _offer(failure_ring, tuple(decoder.recent_events))
         _offer(status, ("failed", code, str(exc), getattr(exc, "context", None)))
     finally:
@@ -308,7 +313,8 @@ def acquisition_worker(
             results.cancel_join_thread()
         # Large failure history and logger diagnostics remain best effort.
         for channel in (diagnostics, failure_ring):
-            channel.cancel_join_thread()
+            if channel is not None:
+                channel.cancel_join_thread()
 
 
 def _publish(decoder, shared, now_ns: int, heartbeat_ns: int, version: int) -> int:

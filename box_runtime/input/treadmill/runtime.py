@@ -77,6 +77,7 @@ class TreadmillRuntime:
         lifecycle_lock=None,
         close_requested=None,
         recording_active=None,
+        capture_failure_history: bool = True,
     ):
         """Construct a facade without starting hardware or child processes.
 
@@ -87,6 +88,9 @@ class TreadmillRuntime:
             lifecycle_lock: Optional parent threading.RLock owned by InputService.
             close_requested: Optional parent threading.Event guarding IPC teardown.
             recording_active: Optional zero-argument shared-recording-state callback.
+            capture_failure_history: Boolean enabling the capacity-one large
+                failure-history channel. Standalone disables this unused transfer;
+                the bounded first-failure STOP report is always retained.
 
         Returns:
             None. The standalone entry point uses its own parent guard; BehavBox
@@ -94,6 +98,7 @@ class TreadmillRuntime:
         """
         self.config = config
         self._source_factory = source_factory
+        self._capture_failure_history = capture_failure_history
         self._lock = lifecycle_lock if lifecycle_lock is not None else threading.RLock()
         self._close_requested = (
             close_requested if close_requested is not None else threading.Event()
@@ -168,14 +173,17 @@ class TreadmillRuntime:
                 self.config.diagnostic_event_queue_size
             )
             self._status = self._context.Queue(4)
-            self._failure_ring = self._context.Queue(1)
+            self._failure_ring = (
+                self._context.Queue(1) if self._capture_failure_history else None
+            )
             self._channels = [
                 self._controls,
                 self._results,
                 self._diagnostics,
                 self._status,
-                self._failure_ring,
             ]
+            if self._failure_ring is not None:
+                self._channels.append(self._failure_ring)
             deadline = time.monotonic() + self.config.startup_timeout_s
             try:
                 self._process = self._context.Process(
