@@ -124,20 +124,25 @@ From `/home/pi/RPi4_behavior_boxes_hardware`, first run the software tests on
 ARM with its apt-installed Python modules:
 
 ```bash
-/home/pi/.local/bin/uv run --offline --no-project --python /usr/bin/python3 python -m pytest tests/treadmill tests/test_rpi5_trixie_provisioning.py -q
+uv run python -m pytest tests/treadmill tests/test_rpi5_trixie_provisioning.py -q
 ```
+
+Plain `uv run` was verified on this Pi to select `/usr/bin/python` and import
+the apt-installed gpiod 2.2.0 binding from
+`/usr/lib/python3/dist-packages/gpiod`. The explicit interpreter/project flags
+used in the earlier environment probe are unnecessary for these commands.
 
 The software tests inject sources and do not claim GPIO. Next, with BCM13/16
 available, run the production GPIO source for a short stationary check:
 
 ```bash
-/home/pi/.local/bin/uv run --offline --no-project --python /usr/bin/python3 python debug/treadmill_counter.py --duration-s 5
+uv run debug/treadmill_counter.py --duration-s 5
 ```
 
 Run until Ctrl-C instead:
 
 ```bash
-/home/pi/.local/bin/uv run --offline --no-project --python /usr/bin/python3 python debug/treadmill_counter.py
+uv run debug/treadmill_counter.py
 ```
 
 The command prints readiness, warns about unverified physical calibration,
