@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import math
 from pathlib import Path
 import time
@@ -24,6 +25,30 @@ def _duration(value: str) -> float:
     if not math.isfinite(seconds) or seconds <= 0:
         raise argparse.ArgumentTypeError("duration must be positive finite seconds")
     return seconds
+
+
+def _bcm_pin(value: str) -> int:
+    """Parse CLI text as an integer BCM GPIO number, not a physical header pin.
+
+    Args:
+        value: Command-line string naming a dimensionless BCM GPIO number.
+
+    Returns:
+        int: Header GPIO number in 0..27. Reserved/duplicate selection is
+        checked against the manifest after both channel defaults are resolved.
+
+    Raises:
+        argparse.ArgumentTypeError: Non-integer or out-of-range selection.
+    """
+    try:
+        pin = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            "BCM GPIO must be an integer from 0 to 27"
+        ) from exc
+    if not 0 <= pin <= 27:
+        raise argparse.ArgumentTypeError("BCM GPIO must be in the range 0 to 27")
+    return pin
 
 
 def main(
@@ -49,6 +74,18 @@ def main(
     parser.add_argument(
         "--duration-s", type=_duration, help="otherwise run until Ctrl-C"
     )
+    parser.add_argument(
+        "--a-pin",
+        type=_bcm_pin,
+        metavar="BCM",
+        help="standalone channel A BCM GPIO number; defaults to the head-fixed manifest",
+    )
+    parser.add_argument(
+        "--b-pin",
+        type=_bcm_pin,
+        metavar="BCM",
+        help="standalone channel B BCM GPIO number; defaults to the head-fixed manifest",
+    )
     args = parser.parse_args(argv)
     prepare_repo_imports(script_path=Path(__file__))
     from box_runtime.io_manifest import load_box_profile
@@ -56,10 +93,21 @@ def main(
     from box_runtime.input.treadmill.runtime import TreadmillRuntime
     from box_runtime.input.treadmill.state import FAILED_CODES
 
+    manifest = load_box_profile("head_fixed")
     settings = load_config(
         {"treadmill": True, "treadmill_config": {"treadmill_required": True}},
-        load_box_profile("head_fixed"),
+        manifest,
     )
+    a_pin = settings.a_bcm_pin if args.a_pin is None else args.a_pin
+    b_pin = settings.b_bcm_pin if args.b_pin is None else args.b_pin
+    if a_pin == b_pin:
+        parser.error("Channel A and B must select different BCM GPIO pins")
+    for pin in (a_pin, b_pin):
+        if pin in manifest.reserved:
+            parser.error(f"GPIO{pin} is reserved: {manifest.reserved[pin].notes}")
+    # This bench-only copy leaves the cached manifest and normal session
+    # configuration untouched; the production source still checks line ownership.
+    settings = replace(settings, a_bcm_pin=a_pin, b_bcm_pin=b_pin)
     runtime = (runtime_factory or TreadmillRuntime)(settings)
     started = None
     stopped = None
