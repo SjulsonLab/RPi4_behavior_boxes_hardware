@@ -25,7 +25,7 @@ Status as of 2026-10-26:
 |---|---|
 | Specification and plan documentation | Revised after implementation-readiness review |
 | Runtime implementation | TW-1 core, TW-2 adapter and TW-3 standalone acquisition implemented; Pi runtime validation pending |
-| Rewrite tests | Committed RED/GREEN stages; focused local suite 206 passed |
+| Rewrite tests | Committed RED/GREEN stages; focused local suite 229 passed |
 | Dependency/provisioning changes | TW-0 complete; target packages already installed |
 | Hardware calibration and acceptance | Not started |
 
@@ -808,7 +808,7 @@ or gate decision.
 | `TW-0` Environment/provisioning | `COMPLETE` | RED `6131cd8`; GREEN `05bea6c`; 27 tests pass, target verifier zero failures | Complete |
 | `TW-1` Pure core | `COMPLETE` | RED `11d943c`, `efa740f`; GREEN `cf50432`; focused suite 137 passed | Complete |
 | `TW-2` GPIO backend | `IN PROGRESS` | RED `1eaf754`; GREEN `cf378fd`; fake GPIO gates pass | Pi software run, then external-generator physical edge smoke |
-| `TW-3` Processes/facade | `IN PROGRESS` | RED `484a3d7`, `a7a34bd`, `91b8ef5`; GREEN `05cfd69`; focused local suite 206 passed | Pull dev2 on Pi; run ARM process/coherence tests and stationary CLI checks |
+| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure RED `7d7357e`, `1d2a7cf`, GREEN `f2258b8`; focused local suite 229 passed | Pull dev2 and reproduce the single extra-event failure with automatic context |
 | `TW-4` Recording | `NOT STARTED` | None | `TW-3` public/shared-state contract |
 | `TW-5` Integration | `NOT STARTED` | None | `TW-3` and `TW-4` complete |
 | `TW-6` Stress | `NOT STARTED` | None | Integrated non-hardware system complete |
@@ -881,11 +881,25 @@ generator, configuration, duration, software commit, and artifact paths.
   startup cleanup, reported cleanup errors, forced shutdown, cached post-close
   reads, and Ctrl-C/optional-duration CLI behavior. Focused local suite: 206
   passed; Ruff static checks passed.
-- The microcontroller is not attached. The user requested software/stationary
-  work first and specified Git-only deployment: push `dev2`, then the changes
-  will be pulled onto the Pi. Do not copy files to the Pi. No implementation
-  files have been copied and no Pi-side Git pull has been performed here.
-- Exact next action: after `dev2` is pulled onto `pi@10.42.84.10`, run the
-  commands in `docs/treadmill_validation.md` for ARM software and stationary
-  standalone checks. External-edge counts and the physical TW-2 gate remain
-  pending until the generator is attached; full-stack acceptance remains later.
+- TW-3 first-failure diagnostic follow-up is implemented in `f2258b8`. The
+  user observed 200,000 valid transitions from a 50,000-cycle/10 kHz burst plus
+  one extra `EDGE_STATE_INCONSISTENT` event; 30/60 s idle checks showed no
+  anomaly. RED `7d7357e` confirmed 22 intended failures; `1d2a7cf` adds forced
+  cleanup coverage. GREEN focused suite: 229 passed; Ruff and diff checks pass.
+  One immutable window of at most 13 records is returned through the existing
+  STOP result and formatted after close. Decoding/integrity policy, public
+  shared state, manifest pins and legacy comparison tools are preserved.
+- Local seven-pair synthetic benchmark against `6b406e2`: median 50,000-event
+  decode time 0.142458 s before versus 0.146681 s after (1.0296 ratio). This is
+  Python 3.12 development-host evidence, not Pi throughput or rate acceptance.
+- The Pico is now connected directly to the Pi after the breakout-board path
+  failed connectivity checks. User testing exercises real GPIO; the 10 kHz
+  extra-event anomaly is still unresolved, and 100 kHz fails integrity checks.
+- Deployment remains Git-only: push `dev2`, then the user pulls onto the Pi.
+  Do not copy files to the Pi. No implementation files have been copied and no
+  Pi-side Git pull has been performed here. Preserve any temporary GPIO23/24
+  override in the user's Pi checkout; the ready message now uses actual config.
+- Exact next action: after pulling `dev2`, repeat the 10 kHz/50,000-cycle burst
+  and inspect the first-failure context printed after shutdown. ARM software
+  tests, exact zero-anomaly physical counts and full-stack acceptance still need
+  their own recorded evidence.

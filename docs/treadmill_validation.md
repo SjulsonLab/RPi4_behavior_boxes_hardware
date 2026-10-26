@@ -153,10 +153,62 @@ dimensionless x4 transitions, not full quadrature cycles. An ordinary Ctrl-C is
 a normal stop; acquisition or cleanup failure returns nonzero. Run one counter
 at a time because the old and new tools claim the same lines.
 
-The microcontroller is not yet attached. Start the receiver first and wait for
+For external-generator testing, start the receiver first and wait for
 readiness before starting an independently counted generator burst. Stop the
 generator and allow pending input to drain before stopping the receiver.
 Compare the receiver's valid-transition total and signed raw position with the
 generator's independently recorded totals; expected counts are not receiver
 arguments. Physical electrical compatibility and both-edge/count verification
 remain pending. Zero counts with idle inputs validate lifecycle only.
+
+## Bench follow-up and first-failure diagnostics
+
+The user subsequently connected the Pico directly to Pi header GPIO after the
+breakout-board path failed an electrical-level check. Idle runs of 30 and 60 s
+reported no anomaly. A 10 kHz/50,000-cycle burst produced 200,001 delivered
+events, 200,000 accepted positive transitions, zero sequence gaps and one
+`EDGE_STATE_INCONSISTENT` event. This remains a failed-integrity run; exact
+accepted totals alone do not establish a clean waveform or valid capture.
+The user's 100 kHz run also failed integrity and is not an accepted rate.
+
+The counter now automatically prints the first integrity-failure context after
+shutdown. Invocation is unchanged:
+
+```bash
+uv run debug/treadmill_counter.py
+```
+
+Capture is one immutable window of up to eight preceding records, the offending
+event and four subsequent records. Short windows are labeled; shutdown does
+not wait for more edges. The report includes admitted event number, pre-failure
+accepted count/signed position, previous global/A/B sequence baselines, channel
+and configured BCM pin, edge type, remembered AB states, raw monotonic-ns
+timestamps, adjacent kernel-time differences, lag, sequences, delta and flags.
+Records stay in received order. Remembered AB values are decoder history, not
+new electrical measurements. The first window survives later ring wraparound.
+
+The existing STOP result carries this bounded report with final state; the
+facade caches it before releasing IPC. `first_failure_diagnostic` is a read-only
+property that uses that cache. Missing context after an interrupted/forced or
+otherwise undelivered result is explicitly reported as unavailable. Integrity
+and count rules are unchanged; there is no new logger, IPC channel, config
+setting, dependency, per-edge transport, or acquisition console/file output.
+The ready message uses effective config pins, including a local bench override.
+
+Tests-first diagnostic commits: RED `7d7357e` (22 intended failures), follow-up
+forced-cleanup test `1d2a7cf`; GREEN `f2258b8`. The same focused software command
+listed above now reports 229 passed, including 23 new diagnostic tests. Ruff
+checks and `git diff --check` pass. New Pi-side diagnostic behavior still needs
+a run after the user pulls the branch.
+
+Seven alternating local synthetic runs of 50,000 events compared the baseline
+decoder at `6b406e2` with the new code. Median elapsed times: 0.142458 s before,
+0.146681 s after, ratio 1.0296 (about 3% extra time). Both decoded all 50,000
+events exactly. This Python 3.12.12 measurement excludes GPIO and shared-state
+publication and must not be presented as Pi or full-process performance.
+
+Separate known sizing correction: the inspected
+[Pi 6.12 kernel source](https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/gpio/gpiolib-cdev.c#L1689-L1693)
+caps the requested event FIFO at `GPIO_V2_LINES_MAX * 16`, or 1,024 events.
+The configured 8,192 value is a request, not evidence of 8,192 allocated slots.
+Final buffer/headroom acceptance must account for that cap.
