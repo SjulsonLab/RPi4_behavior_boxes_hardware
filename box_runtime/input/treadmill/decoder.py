@@ -2,7 +2,8 @@
 
 from bisect import bisect_left
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from itertools import islice
 
 from .config import TreadmillConfig
 from .state import HEALTH_CODES, TreadmillState, materialize_state, ordered_codes
@@ -47,6 +48,8 @@ COUNTER_NAMES = (
     "processing_lag_sum_ns",
     "processing_lag_warning_count",
 )
+FAILURE_PRECEDING_EVENTS = 8
+FAILURE_FOLLOWING_EVENTS = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +74,32 @@ class EventRecord:
     delta: int
     processing_lag_ns: int | None
     flags: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class FirstFailureDiagnostic:
+    """One immutable integrity-failure window, with at most 8+1+4 records.
+
+    event_number is one-based admitted-event order after startup synchronization,
+    independent of kernel sequence baselines. Counts/positions are dimensionless;
+    global and A/B line baselines are uint32 values immediately before failure.
+    records stay in received order and retain EventRecord's monotonic-ns units.
+    preceding_event_count locates the offending record. Short context is valid
+    at startup, with a small configured history, or when input stops afterward.
+    """
+
+    event_number: int
+    valid_transition_count_before: int
+    raw_transition_position_before: int
+    global_sequence_before: int
+    line_sequence_numbers_before: tuple[int, int]
+    preceding_event_count: int
+    records: tuple[EventRecord, ...]
+
+    @property
+    def following_event_count(self) -> int:
+        """Return the dimensionless number of retained records after the failure."""
+        return len(self.records) - self.preceding_event_count - 1
 
 
 class Decoder:
@@ -115,6 +144,7 @@ class Decoder:
         self.last_resolved_zero_id = self.last_applied_zero_id = None
         self.last_zero_result = self.zero_resolved_ns = None
         self.recent_events = deque(maxlen=config.diagnostic_ring_buffer_size)
+        self.first_failure_diagnostic: FirstFailureDiagnostic | None = None
         if not config.calibration_verified:
             self.note_code("CALIBRATION_UNVERIFIED", 0)
 
@@ -133,6 +163,10 @@ class Decoder:
         self.counters["edge_event_count"] += 1
         self.last_update_ns = processing_monotonic_ns
         before = self.ab_state
+        global_sequence_before = self.global_sequence
+        a_sequence_before, b_sequence_before = self.line_sequences
+        valid_count_before = self.counters["valid_transition_count"]
+        position_before = self.position
         flags = set()
         channel = {"A": 0, "B": 1}.get(event.channel)
         payload_valid = channel is not None and event.edge_type in ("rising", "falling")
@@ -257,21 +291,52 @@ class Decoder:
             "EDGE_STATE_INCONSISTENT",
             "STATE_RESYNC_AMBIGUOUS",
         }
+        first_integrity_failure = self.integrity_valid and bool(flags & integrity_codes)
         if flags & integrity_codes:
             self.integrity_valid = False
         for code in ordered_codes(flags):
             self.note_code(code, processing_monotonic_ns)
-        self.recent_events.append(
-            EventRecord(
-                event,
-                processing_monotonic_ns,
-                before,
-                self.ab_state,
-                delta,
-                lag,
-                ordered_codes(flags),
-            )
+        record = EventRecord(
+            event,
+            processing_monotonic_ns,
+            before,
+            self.ab_state,
+            delta,
+            lag,
+            ordered_codes(flags),
         )
+        if first_integrity_failure:
+            # Copy only the tail needed for this report, before the new record
+            # can evict preceding context from a small configured history.
+            preceding = tuple(
+                reversed(
+                    tuple(
+                        islice(
+                            reversed(self.recent_events),
+                            FAILURE_PRECEDING_EVENTS,
+                        )
+                    )
+                )
+            )
+            self.first_failure_diagnostic = FirstFailureDiagnostic(
+                self.counters["edge_event_count"],
+                valid_count_before,
+                position_before,
+                global_sequence_before,
+                (a_sequence_before, b_sequence_before),
+                len(preceding),
+                preceding + (record,),
+            )
+        elif (
+            self.first_failure_diagnostic is not None
+            and self.first_failure_diagnostic.following_event_count
+            < FAILURE_FOLLOWING_EVENTS
+        ):
+            self.first_failure_diagnostic = replace(
+                self.first_failure_diagnostic,
+                records=self.first_failure_diagnostic.records + (record,),
+            )
+        self.recent_events.append(record)
 
     def snapshot(
         self, now_ns: int, *, heartbeat_ns: int | None = None, state_version: int = 0

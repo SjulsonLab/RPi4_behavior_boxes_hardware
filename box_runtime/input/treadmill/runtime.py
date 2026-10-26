@@ -9,6 +9,7 @@ import time
 
 from .acquisition import ControlResult, acquisition_worker
 from .config import TreadmillConfig
+from .decoder import FirstFailureDiagnostic
 from .gpio_backend import GpiodSource
 from .state import (
     COHERENT_STATE_READ_TIMEOUT_S,
@@ -102,6 +103,7 @@ class TreadmillRuntime:
         self._started = self._closed = False
         self._last_state = None
         self._final_worker_state = None
+        self._first_failure_diagnostic: FirstFailureDiagnostic | None = None
         self._command_id = 0
         self._active_parent_codes: set[str] = set()
         self._observed: dict[str, int] = {}
@@ -113,6 +115,19 @@ class TreadmillRuntime:
         self._startup_diagnostics = []
         self.mapping = {}
         self.startup_excluded_event_count = 0
+
+    @property
+    def first_failure_diagnostic(self) -> FirstFailureDiagnostic | None:
+        """Return cached first integrity-failure context from the STOP result.
+
+        Returns:
+            FirstFailureDiagnostic | None: At most 13 immutable event records,
+            with monotonic-ns timestamps and dimensionless counts/positions.
+            None before delivery, on a clean run, or when shutdown could not
+            deliver the report. This property never reads live or released IPC;
+            callers use final integrity/health to distinguish clean/unavailable.
+        """
+        return self._first_failure_diagnostic
 
     @property
     def failure_context(self) -> dict | None:
@@ -528,7 +543,8 @@ class TreadmillRuntime:
                 continue
             if received_kind == kind and result.command_id == identifier:
                 if kind == "STOP":
-                    self._final_worker_state = final
+                    self._final_worker_state = final.state
+                    self._first_failure_diagnostic = final.first_failure_diagnostic
                 return result
         return None
 

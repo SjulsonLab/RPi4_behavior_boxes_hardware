@@ -5,9 +5,9 @@ from queue import Empty, Full
 import signal
 import time
 
-from .decoder import Decoder
+from .decoder import Decoder, FirstFailureDiagnostic
 from .gpio_backend import BackendError
-from .state import materialize_state
+from .state import TreadmillState, materialize_state
 
 
 @dataclass(frozen=True)
@@ -19,6 +19,20 @@ class ControlResult:
     worker_timestamp_ns: int
     state_version: int
     confirmation_source: str = "acknowledgement"
+
+
+@dataclass(frozen=True)
+class StopReport:
+    """Final immutable state and optional bounded first-failure context.
+
+    state retains the public mm/mm/s/ns/count contract. first_failure_diagnostic
+    contains received-order records with monotonic ns and dimensionless counts.
+    It is None when no event invalidated integrity. This report travels once on
+    the existing STOP result channel; individual edges never stream over IPC.
+    """
+
+    state: TreadmillState
+    first_failure_diagnostic: FirstFailureDiagnostic | None
 
 
 def _offer(channel, message) -> bool:
@@ -58,6 +72,7 @@ def acquisition_worker(
     pending_zero = None
     last_result = None
     ring_sent = False
+    stop_result_sent = False
     try:
         source = source_factory(config)
         initial = source.open(heartbeat + int(config.startup_timeout_s * 1e9))
@@ -128,16 +143,24 @@ def acquisition_worker(
                         final, time.monotonic_ns(), config, stopped=True
                     )
                     shared.publish(final)
-                    _offer(
-                        results,
-                        (
-                            "STOP",
-                            ControlResult(
-                                identifier, "stopped", time.monotonic_ns(), version + 1
-                            ),
-                            final,
+                    message = (
+                        "STOP",
+                        ControlResult(
+                            identifier, "stopped", time.monotonic_ns(), version + 1
                         ),
+                        StopReport(final, decoder.first_failure_diagnostic),
                     )
+                    # GPIO is already released. A bounded wait here lets the
+                    # parent drain older results instead of dropping the final
+                    # report merely because the result queue was momentarily full.
+                    try:
+                        results.put(
+                            message,
+                            timeout=max(0, (deadline - time.monotonic_ns()) / 1e9),
+                        )
+                        stop_result_sent = True
+                    except Full:
+                        pass
                     return
                 if kind != "ZERO":
                     continue
@@ -207,9 +230,15 @@ def acquisition_worker(
                 source.close()
             except Exception as exc:
                 _offer(status, ("failed", "SHUTDOWN_INCOMPLETE", str(exc), None))
-        # These outputs are explicitly best effort. A full pipe must not hold
-        # the child alive at interpreter shutdown after its bounded work ends.
-        for channel in (results, diagnostics, failure_ring):
+        # The parent receives the small normal STOP report before joining us.
+        # Its shutdown deadline/forced cleanup still bounds a stalled sender.
+        if stop_result_sent:
+            results.close()
+            results.join_thread()
+        else:
+            results.cancel_join_thread()
+        # Large failure history and logger diagnostics remain best effort.
+        for channel in (diagnostics, failure_ring):
             channel.cancel_join_thread()
 
 
