@@ -286,6 +286,13 @@ can reflect reordering and are not an exact lost-edge estimate.
 - A zero is applied only after reserving a publication slot. The publication
   carries its command/result identity, so a lost direct acknowledgement is
   reconciled without reapplying the command.
+- Coalesce routine shared-state copies with an internal 1 ms minimum interval
+  between attempts, checking only at batch/control boundaries. Every edge still
+  updates the canonical decoder. Startup, new acquisition health codes, ZERO
+  results, backend failure, heartbeat deadlines and final STOP bypass the
+  routine cadence. Pending tail updates shorten the next event wait; otherwise
+  idle waits remain heartbeat/control driven. Unavailable slots retain pending
+  state and retry on cadence; intentional coalescing is not a diagnosed skip.
 - The worker retains only the in-flight and most recently resolved zero result;
   older IDs are rejected stale, keeping idempotency state bounded.
 - One parent-process `RLock`, owned by `InputService` and injected into the
@@ -835,7 +842,7 @@ or gate decision.
 | `TW-0` Environment/provisioning | `COMPLETE` | RED `6131cd8`; GREEN `05bea6c`; 27 tests pass, target verifier zero failures | Complete |
 | `TW-1` Pure core | `COMPLETE` | RED `11d943c`, `efa740f`; GREEN `cf50432`; focused suite 137 passed | Complete |
 | `TW-2` GPIO backend | `IN PROGRESS` | RED `1eaf754`; GREEN `cf378fd`; fake GPIO gates pass | Pi software run, then external-generator physical edge smoke |
-| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure GREEN `f2258b8`; pin CLI GREEN `12d5ae3`; STOP GREEN `ff0dbb5`; raw/history RED `7907312` now GREEN; focused local suite 284 passed | Pull dev2 and compare raw/normal receivers on finite bursts |
+| `TW-3` Processes/facade | `IN PROGRESS` | Initial GREEN `05cfd69`; first-failure GREEN `f2258b8`; STOP GREEN `ff0dbb5`; raw/history GREEN `4024590`; cadence RED `76fef12` now GREEN; focused local suite 294 passed | Pull dev2 and repeat normal-counter bursts with current GP4/GP5 wiring fixed |
 | `TW-4` Recording | `NOT STARTED` | None | `TW-3` public/shared-state contract |
 | `TW-5` Integration | `NOT STARTED` | None | `TW-3` and `TW-4` complete |
 | `TW-6` Stress | `NOT STARTED` | None | Integrated non-hardware system complete |
@@ -948,13 +955,26 @@ generator, configuration, duration, software commit, and artifact paths.
   `640e3cf` isolates backend-status cleanup from the intentionally exiting
   child. The raw source/settings match the normal counter; no new dependency,
   application configuration field or production decoder policy is introduced.
+- With Pico outputs moved to GP4/GP5 and cables separated, the user reports
+  at least three fully clean raw bursts, while normal acquisition still
+  intermittently reports a same-level falling event. Source corruption remains
+  unresolved. Read-only Pi profiling identified substantial small-batch state
+  publication cost. User approved an internal 1 ms routine-publication cadence;
+  RED `76fef12` gives 9 intended failures and 1 heartbeat baseline pass.
+  `68a319f` lets final STOP carry a coincident heartbeat; `ce6078f` synchronizes
+  the deliberately stalled-source test with the stall rather than a coalesced
+  final tail. No GPIO source/decoder policy or session settings change. All
+  294 focused tests and Ruff checks pass. The paired Pi synthetic strategy
+  benchmark improves batch-4 throughput from 38,691 to 107,856 events/s while
+  retaining exact totals; it excludes GPIO I/O and is not hardware acceptance.
 - Deployment remains Git-only: push `dev2`, then the user pulls onto the Pi.
   Do not copy files to the Pi. No implementation files have been copied and no
   Pi-side Git pull has been performed here. Remove any old hardcoded pin
   override from the Pi counter and use the CLI flags; the ready message uses
   the selected config.
-- Exact next action: after pulling `dev2`, compare raw and normal counters on
-  separate 10 kHz/50,000-cycle bursts, three trials each. Stop the raw counter
-  after the generator finishes; it continues through anomalies. ARM software
+- Exact next action: after pulling `dev2`, repeat normal-counter
+  10 kHz/50,000-cycle bursts with the current GP4/GP5 generator and wiring fixed;
+  compare against the clean raw baseline. Stop the raw counter after the
+  generator finishes when repeating that comparison. ARM software
   tests, exact zero-anomaly physical counts and full-stack acceptance still need
   their own recorded evidence.

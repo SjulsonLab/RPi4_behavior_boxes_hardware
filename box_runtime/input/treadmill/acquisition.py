@@ -10,6 +10,9 @@ from .gpio_backend import BackendError
 from .state import TreadmillState, materialize_state
 
 
+# Coalesce routine snapshots at 1 kHz; urgent control/health updates bypass this.
+STATE_PUBLICATION_INTERVAL_NS = 1_000_000
+
 INCOMPLETE_DRAIN_MESSAGE = (
     "Acquisition STOP drain reached its deadline before an empty queue; "
     "final counts are partial"
@@ -92,6 +95,7 @@ def acquisition_worker(
     Returns:
         None. Final state/report follow source release. No normal
         disk, network, console, behavior or GUI work occurs in this worker.
+        Every edge is decoded; routine state copies are coalesced to 1 ms.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     source = decoder = None
@@ -128,6 +132,9 @@ def acquisition_worker(
             ("ready", getattr(source, "mapping", {}), initial.excluded_event_count),
         )
         ready = True
+        publication_pending = False
+        next_publication_ns = heartbeat + STATE_PUBLICATION_INTERVAL_NS
+        publication_code_count = len(decoder.code_times)
         while True:
             now = time.monotonic_ns()
             wait_s = max(
@@ -135,6 +142,10 @@ def acquisition_worker(
             )
             if pending_zero is not None:
                 wait_s = min(wait_s, max(0, (pending_zero[1] - now) / 1e9))
+            if publication_pending:
+                # A final short burst must not wait for the 50 ms heartbeat
+                # before its pending counts become visible to readers.
+                wait_s = min(wait_s, max(0, (next_publication_ns - now) / 1e9))
             # A STOP drain never waits for new edges or starts a read after its
             # cutoff. Finish each admitted batch before servicing controls.
             drain_expired = pending_stop is not None and now >= pending_stop[1]
@@ -143,14 +154,14 @@ def acquisition_worker(
             else:
                 batch = source.read_batch(0 if pending_stop is not None else wait_s)
             if batch:
+                publication_pending = True
                 for event in batch:
                     decoder.process_event(event, time.monotonic_ns())
             now = time.monotonic_ns()
             heartbeat_due = now - heartbeat >= config.heartbeat_interval_s * 1e9
             if heartbeat_due:
                 heartbeat = now
-            if batch or heartbeat_due:
-                version = _publish(decoder, shared, now, heartbeat, version)
+                publication_pending = True
             # STOP is urgent even with backlog. ZERO is only admitted here;
             # applying its offset still requires an actually drained boundary.
             for _ in range(8):
@@ -189,6 +200,7 @@ def acquisition_worker(
                         if not _offer(diagnostics, {"monotonic_ns": now, "code": code}):
                             decoder.counters["diagnostic_event_drop_count"] += 1
                             decoder.note_code("DIAGNOSTIC_EVENTS_DROPPED", now)
+                            publication_pending = True
                 if (
                     failure_ring is not None
                     and not decoder.integrity_valid
@@ -246,10 +258,12 @@ def acquisition_worker(
                     except Full:
                         pass
                     return
-                continue
 
-            if pending_zero is not None and (
-                not batch or now >= pending_zero[1] or not decoder.integrity_valid
+            force_publication = False
+            if (
+                pending_stop is None
+                and pending_zero is not None
+                and (not batch or now >= pending_zero[1] or not decoder.integrity_valid)
             ):
                 identifier, deadline = pending_zero
                 now = time.monotonic_ns()
@@ -275,6 +289,13 @@ def acquisition_worker(
                             ),
                             slot,
                         )
+                        publication_pending = False
+                        next_publication_ns = now + STATE_PUBLICATION_INTERVAL_NS
+                        publication_code_count = len(decoder.code_times)
+                        heartbeat_due = False
+                    else:
+                        # A rejected ZERO still changes reconciliation metadata.
+                        publication_pending = force_publication = True
                     last_result = ControlResult(
                         identifier,
                         "applied" if applied else "confirmed_not_applied",
@@ -283,6 +304,22 @@ def acquisition_worker(
                     )
                     _offer(results, ("ZERO", last_result, None))
                     pending_zero = None
+
+            now = time.monotonic_ns()
+            new_health_code = len(decoder.code_times) != publication_code_count
+            if (
+                force_publication
+                or heartbeat_due
+                or new_health_code
+                or (publication_pending and now >= next_publication_ns)
+            ):
+                previous_version = version
+                version = _publish(decoder, shared, now, heartbeat, version)
+                publication_pending = version == previous_version
+                next_publication_ns = now + STATE_PUBLICATION_INTERVAL_NS
+                # A failed attempt adds its own skip code. Keep the update
+                # pending, but retry on cadence rather than on every batch.
+                publication_code_count = len(decoder.code_times)
     except BaseException as exc:
         now = time.monotonic_ns()
         code = (
@@ -318,7 +355,7 @@ def acquisition_worker(
 
 
 def _publish(decoder, shared, now_ns: int, heartbeat_ns: int, version: int) -> int:
-    """Publish a batch snapshot or diagnose a skip; return last published version."""
+    """Publish a scheduled/urgent snapshot or diagnose a skip; return latest version."""
     if shared.publish(
         decoder.snapshot(now_ns, heartbeat_ns=heartbeat_ns, state_version=version + 1)
     ):

@@ -296,8 +296,7 @@ def test_stationary_worker_keeps_heartbeat_without_one_khz_idle_wakes(run_worker
     # When STOP arrives exactly on a heartbeat, its final snapshot can carry
     # that heartbeat without an extra live snapshot at the same instant.
     heartbeat_times = {
-        state.last_heartbeat_monotonic_ns - START_NS
-        for now, state in context.successes
+        state.last_heartbeat_monotonic_ns - START_NS for now, state in context.successes
     }
     assert sorted(heartbeat_times) == [
         0,

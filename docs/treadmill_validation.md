@@ -353,3 +353,71 @@ not establish real Pi GPIO throughput. Ruff static/format checks, diff checks,
 and both simple `uv run <file> --help` invocations pass, including launching
 the raw counter from `debug/`. Pi comparison remains pending the user's Git
 pull; no implementation files have been copied to the target.
+
+## Coalesced state publication
+
+After moving Pico outputs to GP4/GP5 and separating the breadboard leads, the
+user reports at least three fully clean raw bursts: 200,000 events, 50,000
+rising/falling on each channel, and zero raw anomalies. Normal acquisition
+still intermittently reports an extra same-level falling event. In the latest
+report, event 103,142 was another A falling event with consecutive global/line
+sequences and 0.134056 ms processing lag; the next B falling event followed
+0.797 us later in kernel timestamp order. Final counts were partial because
+the bounded STOP drain ended while the finite burst was still active. These
+observations do not prove an electrical, kernel, or decoder-load cause.
+
+A read-only Pi CPU benchmark and cProfile run identified substantial repeated
+snapshot/packing cost at small batch sizes. For 10,000 synthetic perfect
+events and batch size 8, the profiled run spent 0.195 s cumulatively in
+`_publish` versus 0.156 s in `Decoder.process_event`. Profile instrumentation
+adds overhead; the unprofiled paired benchmark below measures throughput.
+
+Routine publication is now coalesced with
+`STATE_PUBLICATION_INTERVAL_NS = 1000000` in `acquisition.py`. Decoder updates
+and bounded control checks still occur for every event/batch respectively.
+New health conditions and startup/ZERO/backend/heartbeat/STOP updates bypass
+the cadence. Pending tail state shortens the next read timeout, and failed
+nonblocking writes retain pending state for a cadence-limited retry.
+Intentional coalescing is not counted as a publication skip. There are no new
+dependencies, public configuration fields, or shared-state transport fields.
+
+Ten deterministic worker tests use a controllable ns clock, real packed-state
+slots, and in-process source/channel doubles. RED `76fef12`: 9 intended
+failures, 1 stationary-heartbeat pass. `68a319f` corrects a test assumption
+that a heartbeat due at STOP requires a redundant live snapshot. `ce6078f`
+makes the existing forced-cleanup test wait for its deliberately broken source
+to signal a stall; a tail pending behind that blocked backend is not promised
+to be published. Other spawned-process/legacy tests remain regression gates.
+
+On the Pi, three alternating trials per strategy used the same installed
+Decoder/SharedState implementations with 10,000 events, startup and final
+copies, and no parent readers. The comparison benchmark applied either
+per-batch publication or the approved 1 ms strategy; it did not copy or execute
+the revised production worker on the Pi.
+
+| Events/read batch | Per-batch events/s | 1 ms events/s | Median publications, per-batch / 1 ms |
+|---:|---:|---:|---:|
+| 1 | 12,870 | 101,743 | 10,002 / 98 |
+| 4 | 38,691 | 107,856 | 2,502 / 93 |
+| 8 | 58,286 | 109,106 | 1,252 / 89 |
+| 32 | 94,272 | 111,156 | 315 / 81 |
+| 256 | 114,428 | 114,572 | 42 / 41 |
+
+Every trial retained exactly 10,000 valid transitions with no publication
+skips. This isolates decoder/shared-state CPU cost and excludes GPIO waits,
+event adaptation, worker control polling and reader contention. Actual GPIO
+batch sizes were not measured. It demonstrates the benefit of coalescing for
+small batches, not accepted physical throughput or resolution of the extra
+falling-event anomaly.
+
+The focused software command above reports 294 passed on the development
+host. Ruff static/format checks and `git diff --check` pass. The production
+change is confined to acquisition publication bookkeeping; source adaptation,
+per-event decoder rules and public configuration/transport interfaces remain
+as before. The user's Pico firmware/build/editor changes are not part of
+this implementation commit.
+
+After the user pulls `dev2`, repeat the normal-counter 10 kHz/50,000-cycle
+bursts with GP4/GP5 and the current Pi wiring unchanged. Preserve complete
+failure output if an anomaly recurs. Deployment remains Git-only; the Pi
+checkout and GPIO were not modified by the benchmark.

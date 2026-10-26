@@ -705,12 +705,13 @@ startup fails with an actionable error.
 
 The acquisition hot loop must:
 
-1. wait no longer than the next heartbeat/control deadline;
+1. wait no longer than the next heartbeat/control/pending-publication deadline;
 2. read all currently available events in bounded batches;
 3. preserve kernel order;
 4. adapt events to the pure decoder representation;
 5. update canonical state;
-6. publish a coherent snapshot after an appropriate batch;
+6. coalesce routine coherent snapshots on the Section 12.2 cadence, while
+   publishing urgent state at the current batch/control boundary;
 7. update heartbeat on schedule even while stationary;
 8. check the bounded control channel between batches so `STOP` cannot starve;
 9. apply `ZERO` only after pending edge events are drained. An expired or
@@ -1245,6 +1246,30 @@ demonstrate on ARM hardware that:
 - reader retry/timeout is bounded;
 - skipped publication is diagnosed but does not corrupt canonical state.
 
+The initial implementation uses an internal 1 ms minimum interval between
+routine publication attempts (up to about 1,000/s during motion). Every event
+still updates canonical counts, position, speed, history and diagnostics in
+received order. Construct and pack a full shared-state snapshot only when a
+publication is due, rather than after every small read batch. Readers receive
+the latest cumulative state; this intentionally coalesces intermediate copies,
+not edge processing. Freshness also depends on batch processing and OS
+scheduling, so this interval is not a hard real-time guarantee.
+
+Startup, newly observed acquisition health codes, ZERO resolution, backend
+failure and final STOP bypass the routine interval. Heartbeat publication
+retains its configured deadline. Pending totals after a short burst shorten
+the next event wait to their publication deadline. With no pending state, a
+stationary worker continues using its heartbeat/control waits rather than
+waking at 1 kHz. ZERO still requires its reserved slot and drained boundary;
+STOP still follows its bounded drain/release/report contract.
+
+If an actual nonblocking publication attempt cannot obtain a slot, increment
+`publication_skip_count`, retain pending state, and retry on the cadence. The
+writer's own skip code must not cause repeated immediate retries. Intentional
+coalescing is not a publication skip and does not activate
+`STATE_PUBLICATION_SKIPPED`. No new public configuration or transport fields
+are required for this provisional interval.
+
 If a behavior snapshot cannot obtain a coherent copy within its bounded read
 attempt, `snapshot()` raises a typed state-read error. `health_report()` remains
 nonthrowing and reports at least effective `DEGRADED` with a stable read-timeout
@@ -1573,7 +1598,7 @@ there; this table only resolves presentation priority.
 | 19 | `ZERO_RESULT_INDETERMINATE` | `DEGRADED`: zero application could not be reconciled |
 | 20 | `ZERO_NOT_APPLIED` | `DEGRADED`: zero could not be enqueued or was confirmed rejected |
 | 21 | `LOGGER_FAILED` | `DEGRADED`: non-required logger failure |
-| 22 | `STATE_PUBLICATION_SKIPPED` | `DEGRADED`: canonical update could not be published immediately |
+| 22 | `STATE_PUBLICATION_SKIPPED` | `DEGRADED`: a scheduled/urgent state copy could not obtain a writable slot |
 | 23 | `SEQUENCE_DUPLICATE` | `DEGRADED`: repeated accepted sequence value |
 | 24 | `EVENT_TIMESTAMP_INVALID` | `DEGRADED`: unusable event timestamp |
 | 25 | `PROCESSING_LAG_HIGH` | `DEGRADED`: configured lag threshold crossed |
@@ -2454,6 +2479,12 @@ Test that:
 - concurrent readers never receive torn snapshots;
 - a stalled reader cannot stop acquisition progress;
 - unavailable publication slots cause diagnosed skips, not blocking;
+- one-event read batches retain exact totals while routine snapshots are
+  coalesced to the 1 ms interval, without incrementing publication skips;
+- a pending final update after motion ends wakes and publishes before the
+  stationary heartbeat; idle workers do not wake continuously at 1 kHz;
+- health/control/backend/STOP updates bypass the routine interval, while
+  unavailable slots retry on cadence with exact skip counts and versions;
 - behavior read timeout raises the typed error while health reporting remains
   nonthrowing and non-healthy, then clears its active read-timeout code after a
   successful coherent read while retaining diagnostics;
