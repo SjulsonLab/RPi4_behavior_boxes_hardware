@@ -7,8 +7,9 @@ import pytest
 from test_core import config, trace
 from test_gpio import RawEvent, Request, source
 from test_publication import START_NS, request_stop
-from test_publication import run_worker as run_worker
+from test_publication import run_worker as run_worker  # noqa: PLC0414 - pytest fixture re-export
 
+from box_runtime.input.treadmill.acquisition import shutdown_deadlines
 from box_runtime.input.treadmill.decoder import Decoder
 from box_runtime.input.treadmill.gpio_backend import BackendError
 from box_runtime.input.treadmill.state import TreadmillState, _pack_state, _unpack_state
@@ -227,6 +228,24 @@ def test_stop_with_an_unresolved_gap_preserves_all_admitted_records(run_worker):
     assert report.drain_complete and not report.state.integrity_valid
     assert report.state.edge_event_count == 3
     assert "GLOBAL_SEQUENCE_GAP" in report.state.observed_acquisition_health_codes
+
+
+def request_stop_at_ordering_deadline(context):
+    """Queue a late STOP whose remaining drain budget equals the 1 ms grace."""
+    drain_offset = shutdown_deadlines(0, 3.0)[0]
+    context.controls.put_nowait(("STOP", 99, context.now_ns + 1_000_000 - drain_offset))
+
+
+def test_stop_cutoff_is_not_clean_when_ordering_expires_at_the_same_instant(run_worker):
+    """Hitting both limits must expose the gap and retain the partial-drain warning."""
+    context = run_worker(
+        worker_events()[1:2],
+        stop_after_ns=None,
+        actions={1: request_stop_at_ordering_deadline},
+    )
+    assert not context.stop_report.drain_complete
+    assert not context.stop_report.state.integrity_valid
+    assert context.stop_report.state.edge_event_count == 1
 
 
 def test_backend_error_flushes_pending_records_before_final_publication(run_worker):
