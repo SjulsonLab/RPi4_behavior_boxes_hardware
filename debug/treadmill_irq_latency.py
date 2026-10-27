@@ -4,10 +4,12 @@ Uses Linux tracefs only: no GPIO claims, kernel patches or additional packages.
 Start either counter first, then run this script in a second terminal. Tracing
 adds overhead. The pin is sampled somewhere between rp1_gpio_get entry/return;
 these are timing brackets, not timestamps of the physical electrical edge.
+Use --analyze-capture DIRECTORY to print a saved capture without root or GPIO.
 """
 
 from __future__ import annotations
 
+import argparse
 import errno
 import heapq
 import json
@@ -23,7 +25,7 @@ import time
 from collections import Counter, deque
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -36,6 +38,8 @@ except ModuleNotFoundError:
 TRACE_ROOT = Path("/sys/kernel/tracing")
 BUFFER_KB_PER_CPU = 65536
 EVENT_NAMES = ("irq_handler_entry", "thread_start", "read_start", "read_end")
+MAX_EXCLUDED_CONTEXTS = 8
+CONTEXT_RECORDS = 8
 TRACE_LINE = re.compile(
     r"^\s*.*-(\d+)\s+\[(\d+)\]\s+(?:\S+\s+)?"
     r"(\d+)\.(\d+):\s+(?:\w+:)?(\w+):\s*(.*)$"
@@ -68,6 +72,7 @@ class ReadAttempt:
     read_entry: TraceRecord | None = None
     ambiguous: bool = False
     invalid: bool = False
+    latest_irq_entry: TraceRecord | None = None
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -78,6 +83,20 @@ def main(argv: list[str] | None = None) -> int:
     pairs are reported separately and excluded from all latency statistics.
     """
     arguments = sys.argv[1:] if argv is None else argv
+    if any(argument.split("=", 1)[0] == "--analyze-capture" for argument in arguments):
+        parser = argparse.ArgumentParser(
+            description="Print a saved IRQ latency capture; no files are changed."
+        )
+        parser.add_argument("--analyze-capture", type=Path, required=True)
+        offline = parser.parse_args(arguments)
+        try:
+            summary = analyze_capture(offline.analyze_capture)
+            for line in format_summary(summary):
+                print(line)
+            return int(not summary["capture_complete"])
+        except (OSError, ValueError) as error:
+            print(f"ERROR: {error}")
+            return 1
     args, config = parse_counter_options(arguments, __doc__)
     if platform.system() != "Linux" or platform.machine() != "aarch64":
         print("ERROR: This diagnostic requires the aarch64 Pi 5 Linux kernel.")
@@ -110,14 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         irq_pins = find_gpio_irqs(Path("/proc/interrupts").read_text(), pins)
         thread_ids = find_irq_threads(irq_pins)
         directory = capture_trace(irq_pins, thread_ids, args.duration_s)
-        with (directory / "trace.txt").open() as source:
-            metadata = json.loads((directory / "metadata.json").read_text())
-            summary = analyze_trace(
-                parse_trace(source),
-                irq_pins,
-                thread_ids,
-                loss_counts=metadata["loss_counts"],
-            )
+        summary = analyze_capture(directory)
         (directory / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         for line in format_summary(summary):
             print(line)
@@ -129,6 +141,30 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if directory is not None:
             return_capture_ownership(directory)
+
+
+def analyze_capture(directory: Path) -> dict:
+    """Return a report from saved trace/metadata Paths; do not write or claim hardware.
+
+    IRQ/TID JSON map keys are converted back to integers. The returned summary
+    uses the same ns/us/count contract as analyze_trace. Unfinished captures
+    raise ValueError; recorded trace losses remain present in the report.
+    """
+    metadata = json.loads((directory / "metadata.json").read_text())
+    if metadata.get("status") != "captured":
+        raise ValueError("Capture is incomplete; no complete report can be produced")
+    try:
+        irq_pins = {int(irq): pin for irq, pin in metadata["irq_pins"].items()}
+        thread_ids = {int(irq): tid for irq, tid in metadata["thread_ids"].items()}
+        losses = metadata["loss_counts"]
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError(
+            "Capture metadata lacks IRQ/thread/loss information"
+        ) from error
+    with (directory / "trace.txt").open() as source:
+        return analyze_trace(
+            parse_trace(source), irq_pins, thread_ids, loss_counts=losses
+        )
 
 
 def parse_trace(lines: Iterable[str]) -> Iterator[TraceRecord]:
@@ -195,8 +231,16 @@ def analyze_trace(
     counts = {irq: Counter() for irq in irq_pins}
     delays = {irq: {name: [] for name in EVENT_NAMES[1:]} for irq in irq_pins}
     examples: dict[int, list] = {irq: [] for irq in irq_pins}
+    history: deque[TraceRecord] = deque(maxlen=CONTEXT_RECORDS + 1)
+    excluded = []
     ordinal = 0
+    last_record = None
     for record in records:
+        last_record = record
+        for context in excluded:
+            if len(context["records"]) < context["trigger_index"] + 1 + CONTEXT_RECORDS:
+                context["records"].append(record)
+        history.append(record)
         if record.kind in EVENT_NAMES[:2]:
             irq = record.irq
         else:
@@ -208,6 +252,7 @@ def analyze_trace(
             pending[irq].append(record)
             if irq in active:
                 active[irq].ambiguous = True
+                active[irq].latest_irq_entry = record
             continue
         if record.tid != thread_ids[irq]:
             continue
@@ -215,16 +260,33 @@ def analyze_trace(
             counts[irq]["thread_entries"] += 1
             if irq in active:
                 issues["incomplete_read"] += 1
+                _exclude_read(
+                    excluded,
+                    "incomplete_read",
+                    irq_pins[irq],
+                    active[irq],
+                    record,
+                    history,
+                )
             active[irq] = ReadAttempt(
                 pending[irq][0] if pending[irq] else None,
                 record,
                 ambiguous=len(pending[irq]) > 1,
+                latest_irq_entry=pending[irq][-1] if pending[irq] else None,
             )
             pending[irq].clear()
             continue
         attempt = active.get(irq)
         if attempt is None:
             issues[f"unpaired_{record.kind}"] += 1
+            _exclude_read(
+                excluded,
+                f"unpaired_{record.kind}",
+                irq_pins[irq],
+                None,
+                record,
+                history,
+            )
             continue
         if record.pin != irq_pins[irq]:
             issues["pin_mismatch"] += 1
@@ -238,17 +300,29 @@ def analyze_trace(
         del active[irq]
         if attempt.ambiguous:
             issues["ambiguous_read"] += 1
+            _exclude_read(
+                excluded, "ambiguous_read", irq_pins[irq], attempt, record, history
+            )
             # Resynchronize after the uncertain interval. A queued thread with
             # no new IRQ will be reported unpaired, not assigned a guessed IRQ.
             pending[irq].clear()
             continue
         if attempt.invalid:
+            _exclude_read(
+                excluded, "pin_mismatch", irq_pins[irq], attempt, record, history
+            )
             continue
         if record.value not in (0, 1):
             issues["read_error"] += 1
+            _exclude_read(
+                excluded, "read_error", irq_pins[irq], attempt, record, history
+            )
             continue
         if attempt.irq_entry is None or attempt.read_entry is None:
             issues["incomplete_read"] += 1
+            _exclude_read(
+                excluded, "incomplete_read", irq_pins[irq], attempt, record, history
+            )
             continue
         times = (
             attempt.irq_entry.time_ns,
@@ -258,6 +332,14 @@ def analyze_trace(
         )
         if list(times) != sorted(times):
             issues["timestamp_order_invalid"] += 1
+            _exclude_read(
+                excluded,
+                "timestamp_order_invalid",
+                irq_pins[irq],
+                attempt,
+                record,
+                history,
+            )
             continue
         for name, timestamp in zip(EVENT_NAMES[1:], times[1:]):
             delays[irq][name].append(timestamp - times[0])
@@ -277,11 +359,23 @@ def analyze_trace(
             heapq.heappop(examples[irq])
     issues["irq_without_read"] += sum(len(queue) for queue in pending.values())
     issues["incomplete_read"] += len(active)
+    for irq, attempt in active.items():
+        _exclude_read(
+            excluded, "incomplete_read", irq_pins[irq], attempt, last_record, history
+        )
+    for irq, queue in pending.items():
+        if queue:
+            _exclude_read(
+                excluded, "irq_without_read", irq_pins[irq], None, last_record, history
+            )
+    for context in excluded:
+        context["records"] = [asdict(record) for record in context["records"]]
     losses = dict(loss_counts or {})
     return {
         "capture_complete": not any(losses.values()),
         "loss_counts": losses,
         "pairing_issues": {name: count for name, count in issues.items() if count},
+        "excluded_contexts": excluded,
         "timestamp_resolution_us": 1,
         "pins": {
             str(pin): {
@@ -306,6 +400,54 @@ def analyze_trace(
             for irq, pin in irq_pins.items()
         },
     }
+
+
+def _exclude_read(
+    contexts: list[dict],
+    reason: str,
+    pin: int,
+    attempt: ReadAttempt | None,
+    record: TraceRecord | None,
+    history: deque[TraceRecord],
+) -> None:
+    """Retain one of eight excluded contexts, using only known ns/us timing points.
+
+    Inputs are bounded context dictionaries, a reason, BCM pin, optional pending
+    attempt/current record and recent records. Return None. Candidate delays
+    are an ambiguous range, never an extra matched latency sample.
+    """
+    if len(contexts) >= MAX_EXCLUDED_CONTEXTS:
+        return
+    first = attempt.irq_entry.time_ns if attempt and attempt.irq_entry else None
+    latest = (
+        attempt.latest_irq_entry.time_ns
+        if attempt and attempt.latest_irq_entry
+        else None
+    )
+    thread = attempt.thread_entry.time_ns if attempt else None
+    read = attempt.read_entry.time_ns if attempt and attempt.read_entry else None
+    returned = record is not None and record.kind == "read_end" and record.pin == pin
+    candidates = None
+    if first is not None and latest is not None and read is not None and read >= latest:
+        candidates = [(read - latest) / 1000, (read - first) / 1000]
+    contexts.append(
+        {
+            "reason": reason,
+            "pin": pin,
+            "first_irq_ns": first,
+            "latest_irq_ns": latest,
+            "thread_ns": thread,
+            "read_start_ns": read,
+            "read_end_ns": record.time_ns if returned else None,
+            "value": record.value if returned else None,
+            "thread_to_read_us": (read - thread) / 1000
+            if read is not None and thread is not None
+            else None,
+            "candidate_irq_to_read_us": candidates,
+            "trigger_index": max(0, len(history) - 1),
+            "records": list(history),
+        }
+    )
 
 
 def latency_statistics(values_ns: list[int]) -> dict:
@@ -610,6 +752,21 @@ def format_summary(summary: dict) -> list[str]:
         for example in result["longest_reads"]:
             lines.append(
                 f"    {example['irq_ns']} {(example['read_end_ns'] - example['irq_ns']) / 1000:.1f} {example['value']}"
+            )
+    for context in summary["excluded_contexts"]:
+        lines.append(
+            f"Excluded BCM{context['pin']} read: {context['reason']}; value={context['value']}"
+        )
+        lines.append(
+            f"  Thread-to-read: {context['thread_to_read_us']} us; candidate IRQ-to-read range: {context['candidate_irq_to_read_us']} us (not a matched sample)"
+        )
+        lines.append(
+            "  Trace context: monotonic_ns CPU TID kind IRQ pin value; > marks exclusion"
+        )
+        for index, record in enumerate(context["records"]):
+            marker = ">" if index == context["trigger_index"] else " "
+            lines.append(
+                f"  {marker} {record['time_ns']} {record['cpu']} {record['tid']} {record['kind']} {record['irq']} {record['pin']} {record['value']}"
             )
     lines.append("Tracing changes timing. Compare with identical untraced bursts.")
     return lines

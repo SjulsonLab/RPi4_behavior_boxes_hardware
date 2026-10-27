@@ -200,7 +200,8 @@ not wait for more edges. The report includes admitted event number, pre-failure
 accepted count/signed position, previous global/A/B sequence baselines, channel
 and configured BCM pin, edge type, remembered AB states, raw monotonic-ns
 timestamps, adjacent kernel-time differences, lag, sequences, delta and flags.
-Records stay in received order. Remembered AB values are decoder history, not
+Records stay in decoder-admission order (after bounded delivery correction).
+Remembered AB values are decoder history, not
 new electrical measurements. The first window survives later ring wraparound.
 
 The existing STOP result carries this bounded report with final state; the
@@ -531,3 +532,60 @@ edited on the Pi. The three new tests raise the diagnostic total to 30 and the
 focused regression total to 324. After pulling the correction, repeat the same
 tracer command with the counter running and start the generator only after
 the tracer's ready message.
+
+## Bounded delivery ordering and excluded-read reporting
+
+The raw/trace capture `20261027_024359_953297` confirmed cross-channel delivery
+reordering and an overlapping same-pin read. The runtime now corrects delivery
+order with one pure `EventOrderBuffer` before strict decoding, also reused in
+startup synchronization. Initial bounds are 1 ms and 256 retained records.
+Contiguous input has no deliberate wait. Timed-out/capacity-limited holes,
+same-level events and invalid kernel metadata still invalidate acquisition;
+extra B notifications are not removed. ZERO/STOP/backend-error tests prove
+that an empty raw read cannot hide pending records or discard admitted counts.
+
+The normal counter adds `Corrected delivery reorders`, counting successfully
+resolved buffering episodes. No warning/failure code is added for a corrected
+episode. Shared state carries the new dimensionless counter. Failure tables
+are labeled decoder-admission order. Kernel timestamps and physical units are
+unchanged; processing lag includes the ordering wait. The raw counter's
+post-startup received-order behavior and all legacy scripts remain unchanged.
+
+The tracer adds up to eight excluded contexts, using existing records only.
+Each displays relevant IRQ/thread/read points, sampled level, task/CPU, and
+up to eight records before/after exclusion. Known thread-to-read delay and an
+ambiguous range of candidate IRQ-to-read delays are reported separately from
+matched-read statistics. Capture and probe loss checks retain their meaning.
+
+To reanalyze the existing saved burst after pulling dev2, no counter, generator
+or sudo is needed:
+
+```bash
+uv run debug/treadmill_irq_latency.py --analyze-capture tmp_operator_runs/treadmill_irq_latency/20261027_024359_953297
+```
+
+Offline mode reads the saved metadata and trace and writes no capture files.
+The source recording was read from the Pi into an ignored development-host
+folder; no implementation files were copied onto the Pi. The new report
+preserved the original matched statistics and excluded counts and displayed
+`Thread-to-read: 53.0 us` and candidate IRQ-to-read range `[3.0, 55.0] us`, with
+the original interleaved CPU/task records and both low-level reads.
+
+RED ordering commit `7051463`: 5 failures, 13 missing-module errors, 2 existing
+behavior passes. RED report commit `3c7acb7`: 5 failures, 30 existing cases
+passing. A further RED case verifies that ordering expiry exactly at the STOP
+cutoff cannot be reported as a complete drain. The focused regression command
+now passes 350 tests, including 21 ordering/lifecycle cases and 5 additional
+report/replay cases.
+
+A development-host synthetic comparison, with three alternating 100,000-event
+trials per path and batch size 256, retained exact valid position/counts.
+Median decoder-only time was 0.3172 s (315,269 events/s); adding ordering took
+0.3325 s (300,766 events/s), about 4.8% more CPU time. This excludes GPIO, IPC
+and publication and is not a Pi throughput or hardware-acceptance result.
+
+After pulling dev2, restart the normal counter so its child and shared-state
+layout both use the updated code. Pi runtime tests and new signal bursts remain
+pending that pull. 10 kHz per channel is a stress target, not a stated production
+requirement. No affinity, kernel, electrical or Pico firmware changes are part
+of this correction.
