@@ -1,8 +1,10 @@
 """Synthetic kernel traces verify timing without claiming GPIO or enabling tracing."""
 
+import errno
 import json
 from contextlib import contextmanager
 from importlib import import_module
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -433,3 +435,77 @@ def test_failed_capture_keeps_incomplete_metadata_and_cleans_up(
     )
     assert len(paths) == 1
     assert json.loads(paths[0].read_text())["status"] == "incomplete"
+
+
+def test_control_write_supports_tracefs_without_seek_and_preserves_existing_events(
+    latency, tmp_path, monkeypatch
+):
+    """Python buffered append seeks; tracefs rejects that even though direct writes work."""
+    control = tmp_path / "dynamic_events"
+    control.write_text("other_probe\n")
+    original_open = Path.open
+
+    def reject_buffered_append(path, mode="r", *args, **kwargs):
+        """Simulate tracefs EINVAL on append-mode seek; other file reads still work."""
+        if path == control and mode == "a":
+            raise OSError(errno.EINVAL, "tracefs cannot seek to end")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_buffered_append)
+    latency.write_control(control, "new_probe")
+    assert control.read_text() == "other_probe\nnew_probe\n"
+
+
+def test_control_write_error_names_command_and_path_and_closes_descriptor(
+    latency, tmp_path, monkeypatch
+):
+    """A kernel-rejected command must identify its control file and leave no open fd."""
+    control = tmp_path / "dynamic_events"
+    control.touch()
+    opened = []
+    closed = []
+    original_open = latency.os.open
+    original_close = latency.os.close
+
+    def track_open(*args, **kwargs):
+        """Open the real temporary file, recording the returned integer descriptor."""
+        fd = original_open(*args, **kwargs)
+        opened.append(fd)
+        return fd
+
+    def reject_command(fd, data):
+        """Simulate kernel rejection of an ASCII tracefs command (integer fd, bytes)."""
+        raise OSError(errno.EINVAL, "Invalid argument")
+
+    def track_close(fd):
+        """Close one integer descriptor and record it for the cleanup assertion."""
+        closed.append(fd)
+        return original_close(fd)
+
+    monkeypatch.setattr(latency.os, "open", track_open)
+    monkeypatch.setattr(latency.os, "write", reject_command)
+    monkeypatch.setattr(latency.os, "close", track_close)
+    with pytest.raises(OSError) as failure:
+        latency.write_control(control, "test_probe_command")
+    assert failure.value.errno == errno.EINVAL
+    assert failure.value.filename == str(control)
+    assert "test_probe_command" in str(failure.value)
+    assert len(opened) == 1
+    assert closed == opened
+
+
+def test_short_control_write_is_reported_without_retry(latency, tmp_path, monkeypatch):
+    """A partial kernel command is an error; retrying could repeat a side effect."""
+    control = tmp_path / "dynamic_events"
+    control.touch()
+    writes = []
+
+    def short_write(fd, data):
+        """Return a short byte count instead of accepting the full command."""
+        writes.append(data)
+        return 1
+
+    monkeypatch.setattr(latency.os, "write", short_write)
+    with pytest.raises(OSError, match="[Ss]hort"):
+        latency.write_control(control, "test_probe_command")
+    assert len(writes) == 1
