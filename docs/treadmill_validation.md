@@ -506,3 +506,28 @@ every probe a unique name and requires statistics for all three probes.
 The new tracer's end-to-end Pi run and generator bursts remain pending the
 user's Git pull. No implementation files were copied to the Pi. Legacy
 counters, production acquisition and the user's Pico changes remain unchanged.
+
+### Tracefs control-write correction
+
+The first user run after pulling `99de47b` failed with `EINVAL` before creating
+any probes. The failure was in Python's buffered append-mode file open, which
+seeks to the end of `dynamic_events`; tracefs rejects that seek. The earlier
+shell-redirection checks did not exercise Python's append-open behavior.
+On the Pi, `Path.open("a")` and an explicit end-seek reproduced `EINVAL`, while
+`os.open(..., O_WRONLY | O_APPEND)` succeeded without seeking.
+
+Regression commit `e3829d2` adds three initially failing tests for nonseekable
+control files, preservation of existing probe definitions, contextual errors,
+descriptor cleanup and short writes. Control commands now use a single direct
+`os.write`, close the descriptor in `finally`, and include the path and command
+in any error. The entry command and tracing/pairing behavior are unchanged.
+
+The installed Pi tracer was exercised for 0.2 s with only its control writer
+temporarily replaced in memory. The complete setup, 64 MiB/CPU buffer,
+IRQ/thread filters, capture export, loss checks, report and cleanup succeeded.
+There were zero IRQ entries and zero trace/probe losses; this is a stationary
+lifecycle check, not a waveform/latency result. No source files were copied or
+edited on the Pi. The three new tests raise the diagnostic total to 30 and the
+focused regression total to 324. After pulling the correction, repeat the same
+tracer command with the counter running and start the generator only after
+the tracer's ready message.

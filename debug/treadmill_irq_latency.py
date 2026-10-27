@@ -8,6 +8,7 @@ these are timing brackets, not timestamps of the physical electrical edge.
 
 from __future__ import annotations
 
+import errno
 import heapq
 import json
 import math
@@ -445,9 +446,25 @@ def trace_session(
 
 
 def write_control(path: Path, text: str) -> None:
-    """Write one ASCII tracefs command to Path; return None or propagate OSError."""
-    with path.open("a", encoding="ascii") as target:
-        target.write(text + "\n")
+    """Write one ASCII tracefs command without seeking; return None or OSError.
+
+    path is a tracefs control Path and text is one command without its newline.
+    Appending must preserve other probes, but buffered Python append opens seek
+    to EOF, which tracefs rejects. Use one direct write and close even on error.
+    """
+    command = (text + "\n").encode("ascii")
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND)
+        if os.write(descriptor, command) != len(command):
+            raise OSError(errno.EIO, "Short tracefs command write")
+    except OSError as error:
+        raise OSError(
+            error.errno, f"Tracefs command {text!r}: {error.strerror}", str(path)
+        ) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def create_trace_instance(trace_root: Path, name: str) -> Path:
