@@ -1,6 +1,7 @@
 """Synthetic kernel traces verify timing without claiming GPIO or enabling tracing."""
 
 from importlib import import_module
+
 import pytest
 
 
@@ -157,6 +158,23 @@ def test_parser_ignores_headers_but_rejects_lost_event_markers(latency):
         list(latency.parse_trace(["CPU:0 [LOST 10 EVENTS]\n"]))
 
 
+def test_parser_accepts_live_pi_format_and_unique_probe_names(latency):
+    """Actual Pi traces have five flags and a caller/function pair on return."""
+    records = list(
+        latency.parse_trace(
+            [
+                " python-116155 [003] d.... 1224531.686400: owned_read_start: "
+                "(rp1_gpio_get+0x0/0xb0) pin=23\n",
+                " python-116155 [003] d..1. 1224531.686409: owned_read_end: "
+                "(gpio_chip_get_multiple.part.0+0x40/0xb8 <- rp1_gpio_get) pin=23 value=1\n",
+            ]
+        )
+    )
+    assert [record.kind for record in records] == ["read_start", "read_end"]
+    assert records[1].time_ns - records[0].time_ns == 9000
+    assert records[1].value == 1
+
+
 def test_discovers_only_selected_rp1_counter_irqs(latency):
     """Decode /proc/interrupts without hardcoding changing Linux IRQ numbers."""
     text = """           CPU0 CPU1
@@ -259,9 +277,11 @@ def test_partial_probe_registration_is_cleaned_on_setup_error(
         original_write(path, text)
 
     monkeypatch.setattr(latency, "write_control", reject_read_probe)
-    with pytest.raises(OSError, match="registration failure"):
-        with latency.trace_session(root, {180: 23, 181: 24}, {180: 900, 181: 901}):
-            pytest.fail("A failed setup must not yield a session")
+    with (
+        pytest.raises(OSError, match="registration failure"),
+        latency.trace_session(root, {180: 23, 181: 24}, {180: 900, 181: 901}),
+    ):
+        pytest.fail("A failed setup must not yield a session")
     registrations = [text for path, text in writes if path == "dynamic_events"]
     assert len(registrations) == 2
     assert registrations[1].startswith("-:")
@@ -276,7 +296,8 @@ def test_loss_counters_cover_every_cpu_and_owned_probe_only(latency, tmp_path):
             "entries: 12\noverrun: 1\ncommit overrun: 2\ndropped events: 3\n"
         )
     (tmp_path / "kprobe_profile").write_text(
-        "other/entry 100 99\nowned/thread_start 20 1\nowned/read_end 20 2\n"
+        "other_entry 100 99\nowned_thread_start 20 1\n"
+        "owned_read_start 20 0\nowned_read_end 20 2\n"
     )
     assert latency.read_loss_counts(tmp_path / "instance", tmp_path, "owned") == {
         "overrun": 2,
@@ -284,6 +305,18 @@ def test_loss_counters_cover_every_cpu_and_owned_probe_only(latency, tmp_path):
         "dropped_events": 6,
         "probe_misses": 3,
     }
+
+
+def test_missing_owned_probe_statistics_are_not_treated_as_zero_loss(latency, tmp_path):
+    """The Pi's profile uses bare event names, so each probe needs a unique name."""
+    directory = tmp_path / "instance/per_cpu/cpu0"
+    directory.mkdir(parents=True)
+    (directory / "stats").write_text(
+        "overrun: 0\ncommit overrun: 0\ndropped events: 0\n"
+    )
+    (tmp_path / "kprobe_profile").write_text("other_entry 1 0\n")
+    with pytest.raises(RuntimeError, match="probe.*statistics"):
+        latency.read_loss_counts(tmp_path / "instance", tmp_path, "owned")
 
 
 def test_longest_examples_are_bounded(latency):
