@@ -1,6 +1,9 @@
 """Synthetic kernel traces verify timing without claiming GPIO or enabling tracing."""
 
+import json
+from contextlib import contextmanager
 from importlib import import_module
+from types import SimpleNamespace
 
 import pytest
 
@@ -334,3 +337,95 @@ def test_help_needs_neither_root_nor_kernel_tracing(latency):
     with pytest.raises(SystemExit) as error:
         latency.main(["--help"])
     assert error.value.code == 0
+
+
+@pytest.fixture
+def capture_environment(latency, tmp_path, monkeypatch):
+    """Provide stopped trace text/statistics and a fake kernel session for capture tests."""
+    repo = tmp_path / "repo"
+    (repo / "debug").mkdir(parents=True)
+    root = tmp_path / "tracefs"
+    instance = root / "instances/owned"
+    (instance / "per_cpu/cpu0").mkdir(parents=True)
+    (instance / "per_cpu/cpu0/stats").write_text(
+        "overrun: 0\ncommit overrun: 0\ndropped events: 0\n"
+    )
+    (instance / "trace").write_text("".join(read_cycle(100)))
+    (root / "kprobe_profile").write_text(
+        "owned_thread_start 1 0\nowned_read_start 1 0\nowned_read_end 1 0\n"
+    )
+    writes = []
+    closed = []
+
+    @contextmanager
+    def session(*args, **kwargs):
+        """Yield a fake instance/group; record that cleanup runs after any exception."""
+        try:
+            yield instance, "owned"
+        finally:
+            closed.append(True)
+
+    def write(path, text):
+        """Record control writes as Path/text pairs, with no tracefs side effects."""
+        writes.append((path, text))
+
+    def interrupt_wait(seconds):
+        """Simulate Ctrl-C while waiting for the burst; seconds is a float."""
+        raise KeyboardInterrupt
+
+    def revision(*args, **kwargs):
+        """Return a fake git command result without invoking a real process."""
+        return SimpleNamespace(returncode=0, stdout="abc123\n")
+
+    monkeypatch.setattr(
+        latency, "__file__", str(repo / "debug/treadmill_irq_latency.py")
+    )
+    monkeypatch.setattr(latency, "TRACE_ROOT", root)
+    monkeypatch.setattr(latency, "trace_session", session)
+    monkeypatch.setattr(latency, "write_control", write)
+    monkeypatch.setattr(latency.time, "sleep", interrupt_wait)
+    monkeypatch.setattr(latency.subprocess, "run", revision)
+    return repo, instance, writes, closed
+
+
+def test_ctrl_c_saves_trace_and_metadata_after_disabling_probes(
+    latency, capture_environment
+):
+    """Ctrl-C stops capture, disables event overhead and saves readable trace/metadata."""
+    _, instance, writes, closed = capture_environment
+    directory = latency.capture_trace({180: 23, 181: 24}, {180: 900, 181: 901}, None)
+    metadata = json.loads((directory / "metadata.json").read_text())
+    assert closed == [True]
+    assert (instance / "tracing_on", "0") in writes
+    assert (instance / "events/enable", "0") in writes
+    assert metadata["status"] == "captured"
+    assert metadata["git_revision"] == "abc123"
+    assert (
+        len(
+            list(
+                latency.parse_trace((directory / "trace.txt").read_text().splitlines())
+            )
+        )
+        == 4
+    )
+
+
+def test_failed_capture_keeps_incomplete_metadata_and_cleans_up(
+    latency, capture_environment, monkeypatch
+):
+    """An export/statistics error leaves a diagnosable incomplete run, not a success."""
+    repo, _, _, closed = capture_environment
+
+    def fail_statistics(*args):
+        """Simulate an I/O failure after recording stops; never returns a loss count."""
+        raise OSError("test statistics failure")
+
+    monkeypatch.setattr(latency, "read_loss_counts", fail_statistics)
+    with pytest.raises(OSError, match="statistics failure"):
+        latency.capture_trace({180: 23, 181: 24}, {180: 900, 181: 901}, 1.0)
+    assert closed == [True]
+    paths = list(
+        (repo / "tmp_operator_runs/treadmill_irq_latency").glob("*/metadata.json")
+    )
+    assert len(paths) == 1
+    assert json.loads(paths[0].read_text())["status"] == "incomplete"
