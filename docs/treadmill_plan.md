@@ -210,15 +210,17 @@ Focused tests live under `tests/treadmill/`.
 |---|---|
 | `config.py` | Load/merge/validate readable settings; no GPIO, files, or processes |
 | `decoder.py` | Generic edge, x4 state, speed/zero/integrity rules, decoder counters, and recent decoder events |
-| `gpio_backend.py` | Enabled-only verified gpiod API boundary, RP1 resolution, line ownership, synchronization, and ordered batch adaptation |
+| `gpio_backend.py` | Enabled-only verified gpiod API boundary, RP1 resolution, line ownership, synchronization, and received-order batch adaptation |
+| `ordering.py` | Pure bounded uint32 sequence ordering; 1 ms grace, 256 pending records, no payload reconstruction |
 | `state.py` | Immutable public state plus the treadmill-specific coherent double-slot publication/reading implementation |
 | `acquisition.py` | Spawn-safe worker, heartbeat, lag/rate diagnostics, bounded diagnostic emission, idempotent `ZERO`/bounded `STOP`, and orderly GPIO cleanup |
 | `recording.py` | Logger process, deadline scheduling, artifact writers, logger diagnostics, summaries, and fallback failure record |
 | `runtime.py` | Composition root and public facade; owns child lifecycle and effective health |
 | `__init__.py` | Intentional public exports only |
 
-Keep the four internal bounded-operation constants with the module that owns
-the operation (`state.py`, `gpio_backend.py`, or `runtime.py`) and pass shorter
+Keep internal bounded-operation constants with the module that owns the
+operation (`state.py`, `gpio_backend.py`, `ordering.py`, `acquisition.py`, or
+`runtime.py`) and pass shorter
 values explicitly in tests. Do not add a general constants/settings module.
 
 Keep data and diagnostics beside the component that interprets them. Do not add
@@ -240,6 +242,7 @@ runtime, and then prints a final receiver-side summary containing:
 - admitted kernel edge events and valid x4 quadrature transitions;
 - signed raw transition position, positive and negative transition counts, and
   direction reversals;
+- corrected delivery-reordering episodes, separately from unresolved gaps;
 - global, A-line, and B-line sequence-gap counts, estimated missing events,
   and event inconsistencies;
 - integrity, health, and primary failure code;
@@ -273,6 +276,22 @@ stopping; unread queued events are outside the totals, so stop after a finite
 generator burst when comparing complete counts. This probe does not produce
 a quadrature position or certify physical capture integrity. Gap observations
 can reflect reordering and are not an exact lost-edge estimate.
+
+Live acquisition uses `EventOrderBuffer` before strict decoding and startup
+uses it before accepting excluded-event baselines. The ordered fast path never
+waits. ZERO requires both raw and ordering queues drained; STOP and backend
+failure account for retained records without extending the shutdown budget.
+Unresolved ordering-limit failures still reach the existing integrity matrix.
+The raw counter remains received-order after startup and legacy files remain
+available for comparisons. See specification Section 9.5 for the exact policy.
+
+The IRQ latency report retains at most eight excluded contexts, each with up
+to eight preceding/following records and known timing anchors. Ambiguous IRQ
+candidates never enter matched-read statistics. `--analyze-capture DIRECTORY`
+prints a saved capture without GPIO, sudo, manifest loading or file writes.
+This is post-capture analysis; probe definitions and recording overhead remain
+unchanged. It is intended to expose the observed overlapping B read without
+adding a general tracing framework.
 
 ### 4.3 Concurrency decisions
 

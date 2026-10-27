@@ -1,11 +1,10 @@
 """Immutable public state and pure effective health/timeout interpretation."""
 
 import ctypes
-from dataclasses import dataclass, fields, replace
 import time
+from dataclasses import dataclass, fields, replace
 
 from .config import TreadmillConfig
-
 
 # The order is the public primary-code priority from specification Section 14.1.
 HEALTH_CODES = (
@@ -69,6 +68,7 @@ class TreadmillState:
     positive_transition_count: int = 0
     negative_transition_count: int = 0
     direction_reversal_count: int = 0
+    delivery_reorder_count: int = 0
     global_sequence_gap_count: int = 0
     a_line_sequence_gap_count: int = 0
     b_line_sequence_gap_count: int = 0

@@ -1,17 +1,17 @@
 """Verified libgpiod v2 adaptation; hardware is touched only by open()."""
 
-from dataclasses import dataclass
-from datetime import timedelta
 import importlib
 import os
-from pathlib import Path
 import platform
 import time
+from dataclasses import dataclass
+from datetime import timedelta
+from pathlib import Path
 from typing import Protocol
 
 from .config import TreadmillConfig
 from .decoder import EdgeEvent
-
+from .ordering import EventOrderBuffer
 
 INITIAL_SYNC_QUIET_PERIOD_S = 0.001
 
@@ -44,7 +44,7 @@ class EdgeSource(Protocol):
         ...
 
     def read_batch(self, timeout_s: float) -> list[EdgeEvent]:
-        """Wait at most seconds, then return one bounded ordered event batch."""
+        """Wait at most seconds, then return one bounded received-order event batch."""
         ...
 
     def close(self) -> None:
@@ -125,7 +125,7 @@ class GpiodSource:
             raise
 
     def read_batch(self, timeout_s: float) -> list[EdgeEvent]:
-        """Return up to read_batch_size ordered events, waiting at most seconds.
+        """Return up to read_batch_size received-order events, waiting at most seconds.
 
         Returns:
             list[EdgeEvent]: Kernel monotonic ns, channel/edge strings and uint32
@@ -321,9 +321,11 @@ class GpiodSource:
         sequence = 0
         lines = [0, 0]
         excluded = 0
+        ordering = EventOrderBuffer()
         while time.monotonic_ns() < deadline_ns:
-            while batch := self.read_batch(0):
-                for event in batch:
+            while True:
+                batch = self.read_batch(0)
+                for event in ordering.push(batch, time.monotonic_ns()):
                     channel = {"A": 0, "B": 1}.get(event.channel)
                     if (
                         channel is None
@@ -339,11 +341,19 @@ class GpiodSource:
                     sequence = event.global_sequence_number
                     lines[channel] = event.line_sequence_number
                     excluded += 1
+                if ordering.failed:
+                    raise BackendError(
+                        "INITIAL_SYNC_FAILED",
+                        "Startup sequence gap exceeded ordering limits",
+                        self.mapping,
+                    )
                 if time.monotonic_ns() >= deadline_ns:
                     raise BackendError(
                         "INITIAL_SYNC_FAILED",
                         "No quiet startup boundary before deadline",
                     )
+                if not batch:
+                    break
             before = self.request.get_values(list(self.offsets))
             remaining = (deadline_ns - time.monotonic_ns()) / 1e9
             if remaining <= 0:
@@ -353,7 +363,11 @@ class GpiodSource:
             ):
                 continue
             after = self.request.get_values(list(self.offsets))
-            if before != after or self.request.wait_edge_events(0):
+            if (
+                before != after
+                or self.request.wait_edge_events(0)
+                or ordering.pending_count
+            ):
                 continue
             levels = [int(value.value) for value in after]
             return InitialState(

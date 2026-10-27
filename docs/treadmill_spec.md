@@ -698,6 +698,11 @@ API evidence must verify the initial sequence convention for a new request when
 no startup event was observed. Any startup sequence loss fails synchronization;
 calling it pre-session motion must not hide an overflow.
 
+Startup uses the same bounded delivery-order correction as live acquisition
+(Section 9.5). It may accept a reordered startup burst only after all buffered
+records are continuity-checked and both queues are drained. The public startup
+baselines and excluded-event count retain their existing meaning.
+
 If a clean initial state cannot be established before the startup deadline,
 startup fails with an actionable error.
 
@@ -705,18 +710,45 @@ startup fails with an actionable error.
 
 The acquisition hot loop must:
 
-1. wait no longer than the next heartbeat/control/pending-publication deadline;
+1. wait no longer than the next heartbeat/control/publication/ordering deadline;
 2. read all currently available events in bounded batches;
-3. preserve kernel order;
+3. restore contiguous global sequence order within the bounded policy below;
 4. adapt events to the pure decoder representation;
 5. update canonical state;
 6. coalesce routine coherent snapshots on the Section 12.2 cadence, while
    publishing urgent state at the current batch/control boundary;
 7. update heartbeat on schedule even while stationary;
 8. check the bounded control channel between batches so `STOP` cannot starve;
-9. apply `ZERO` only after pending edge events are drained. An expired or
+9. apply `ZERO` only after raw and buffered edge events are drained. An expired or
    integrity-rejected `ZERO` may be rejected between batches without applying
    an offset.
+
+The RP1 GPIO request may deliver A/B records in a different order from their
+global sequence numbers. `EventOrderBuffer` corrects this before decoding:
+contiguous events pass immediately; future sequences wait across read batches
+for at most `REORDER_WAIT_NS = 1000000` ns and `MAX_PENDING_EVENTS = 256` retained
+records, including duplicates. The grace starts at the first observed hole and
+is not extended by subsequent arrivals. Comparisons use uint32 serial distance,
+including rollover. These are scheduling budgets, not real-time guarantees.
+
+Original timestamps, line sequences and edge labels are never changed. Duplicate
+records are retained for decoder validation, not overwritten. If a hole exceeds
+a limit, expose all retained records once in forward serial order, leave the
+missing predecessor absent, and let existing decoder gap checks invalidate the
+trajectory. Remaining failed-run input passes through for diagnostics. A backend
+failure or shutdown cutoff also exposes pending records before final reporting.
+Corrected reordering alone does not change health or integrity. The dimensionless
+`delivery_reorder_count` counts buffering episodes resolved before a limit,
+after the accepted startup boundary. Decoder failure context is explicitly in
+decoder-admission order; the standalone raw counter keeps received order.
+
+An empty raw read is not a drained boundary while the ordering buffer is pending.
+STOP may briefly wait for that existing hole, capped by its grace and drain
+cutoff; ordinary STOP reads remain nonblocking. All admitted records must be
+accounted for before final state, including a failed unresolved tail. Processing
+lag still measures kernel timestamp to decoder admission and includes ordering
+wait. This policy cannot repair extra IRQs, incorrect polarity, or corrupted
+kernel metadata.
 
 The hot path must contain no:
 
@@ -1022,6 +1054,8 @@ it as an origin.
 ### 11.1 Sequence tracking
 
 Track global and per-line sequence continuity when supplied by libgpiod.
+The rules in this section apply at decoder admission, after Section 9.5's
+bounded delivery ordering; a forward jump is not failed merely on raw receipt.
 Startup synchronization supplies the baselines described in Section 9.4;
 events explicitly excluded from motion totals still advance those baselines.
 
@@ -1031,7 +1065,7 @@ serial numbers. For each tracker compute
 
 - `delta == 0` is a duplicate;
 - `1 <= delta < 2^31` is forward, with `delta == 1` contiguous and a larger
-  value missing exactly `delta - 1` events;
+  value spanning `delta - 1` sequence numbers not admitted at that point;
 - `delta == 2^31` is ambiguous and is
   `SEQUENCE_METADATA_INCONSISTENT`; it does not advance the baseline;
 - `2^31 < delta < 2^32` is older/out of order and is
@@ -1249,7 +1283,7 @@ demonstrate on ARM hardware that:
 The initial implementation uses an internal 1 ms minimum interval between
 routine publication attempts (up to about 1,000/s during motion). Every event
 still updates canonical counts, position, speed, history and diagnostics in
-received order. Construct and pack a full shared-state snapshot only when a
+decoder-admission order. Construct and pack a full shared-state snapshot only when a
 publication is due, rather than after every small read batch. Readers receive
 the latest cumulative state; this intentionally coalesces intermediate copies,
 not edge processing. Freshness also depends on batch processing and OS
@@ -1350,6 +1384,7 @@ valid_transition_count
 positive_transition_count
 negative_transition_count
 direction_reversal_count
+delivery_reorder_count
 
 global_sequence_gap_count
 a_line_sequence_gap_count

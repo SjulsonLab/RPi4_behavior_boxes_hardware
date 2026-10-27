@@ -1,14 +1,14 @@
 """Spawn-safe acquisition worker; canonical decoding never waits on readers."""
 
-from dataclasses import dataclass
-from queue import Empty, Full
 import signal
 import time
+from dataclasses import dataclass
+from queue import Empty, Full
 
-from .decoder import Decoder, FirstFailureDiagnostic
+from .decoder import Decoder, EdgeEvent, FirstFailureDiagnostic
 from .gpio_backend import BackendError
+from .ordering import EventOrderBuffer
 from .state import TreadmillState, materialize_state
-
 
 # Coalesce routine snapshots at 1 kHz; urgent control/health updates bypass this.
 STATE_PUBLICATION_INTERVAL_NS = 1_000_000
@@ -35,9 +35,9 @@ class StopReport:
     """Final immutable state and optional bounded first-failure context.
 
     state retains the public mm/mm/s/ns/count contract. first_failure_diagnostic
-    contains received-order records with monotonic ns and dimensionless counts.
+    contains decoder-admission records with monotonic ns and dimensionless counts.
     It is None when no event invalidated integrity. drain_complete is True only
-    if a nonblocking read found the queue empty before the shutdown cutoff;
+    if both the raw queue and ordering buffer drained before the shutdown cutoff;
     False means final counts may omit pending events. This report travels once
     on the existing STOP result channel; individual edges never stream over IPC.
     """
@@ -98,7 +98,7 @@ def acquisition_worker(
         Every edge is decoded; routine state copies are coalesced to 1 ms.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    source = decoder = None
+    source = decoder = ordering = None
     version = 0
     heartbeat = time.monotonic_ns()
     ready = False
@@ -111,6 +111,7 @@ def acquisition_worker(
     try:
         source = source_factory(config)
         initial = source.open(heartbeat + int(config.startup_timeout_s * 1e9))
+        ordering = EventOrderBuffer(initial.global_sequence_number)
         decoder = Decoder(
             config,
             initial.ab_state,
@@ -146,17 +147,30 @@ def acquisition_worker(
                 # A final short burst must not wait for the 50 ms heartbeat
                 # before its pending counts become visible to readers.
                 wait_s = min(wait_s, max(0, (next_publication_ns - now) / 1e9))
-            # A STOP drain never waits for new edges or starts a read after its
-            # cutoff. Finish each admitted batch before servicing controls.
+            if ordering.deadline_ns is not None:
+                wait_s = min(wait_s, max(0, (ordering.deadline_ns - now) / 1e9))
+            if pending_stop is not None:
+                # Only an already pending sequence hole may require a short
+                # STOP wait; ordinary draining remains nonblocking.
+                wait_s = (
+                    max(0, (min(ordering.deadline_ns, pending_stop[1]) - now) / 1e9)
+                    if ordering.deadline_ns is not None
+                    else 0
+                )
+            # Never start a read after the STOP cutoff. Finish admitted events
+            # before servicing controls, including any ordering-limit failure.
             drain_expired = pending_stop is not None and now >= pending_stop[1]
             if drain_expired:
-                batch = []
+                raw_batch = []
             else:
-                batch = source.read_batch(0 if pending_stop is not None else wait_s)
+                raw_batch = source.read_batch(wait_s)
+            batch = ordering.push(raw_batch, time.monotonic_ns())
+            if drain_expired:
+                batch.extend(ordering.flush())
             if batch:
                 publication_pending = True
-                for event in batch:
-                    decoder.process_event(event, time.monotonic_ns())
+                _decode_batch(decoder, batch, ordering.delivery_reorder_count)
+            drained = not raw_batch and ordering.pending_count == 0
             now = time.monotonic_ns()
             heartbeat_due = now - heartbeat >= config.heartbeat_interval_s * 1e9
             if heartbeat_due:
@@ -193,7 +207,7 @@ def acquisition_worker(
                 elif pending_zero is None:
                     pending_zero = (identifier, deadline)
 
-            if not batch or pending_stop is not None:
+            if drained or pending_stop is not None:
                 for code in tuple(decoder.code_times):
                     if code not in sent_codes:
                         sent_codes.add(code)
@@ -211,8 +225,16 @@ def acquisition_worker(
 
             if pending_stop is not None:
                 identifier, drain_deadline, reply_deadline = pending_stop
-                if not batch or time.monotonic_ns() >= drain_deadline:
-                    drain_complete = not batch and not drain_expired
+                if drained or time.monotonic_ns() >= drain_deadline:
+                    if ordering.pending_count:
+                        _decode_batch(
+                            decoder, ordering.flush(), ordering.delivery_reorder_count
+                        )
+                    drain_complete = (
+                        drained
+                        and not drain_expired
+                        and time.monotonic_ns() < drain_deadline
+                    )
                     if not drain_complete:
                         # Preserve the partial-count warning even if the matched
                         # STOP report is lost; the existing status path survives it.
@@ -263,14 +285,14 @@ def acquisition_worker(
             if (
                 pending_stop is None
                 and pending_zero is not None
-                and (not batch or now >= pending_zero[1] or not decoder.integrity_valid)
+                and (drained or now >= pending_zero[1] or not decoder.integrity_valid)
             ):
                 identifier, deadline = pending_zero
                 now = time.monotonic_ns()
                 slot = shared.reserve()
                 if slot is not None or now >= deadline or not decoder.integrity_valid:
                     applied = (
-                        not batch
+                        drained
                         and slot is not None
                         and now < deadline
                         and decoder.integrity_valid
@@ -330,6 +352,10 @@ def acquisition_worker(
             else "ACQUISITION_START_FAILED"
         )
         if decoder is not None:
+            if ordering is not None:
+                _decode_batch(
+                    decoder, ordering.flush(), ordering.delivery_reorder_count
+                )
             decoder.note_code(code, now)
             _publish(decoder, shared, now, heartbeat, version)
             if failure_ring is not None and not ring_sent:
@@ -352,6 +378,15 @@ def acquisition_worker(
         for channel in (diagnostics, failure_ring):
             if channel is not None:
                 channel.cancel_join_thread()
+
+
+def _decode_batch(
+    decoder: Decoder, events: list[EdgeEvent], reorder_count: int
+) -> None:
+    """Admit EdgeEvents at current monotonic ns; retain the dimensionless reorder count."""
+    decoder.counters["delivery_reorder_count"] = reorder_count
+    for event in events:
+        decoder.process_event(event, time.monotonic_ns())
 
 
 def _publish(decoder, shared, now_ns: int, heartbeat_ns: int, version: int) -> int:

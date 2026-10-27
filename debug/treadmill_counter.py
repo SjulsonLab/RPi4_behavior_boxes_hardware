@@ -99,6 +99,7 @@ def main(
             f"Positive / negative transitions: {state.positive_transition_count} / {state.negative_transition_count}"
         )
         output_fn(f"Direction reversals: {state.direction_reversal_count}")
+        output_fn(f"Corrected delivery reorders: {state.delivery_reorder_count}")
         output_fn(
             f"Sequence gaps (global / A / B): {state.global_sequence_gap_count} / {state.a_line_sequence_gap_count} / {state.b_line_sequence_gap_count}"
         )
@@ -143,7 +144,7 @@ def _format_first_failure(
     """Format a cached bounded report for printing only after acquisition closes.
 
     Args:
-        diagnostic: Frozen first-failure window in received order; timestamps
+        diagnostic: Frozen first-failure window in decoder-admission order; timestamps
             are monotonic ns, counts/positions and AB bits are dimensionless.
         settings: Effective config containing the actual A/B BCM pin numbers.
 
@@ -173,7 +174,7 @@ def _format_first_failure(
         f"{diagnostic.line_sequence_numbers_before[1]}; observed {event.channel}: {event.line_sequence_number}",
         f"Context: preceding {diagnostic.preceding_event_count}/8; following {diagnostic.following_event_count}/4 "
         "(short windows reflect available history/input)",
-        "Received order; '>' marks the offending event. AB values are decoder-remembered.",
+        "Decoder-admission order; '>' marks the offending event. AB values are decoder-remembered.",
         "  event# kernel_ns dt_us ch edge global_seq line_seq AB_before->after delta lag_us flags",
     ]
     previous_ns = None

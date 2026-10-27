@@ -8,7 +8,6 @@ from itertools import islice
 from .config import TreadmillConfig
 from .state import HEALTH_CODES, TreadmillState, materialize_state, ordered_codes
 
-
 LAG_BIN_UPPER_BOUNDS_NS = (
     50_000,
     100_000,
@@ -37,6 +36,7 @@ COUNTER_NAMES = (
     "positive_transition_count",
     "negative_transition_count",
     "direction_reversal_count",
+    "delivery_reorder_count",
     "global_sequence_gap_count",
     "a_line_sequence_gap_count",
     "b_line_sequence_gap_count",
@@ -83,7 +83,7 @@ class FirstFailureDiagnostic:
     event_number is one-based admitted-event order after startup synchronization,
     independent of kernel sequence baselines. Counts/positions are dimensionless;
     global and A/B line baselines are uint32 values immediately before failure.
-    records stay in received order and retain EventRecord's monotonic-ns units.
+    records stay in decoder-admission order and retain monotonic-ns units.
     preceding_event_count locates the offending record. Short context is valid
     at startup, with a small configured history, or when input stops afterward.
     """
