@@ -421,3 +421,88 @@ After the user pulls `dev2`, repeat the normal-counter 10 kHz/50,000-cycle
 bursts with GP4/GP5 and the current Pi wiring unchanged. Preserve complete
 failure output if an anomaly recurs. Deployment remains Git-only; the Pi
 checkout and GPIO were not modified by the benchmark.
+
+## IRQ-to-pin-read timing diagnostic
+
+`debug/treadmill_irq_latency.py` attaches to either already running standalone
+counter. It does not claim GPIO, change the counter, or change IRQ affinity or
+priority. Start the counter in terminal 1 with the Pico generator idle:
+
+```bash
+uv run debug/treadmill_counter.py --a-pin 23 --b-pin 24
+```
+
+The raw counter can be used instead, with the same pin flags. Wait for the
+counter's ready message, then start the tracer in terminal 2:
+
+```bash
+uv run debug/treadmill_irq_latency.py --a-pin 23 --b-pin 24
+```
+
+The tracer requests sudo for tracefs access, reusing the Python interpreter
+selected by uv. No package installation or kernel rebuild is needed on the
+verified target. It resolves the current GPIO IRQ numbers and IRQ-thread IDs
+from `/proc`, so the counter must remain running while the tracer attaches.
+Wait for **IRQ latency tracer ready**, then start one Pico burst. After the
+burst ends, press Ctrl-C in terminal 2 to save/report the trace; stop terminal 1
+as usual. `--duration-s 15` can replace Ctrl-C in terminal 2, provided the whole
+burst fits inside that window. Each omitted pin uses the manifest default.
+
+The four recording points are:
+
+| Point | Recorded information |
+|---|---|
+| `irq:irq_handler_entry` | Selected GPIO IRQ, timestamp, task and CPU |
+| `edge_irq_thread` entry | IRQ-thread start timestamp and IRQ |
+| `rp1_gpio_get` entry | Start of the pin-read bracket and BCM pin |
+| `rp1_gpio_get` return | End of the bracket, BCM pin and sampled raw level |
+
+The RP1 register read occurs between the last two points. Delays start at
+software IRQ-handler entry, after GPIO-bank dispatch; they do not include
+physical-edge-to-handler latency. All points use ftrace's `mono` clock. The
+saved text timestamps have 1 us resolution and are converted without float
+rounding of large boot-time values. Each sample requires an unambiguous
+IRQ/thread/read pairing. Overlapping interrupts, missing partners and read
+errors are reported separately, not repaired. Ambiguous intervals may contain
+the longest delays, so statistics for matched reads alone cannot exonerate
+kernel scheduling or edge capture.
+
+The report gives per-pin median, nearest-rank p95/p99, maximum and >=50 us
+counts for thread start and both ends of the read bracket. The 50 us reference
+is relevant to the current 10 kHz waveform's same-pin edge spacing. It also
+prints up to ten longest matched read examples per pin, with monotonic IRQ
+timestamps for comparison with the counter's first-failure context.
+
+Recording uses a private tracefs instance, selected IRQ/pin/task filters and
+64 MiB per CPU (approximately 256 MiB on this four-core Pi). No per-event Python
+processing, console output or file writes occur during the burst. After
+recording stops, its events are disabled and trace text, metadata and summary
+are saved under the already ignored
+`tmp_operator_runs/treadmill_irq_latency/<UTC timestamp>/`. Metadata records the
+kernel, Git revision, IRQs, thread IDs, clock, buffer size and losses; failed
+captures retain `status: incomplete`. Captures do not overwrite previous runs.
+Only this invocation's probe definitions and tracing instance are removed.
+
+`Trace capture complete: False` means a ring-buffer overrun/drop or missed
+probe was observed; do not interpret it as complete-burst evidence. Failure to
+read the owned probe statistics is an error, not an assumed zero. Tracing adds
+overhead even when its buffer does not lose events. Compare identical bursts
+with tracing off/on/off, keeping wiring unchanged, first at low frequency and
+then at 10 kHz. Run both counter variants. Traced failures alone do not prove
+the untraced acquisition has the same timing problem.
+
+Development-host tests follow RED/GREEN: `851aed8` specifies pairing and
+cleanup, `b9b60a9` incorporates the actual Pi trace/profile formats, and
+`e18a052` specifies capture shutdown and incomplete metadata. All 27 diagnostic
+tests and the documented focused regression command pass (321 tests total).
+The Pi accepted the entry/return probe syntax, including saved function
+arguments at return. A private temporary trace of the **existing** raw counter
+for 0.2 s captured eight startup pin-read records, with valid BCM23/24 arguments
+and returned levels; the counter saw zero input edges. This verified the live
+text format and cleanup, not IRQ-to-thread latency under a signal burst. The
+installed kernel's probe profile prints bare event names, so this tracer gives
+every probe a unique name and requires statistics for all three probes.
+
+The new tracer's end-to-end Pi run and generator bursts remain pending the
+user's Git pull. No implementation files were copied to the Pi. Legacy
+counters, production acquisition and the user's Pico changes remain unchanged.

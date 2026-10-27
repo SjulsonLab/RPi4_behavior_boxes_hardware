@@ -166,10 +166,14 @@ def test_parser_accepts_live_pi_format_and_unique_probe_names(latency):
     records = list(
         latency.parse_trace(
             [
-                " python-116155 [003] d.... 1224531.686400: owned_read_start: "
-                "(rp1_gpio_get+0x0/0xb0) pin=23\n",
-                " python-116155 [003] d..1. 1224531.686409: owned_read_end: "
-                "(gpio_chip_get_multiple.part.0+0x40/0xb8 <- rp1_gpio_get) pin=23 value=1\n",
+                (
+                    " python-116155 [003] d.... 1224531.686400: owned_read_start: "
+                    "(rp1_gpio_get+0x0/0xb0) pin=23\n"
+                ),
+                (
+                    " python-116155 [003] d..1. 1224531.686409: owned_read_end: "
+                    "(gpio_chip_get_multiple.part.0+0x40/0xb8 <- rp1_gpio_get) pin=23 value=1\n"
+                ),
             ]
         )
     )
