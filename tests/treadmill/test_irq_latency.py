@@ -509,3 +509,114 @@ def test_short_control_write_is_reported_without_retry(latency, tmp_path, monkey
     with pytest.raises(OSError, match="[Ss]hort"):
         latency.write_control(control, "test_probe_command")
     assert len(writes) == 1
+
+
+def overlapping_read_trace():
+    """Return the observed B overlap pattern, in integer us relative to time zero."""
+    return [
+        trace_line("irq_handler_entry", 0, irq=181),
+        trace_line("thread_start", 2, irq=181, tid=901),
+        trace_line("irq_handler_entry", 25),
+        trace_line("thread_start", 27),
+        trace_line("read_start", 28),
+        trace_line("read_end", 29),
+        trace_line("irq_handler_entry", 52, irq=181),
+        trace_line("read_start", 55, pin=24, tid=901),
+        trace_line("read_end", 56, pin=24, tid=901),
+        trace_line("thread_start", 57, irq=181, tid=901),
+        trace_line("read_start", 58, pin=24, tid=901),
+        trace_line("read_end", 59, pin=24, tid=901),
+    ]
+
+
+def test_excluded_overlap_shows_delay_and_candidates_without_entering_statistics(
+    latency,
+):
+    """Expose the 55 us excluded interval without claiming a unique IRQ/read pair."""
+    summary = analyze(latency, overlapping_read_trace())
+    assert summary["pairing_issues"] == {"ambiguous_read": 1, "incomplete_read": 1}
+    assert summary["pins"]["24"]["matched_reads"] == 0
+    example = summary["excluded_contexts"][0]
+    assert example["reason"] == "ambiguous_read" and example["pin"] == 24
+    assert example["thread_to_read_us"] == 53
+    assert example["candidate_irq_to_read_us"] == [3, 55]
+    assert example["value"] == 0
+    assert any(
+        record["cpu"] == 0 and record["kind"] == "irq_handler_entry"
+        for record in example["records"]
+    )
+    rendered = "\n".join(latency.format_summary(summary))
+    assert "ambiguous_read" in rendered and "53.0" in rendered and "55.0" in rendered
+
+
+def test_excluded_examples_and_context_windows_remain_bounded(latency):
+    """Retain the first eight failures and at most eight records on either side."""
+    lines = []
+    for index in range(25):
+        cycle = read_cycle(index * 100)
+        cycle.insert(2, trace_line("irq_handler_entry", index * 100 + 8))
+        lines.extend(cycle)
+    summary = analyze(latency, lines)
+    assert summary["pairing_issues"]["ambiguous_read"] == 25
+    assert len(summary["excluded_contexts"]) == 8
+    for example in summary["excluded_contexts"]:
+        assert len(example["records"]) <= 17
+        assert example["trigger_index"] < len(example["records"])
+
+
+def test_capture_boundary_context_does_not_invent_a_pin_read(latency):
+    """An IRQ/thread left pending at EOF has context but no measured read delay."""
+    summary = analyze(latency, read_cycle(100)[:2])
+    example = summary["excluded_contexts"][0]
+    assert example["reason"] == "incomplete_read"
+    assert example["thread_to_read_us"] is None
+    assert example["candidate_irq_to_read_us"] is None
+    assert example["value"] is None
+
+
+@pytest.fixture
+def saved_capture(tmp_path):
+    """Create a complete synthetic capture directory with str-keyed JSON IRQ maps."""
+    metadata = {
+        "status": "captured",
+        "irq_pins": {"180": 23, "181": 24},
+        "thread_ids": {"180": 900, "181": 901},
+        "loss_counts": {"probe_misses": 0},
+    }
+    (tmp_path / "metadata.json").write_text(json.dumps(metadata))
+    (tmp_path / "trace.txt").write_text("".join(overlapping_read_trace()))
+    return tmp_path
+
+
+def test_offline_report_uses_saved_metadata_without_root_or_capture_writes(
+    latency, saved_capture, monkeypatch, capsys
+):
+    """The analyze-capture entry point is read-only and bypasses all live setup."""
+    original = {path.name: path.read_bytes() for path in saved_capture.iterdir()}
+
+    def reject_live_setup(*args, **kwargs):
+        """Fail if offline analysis tries live counter parsing or tracefs setup."""
+        pytest.fail("Offline analysis entered live setup")
+
+    monkeypatch.setattr(latency, "parse_counter_options", reject_live_setup)
+    monkeypatch.setattr(latency, "capture_trace", reject_live_setup)
+    assert latency.main(["--analyze-capture", str(saved_capture)]) == 0
+    assert "53.0" in capsys.readouterr().out
+    assert {
+        path.name: path.read_bytes() for path in saved_capture.iterdir()
+    } == original
+
+
+def test_offline_report_preserves_loss_status_and_rejects_incomplete_metadata(
+    latency, saved_capture
+):
+    """Replay cannot upgrade a lossy or unfinished recording into a clean capture."""
+    path = saved_capture / "metadata.json"
+    metadata = json.loads(path.read_text())
+    metadata["loss_counts"]["probe_misses"] = 1
+    path.write_text(json.dumps(metadata))
+    assert latency.analyze_capture(saved_capture)["capture_complete"] is False
+    metadata["status"] = "incomplete"
+    path.write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="incomplete"):
+        latency.analyze_capture(saved_capture)
